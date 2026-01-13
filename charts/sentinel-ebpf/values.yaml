@@ -1,0 +1,67 @@
+global:
+  imagePullSecrets: []
+
+agent:
+  image:
+    repository: ghcr.io/example/sentinel-ebpf-agent
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  grpc:
+    endpoint: "sentinel-ebpf-detector:50051"
+    tls:
+      enabled: false
+      caSecret: ""
+  stream:
+    mode: grpc # grpc | stdout
+    batchSize: 64
+    queueLength: 1024
+  probes:
+    fileWrites:
+      enabled: true
+      pathPrefixes: []
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  securityContext:
+    privileged: true
+    runAsUser: 0
+    runAsGroup: 0
+    capabilities:
+      add: ["SYS_ADMIN", "SYS_RESOURCE", "SYS_PTRACE"]
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+  rbac:
+    create: true
+
+detector:
+  enabled: true
+  image:
+    repository: ghcr.io/example/sentinel-ebpf-detector
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 50051
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilizationPercentage: 80
+    targetMemoryUtilizationPercentage: 80
+
+config:
+  logLevel: info
+  metrics:
+    enabled: true
+    port: 9102
+  health:
+    port: 9101

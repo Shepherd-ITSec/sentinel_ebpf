@@ -1,0 +1,44 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "sentinel-ebpf.fullname" . }}-config
+  labels:
+    {{- include "sentinel-ebpf.labels" . | nindent 4 }}
+data:
+  agent-config.yaml: |
+    logLevel: {{ .Values.config.logLevel }}
+    rulesFile: /etc/sentinel-ebpf/rules.yaml
+    health:
+      port: {{ .Values.config.health.port }}
+    metrics:
+      enabled: {{ .Values.config.metrics.enabled }}
+      port: {{ .Values.config.metrics.port }}
+    grpc:
+      endpoint: {{ .Values.agent.grpc.endpoint | quote }}
+      tlsEnabled: {{ .Values.agent.grpc.tls.enabled }}
+      caSecret: {{ .Values.agent.grpc.tls.caSecret | quote }}
+    stream:
+      mode: {{ .Values.agent.stream.mode | quote }}
+      batchSize: {{ .Values.agent.stream.batchSize }}
+      queueLength: {{ .Values.agent.stream.queueLength }}
+    probes:
+      fileWrites:
+        enabled: {{ .Values.agent.probes.fileWrites.enabled }}
+        pathPrefixes:
+        {{- range .Values.agent.probes.fileWrites.pathPrefixes }}
+          - {{ . | quote }}
+        {{- else }}
+          - "/"
+        {{- end }}
+  rules.yaml: |
+    rules:
+      - name: capture-all-writes
+        enabled: true
+        event: file_write
+        match:
+          pathPrefixes: ["/"]
+      - name: capture-all-reads
+        enabled: true
+        event: file_read
+        match:
+          pathPrefixes: ["/"]

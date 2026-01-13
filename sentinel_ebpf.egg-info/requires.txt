@@ -1,0 +1,4 @@
+bcc==0.1.10
+grpcio==1.76.0
+grpcio-tools==1.76.0
+PyYAML==6.0.2

@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package sentinel.v1;
+
+option cc_enable_arenas = true;
+option java_multiple_files = true;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+// Envelope for any observed kernel-level event.
+message EventEnvelope {
+  // Unique ID for correlating responses.
+  string event_id = 1;
+  // Node and workload metadata.
+  string hostname = 2;
+  string pod_name = 3;
+  string namespace = 4;
+  string container_id = 5;
+  // Generic event type and key/value data (strings) so rules can be authored later.
+  string event_type = 9;
+  map<string, string> data = 10;
+  // Additional labels or enrichment.
+  map<string, string> attributes = 20;
+  // Kernel timestamp (nanoseconds).
+  uint64 ts_unix_nano = 30;
+}
+
+message DetectionResponse {
+  string event_id = 1;
+  bool anomaly = 2;
+  string reason = 3;
+  double score = 4;
+  google.protobuf.Timestamp ts = 5;
+}
+
+message AnomalyReport {
+  string event_id = 1;
+  string reason = 2;
+  double score = 3;
+  map<string, string> labels = 4;
+}
+
+service DetectorService {
+  // Bidirectional stream of events and anomaly responses.
+  rpc StreamEvents (stream EventEnvelope) returns (stream DetectionResponse);
+  // Optional explicit anomaly report push.
+  rpc ReportAnomaly (AnomalyReport) returns (google.protobuf.Empty);
+}

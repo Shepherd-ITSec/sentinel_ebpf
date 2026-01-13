@@ -1,0 +1,17 @@
+{{- if .Values.detector.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "sentinel-ebpf.fullname" . }}-detector
+  labels:
+    {{- include "sentinel-ebpf.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.detector.service.type }}
+  selector:
+    {{- include "sentinel-ebpf.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: detector
+  ports:
+    - name: grpc
+      port: {{ .Values.detector.service.port }}
+      targetPort: grpc
+{{- end }}
