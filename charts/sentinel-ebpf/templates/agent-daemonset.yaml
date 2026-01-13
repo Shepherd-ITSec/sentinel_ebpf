@@ -34,6 +34,8 @@ spec:
             - name: rules
               mountPath: /etc/sentinel-ebpf/rules.yaml
               subPath: rules.yaml
+            - name: logs
+              mountPath: {{ regexReplaceAll "/[^/]+$" .Values.agent.stream.file.path "" | default "/var/log/sentinel-ebpf" | quote }}
             - name: modules
               mountPath: /lib/modules
               readOnly: true
@@ -87,6 +89,13 @@ spec:
         - name: rules
           configMap:
             name: {{ include "sentinel-ebpf.fullname" . }}-config
+        - name: logs
+          {{- if .Values.agent.storage.pvc.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "sentinel-ebpf.fullname" . }}-logs
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
         - name: modules
           hostPath:
             path: /lib/modules

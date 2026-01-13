@@ -7,7 +7,7 @@ metadata:
     {{- include "sentinel-ebpf.labels" . | nindent 4 }}
     app.kubernetes.io/component: detector
 spec:
-  replicas: {{- if .Values.detector.autoscaling.enabled }}{{ .Values.detector.autoscaling.minReplicas }}{{- else }}1{{- end }}
+  replicas: {{ if .Values.detector.autoscaling.enabled }}{{ .Values.detector.autoscaling.minReplicas }}{{ else }}1{{ end }}
   selector:
     matchLabels:
       {{- include "sentinel-ebpf.selectorLabels" . | nindent 6 }}
@@ -20,8 +20,10 @@ spec:
       annotations:
         {{- toYaml .Values.detector.podAnnotations | nindent 8 }}
     spec:
+      {{- if .Values.global.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml .Values.global.imagePullSecrets | nindent 8 }}
+      {{- end }}
       containers:
         - name: detector
           image: "{{ .Values.detector.image.repository }}:{{ .Values.detector.image.tag }}"

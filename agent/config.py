@@ -12,12 +12,16 @@ class ProbeConfig:
 
 @dataclass
 class StreamConfig:
-  mode: str = "grpc"  # grpc|stdout
+  mode: str = "grpc"  # grpc|stdout|file
   endpoint: str = "localhost:50051"
   batch_size: int = 64
   queue_length: int = 1024
   tls_enabled: bool = False
   ca_secret: str = ""
+  file_path: str = "/var/log/sentinel-ebpf/events.bin"
+  rotate_max_bytes: int = 50 * 1024 * 1024
+  rotate_max_files: int = 3
+  compress: bool = False
 
 
 @dataclass
@@ -49,6 +53,10 @@ def load_config() -> AppConfig:
     queue_length=int(stream_cfg.get("queueLength", 1024)),
     tls_enabled=grpc_cfg.get("tlsEnabled", False),
     ca_secret=grpc_cfg.get("caSecret", ""),
+    file_path=stream_cfg.get("file", {}).get("path", "/var/log/sentinel-ebpf/events.bin"),
+    rotate_max_bytes=int(stream_cfg.get("file", {}).get("rotateMaxBytes", 50 * 1024 * 1024)),
+    rotate_max_files=int(stream_cfg.get("file", {}).get("rotateMaxFiles", 3)),
+    compress=bool(stream_cfg.get("file", {}).get("compress", False)),
   )
 
   probes = ProbeConfig(

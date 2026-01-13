@@ -1,12 +1,15 @@
+import gzip
 import json
 import logging
 import os
 import queue
 import signal
 import socket
+import struct
 import threading
 import time
 import uuid
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Optional
 
@@ -145,6 +148,73 @@ class GrpcStreamer:
       self._thread.join(timeout=5)
 
 
+class FileSink:
+  MAGIC = b"EVT1"
+
+  def __init__(self, path: str, max_bytes: int, max_files: int, compress: bool):
+    self.base_path = Path(path)
+    self.max_bytes = max_bytes
+    self.max_files = max_files
+    self.compress = compress
+    self.lock = threading.Lock()
+    self.base_path.parent.mkdir(parents=True, exist_ok=True)
+    self._fh = None
+    self._open()
+
+  def _open(self):
+    mode = "ab"
+    if self.compress:
+      self._fh = gzip.open(self.base_path, mode)
+    else:
+      self._fh = open(self.base_path, mode)
+
+  def _size(self) -> int:
+    try:
+      return self.base_path.stat().st_size
+    except FileNotFoundError:
+      return 0
+
+  def _rotate(self):
+    if self.max_files <= 1:
+      return
+    if self._fh:
+      self._fh.close()
+    for i in range(self.max_files - 1, 0, -1):
+      src = self.base_path.with_suffix(self.base_path.suffix + ("" if i == 1 else f".{i-1}"))
+      dst = self.base_path.with_suffix(self.base_path.suffix + f".{i}")
+      if src.exists():
+        src.replace(dst)
+    # base becomes .1
+    if self.base_path.exists():
+      self.base_path.replace(self.base_path.with_suffix(self.base_path.suffix + ".1"))
+    self._open()
+
+  def publish(self, env: events_pb2.EventEnvelope):
+    payload = {
+      "event_id": env.event_id,
+      "ts_unix_nano": env.ts_unix_nano,
+      "hostname": env.hostname,
+      "pod": env.pod_name,
+      "namespace": env.namespace,
+      "container_id": env.container_id,
+      "event_type": env.event_type,
+      "data": dict(env.data),
+    }
+    blob = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    record = self.MAGIC + struct.pack("<I", len(blob)) + blob
+    with self.lock:
+      if self.max_bytes and self._size() + len(record) > self.max_bytes:
+        self._rotate()
+      self._fh.write(record)
+      self._fh.flush()
+
+  def close(self):
+    with self.lock:
+      if self._fh:
+        self._fh.close()
+        self._fh = None
+
+
 class HealthHandler(BaseHTTPRequestHandler):
   def do_GET(self):  # noqa: N802
     if self.path.startswith("/metrics"):
@@ -175,9 +245,17 @@ class ProbeRunner:
     self.bpf.attach_kprobe(event="vfs_write", fn_name="trace_write")
     self.bpf.attach_kprobe(event="vfs_read", fn_name="trace_read")
     self.streamer = GrpcStreamer(cfg)
+    self.filesink: Optional[FileSink] = None
     self._stop = threading.Event()
     self._metadata = _hostname_metadata()
     self.rule_engine = RuleEngine(cfg.rules_file)
+    if self.cfg.stream.mode == "file":
+      self.filesink = FileSink(
+        path=self.cfg.stream.file_path,
+        max_bytes=self.cfg.stream.rotate_max_bytes,
+        max_files=self.cfg.stream.rotate_max_files,
+        compress=self.cfg.stream.compress,
+      )
 
   def _handle_event(self, cpu, data, size):  # noqa: ARG002
     event = self.bpf["events"].event(data)
@@ -216,6 +294,8 @@ class ProbeRunner:
         "data": env.data,
       }
       print(json.dumps(payload))
+    elif self.cfg.stream.mode == "file" and self.filesink:
+      self.filesink.publish(env)
     else:
       self.streamer.publish(env)
 
@@ -233,6 +313,8 @@ class ProbeRunner:
   def stop(self):
     self._stop.set()
     self.streamer.stop()
+    if self.filesink:
+      self.filesink.close()
 
 
 def configure_logging(level: str):

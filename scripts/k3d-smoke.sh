@@ -20,9 +20,30 @@ require docker
 require k3d
 require helm
 
-info "Building images"
-docker build -t "${AGENT_IMAGE}" ./agent
-docker build -t "${DETECTOR_IMAGE}" ./detector
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+cd "${ROOT_DIR}"
+
+if [[ ! -f "${ROOT_DIR}/pyproject.toml" || ! -f "${ROOT_DIR}/uv.lock" ]]; then
+  echo "pyproject.toml or uv.lock missing in ${ROOT_DIR}; run from repo root" >&2
+  exit 1
+fi
+
+# Prefer BuildKit only if buildx binary exists and works.
+BUILDX_BIN="${BUILDX_BIN:-/usr/local/lib/docker/cli-plugins/docker-buildx}"
+if [[ -x "$BUILDX_BIN" ]] && docker buildx version >/dev/null 2>&1; then
+  info "Building images with BuildKit (buildx available)"
+  export DOCKER_BUILDKIT=1
+else
+  info "Buildx missing or broken; forcing legacy builder (DOCKER_BUILDKIT=0)"
+  export DOCKER_BUILDKIT=0
+fi
+
+docker build -f agent/Dockerfile -t "${AGENT_IMAGE}" .
+docker build -f detector/Dockerfile -t "${DETECTOR_IMAGE}" .
+
+unset DOCKER_BUILDKIT
 
 info "Creating k3d cluster ${CLUSTER_NAME}"
 k3d cluster delete "${CLUSTER_NAME}" >/dev/null 2>&1 || true
@@ -44,9 +65,29 @@ helm install sentinel-ebpf "${CHART_PATH}" \
   --set agent.image.repository="${AGENT_IMAGE}" \
   --set detector.image.repository="${DETECTOR_IMAGE}"
 
+wait_for_resource() {
+  local kind="$1"; shift
+  local selector="$1"; shift
+  local timeout="${1:-60}"
+  local start
+  start=$(date +%s)
+  while true; do
+    if kubectl get "$kind" -l "$selector" >/dev/null 2>&1; then
+      return 0
+    fi
+    if (( $(date +%s) - start > timeout )); then
+      echo "Timed out waiting for $kind with selector: $selector" >&2
+      return 1
+    fi
+    sleep 2
+  done
+}
+
 info "Waiting for daemonset and detector"
-kubectl rollout status daemonset/sentinel-ebpf-agent --timeout=90s
-kubectl rollout status deploy/sentinel-ebpf-detector --timeout=90s
+wait_for_resource "daemonset" "app.kubernetes.io/name=sentinel-ebpf,app.kubernetes.io/component=agent" 90
+kubectl rollout status daemonset -l app.kubernetes.io/name=sentinel-ebpf -l app.kubernetes.io/component=agent --timeout=180s
+wait_for_resource "deploy" "app.kubernetes.io/name=sentinel-ebpf,app.kubernetes.io/component=detector" 90
+kubectl rollout status deploy -l app.kubernetes.io/name=sentinel-ebpf -l app.kubernetes.io/component=detector --timeout=180s
 
 info "Triggering a test write/read from a pod"
 kubectl run tester --rm -i --tty --image=busybox --restart=Never -- sh -c "echo x >> /etc/hosts && cat /etc/hosts >/dev/null"
