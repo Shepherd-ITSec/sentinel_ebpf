@@ -1,0 +1,53 @@
+{{- if .Values.detector.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sentinel-ebpf.fullname" . }}-detector
+  labels:
+    {{- include "sentinel-ebpf.labels" . | nindent 4 }}
+    app.kubernetes.io/component: detector
+spec:
+  replicas: {{- if .Values.detector.autoscaling.enabled }}{{ .Values.detector.autoscaling.minReplicas }}{{- else }}1{{- end }}
+  selector:
+    matchLabels:
+      {{- include "sentinel-ebpf.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: detector
+  template:
+    metadata:
+      labels:
+        {{- include "sentinel-ebpf.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: detector
+      annotations:
+        {{- toYaml .Values.detector.podAnnotations | nindent 8 }}
+    spec:
+      imagePullSecrets:
+        {{- toYaml .Values.global.imagePullSecrets | nindent 8 }}
+      containers:
+        - name: detector
+          image: "{{ .Values.detector.image.repository }}:{{ .Values.detector.image.tag }}"
+          imagePullPolicy: {{ .Values.detector.image.pullPolicy }}
+          env:
+            - name: DETECTOR_PORT
+              value: "{{ .Values.detector.service.port }}"
+          ports:
+            - containerPort: {{ .Values.detector.service.port }}
+              name: grpc
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.detector.resources | nindent 12 }}
+      nodeSelector:
+        {{- toYaml .Values.detector.nodeSelector | nindent 8 }}
+      tolerations:
+        {{- toYaml .Values.detector.tolerations | nindent 8 }}
+      affinity:
+        {{- toYaml .Values.detector.affinity | nindent 8 }}
+{{- end }}

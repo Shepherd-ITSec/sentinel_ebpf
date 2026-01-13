@@ -1,0 +1,13 @@
+# Helm ignore patterns
+.DS_Store
+.git/
+.gitignore
+*.swp
+*.bak
+*.tmp
+*.tgz
+charts/
+node_modules/
+vendor/
+*.iml
+.idea/

@@ -1,0 +1,14 @@
+apiVersion: v2
+name: sentinel-ebpf
+description: Minimal eBPF event streamer with pluggable detector
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - ebpf
+  - security
+  - falco
+home: https://example.com/sentinel-ebpf
+maintainers:
+  - name: sentinel-ebpf
+    email: dev@example.com
