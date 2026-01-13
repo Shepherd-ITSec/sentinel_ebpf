@@ -1,0 +1,11 @@
+rules:
+  - name: capture-all-writes
+    enabled: true
+    event: file_write
+    match:
+      pathPrefixes: ["/"]
+  - name: capture-all-reads
+    enabled: true
+    event: file_read
+    match:
+      pathPrefixes: ["/"]

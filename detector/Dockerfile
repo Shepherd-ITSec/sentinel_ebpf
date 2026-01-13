@@ -9,10 +9,9 @@ ENV PATH="/root/.local/bin:${PATH}"
 
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
-RUN uv sync --no-dev --frozen
-
+COPY agent detector /app/
 COPY events_pb2.py events_pb2_grpc.py /app/
-COPY detector /app/detector
+RUN uv sync --no-dev --frozen
 
 ENV VIRTUAL_ENV=/app/.venv
 ENV PATH="/app/.venv/bin:${PATH}"

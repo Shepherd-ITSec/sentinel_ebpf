@@ -21,6 +21,11 @@ data:
       mode: {{ .Values.agent.stream.mode | quote }}
       batchSize: {{ .Values.agent.stream.batchSize }}
       queueLength: {{ .Values.agent.stream.queueLength }}
+      file:
+        path: {{ .Values.agent.stream.file.path | quote }}
+        rotateMaxBytes: {{ .Values.agent.stream.file.rotateMaxBytes }}
+        rotateMaxFiles: {{ .Values.agent.stream.file.rotateMaxFiles }}
+        compress: {{ .Values.agent.stream.file.compress }}
     probes:
       fileWrites:
         enabled: {{ .Values.agent.probes.fileWrites.enabled }}
@@ -31,14 +36,4 @@ data:
           - "/"
         {{- end }}
   rules.yaml: |
-    rules:
-      - name: capture-all-writes
-        enabled: true
-        event: file_write
-        match:
-          pathPrefixes: ["/"]
-      - name: capture-all-reads
-        enabled: true
-        event: file_read
-        match:
-          pathPrefixes: ["/"]
+{{ (.Files.Get "rules.yaml") | nindent 4 }}

@@ -10,6 +10,7 @@ from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 import events_pb2
 import events_pb2_grpc
 from detector.config import DetectorConfig, load_config
+from scripts.replay_logs import replay  # type: ignore
 
 
 def _now_timestamp() -> timestamp_pb2.Timestamp:
@@ -71,7 +72,36 @@ async def serve():
 
 
 def main():
-  asyncio.run(serve())
+  import argparse
+
+  parser = argparse.ArgumentParser(description="Detector service with optional replay test mode")
+  parser.add_argument("--replay-log", help="Path to EVT1 log to replay to the detector")
+  parser.add_argument("--replay-pace", default="fast", choices=["fast", "realtime"], help="Replay pacing")
+  parser.add_argument("--replay-start-ms", type=int, default=None, help="Start timestamp ms")
+  parser.add_argument("--replay-end-ms", type=int, default=None, help="End timestamp ms")
+  args = parser.parse_args()
+
+  if args.replay_log:
+    # Start server in background loop and replay into it.
+    async def run_with_replay():
+      cfg = load_config()
+      logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+      server = grpc.aio.server()
+      events_pb2_grpc.add_DetectorServiceServicer_to_server(RuleBasedDetector(cfg), server)
+      health_svc = health.HealthServicer()
+      health_pb2_grpc.add_HealthServicer_to_server(health_svc, server)
+      health_svc.set("", health_pb2.HealthCheckResponse.SERVING)
+      listen_addr = f"[::]:{cfg.port}"
+      server.add_insecure_port(listen_addr)
+      logging.info("detector listening on %s", listen_addr)
+      await server.start()
+      # Replay from log into this server.
+      replay(args.replay_log, f"localhost:{cfg.port}", args.replay_pace, args.replay_start_ms, args.replay_end_ms)
+      await server.wait_for_termination()
+
+    asyncio.run(run_with_replay())
+  else:
+    asyncio.run(serve())
 
 
 if __name__ == "__main__":

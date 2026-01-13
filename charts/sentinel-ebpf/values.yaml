@@ -12,13 +12,24 @@ agent:
       enabled: false
       caSecret: ""
   stream:
-    mode: grpc # grpc | stdout
+    mode: grpc # grpc | stdout | file
     batchSize: 64
     queueLength: 1024
+    file:
+      path: /var/log/sentinel-ebpf/events.bin
+      rotateMaxBytes: 52428800
+      rotateMaxFiles: 3
+      compress: false
   probes:
     fileWrites:
       enabled: true
       pathPrefixes: []
+  storage:
+    pvc:
+      enabled: false
+      size: 1Gi
+      storageClassName: ""
+      accessModes: ["ReadWriteOnce"]
   resources: {}
   nodeSelector: {}
   tolerations: []
@@ -65,3 +76,16 @@ config:
     port: 9102
   health:
     port: 9101
+  rules:
+    # Default capture-all reads/writes
+    rules:
+      - name: capture-all-writes
+        enabled: true
+        event: file_write
+        match:
+          pathPrefixes: ["/"]
+      - name: capture-all-reads
+        enabled: true
+        event: file_read
+        match:
+          pathPrefixes: ["/"]
