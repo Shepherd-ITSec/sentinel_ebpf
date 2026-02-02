@@ -17,9 +17,12 @@ message EventEnvelope {
   string pod_name = 3;
   string namespace = 4;
   string container_id = 5;
-  // Generic event type and key/value data (strings) so rules can be authored later.
+  // Generic event type and ordered data vector (strings) for efficiency.
+  // Field order per event_type:
+  //   file_open: [filename, flags, comm, pid, tid, uid]
+  //   (future event types will document their field order)
   string event_type = 9;
-  map<string, string> data = 10;
+  repeated string data = 10;
   // Additional labels or enrichment.
   map<string, string> attributes = 20;
   // Kernel timestamp (nanoseconds).

@@ -1,22 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Deploy sentinel-ebpf agent in file-only mode for data collection.
+# Deploy sentinel-ebpf probe in file-only mode for data collection.
 # Defaults target the local chart; override via env:
 #   NAMESPACE=default
 #   CHART_PATH=./charts/sentinel-ebpf
-#   AGENT_IMAGE=ghcr.io/example/sentinel-ebpf-agent
-#   AGENT_TAG=latest
+#   PROBE_IMAGE=ghcr.io/example/sentinel-ebpf-probe
+#   PROBE_TAG=latest
 #   PVC_SIZE=5Gi
 #   PVC_CLASS=""
+#   CLUSTER_NAME=""
 
 NAMESPACE="${NAMESPACE:-default}"
 CHART_PATH="${CHART_PATH:-./charts/sentinel-ebpf}"
 RELEASE="${RELEASE:-sentinel-ebpf}"
-AGENT_IMAGE="${AGENT_IMAGE:-ghcr.io/example/sentinel-ebpf-agent}"
-AGENT_TAG="${AGENT_TAG:-latest}"
+PROBE_IMAGE="${PROBE_IMAGE:-ghcr.io/example/sentinel-ebpf-probe}"
+PROBE_TAG="${PROBE_TAG:-latest}"
 PVC_SIZE="${PVC_SIZE:-5Gi}"
 PVC_CLASS="${PVC_CLASS:-}"
+CLUSTER_NAME="${CLUSTER_NAME:-}"
 
 require() { command -v "$1" >/dev/null 2>&1 || { echo "missing: $1" >&2; exit 1; }; }
 
@@ -40,18 +42,19 @@ helm upgrade --install "${RELEASE}" "${CHART_PATH}" \
   --namespace "${NAMESPACE}" \
   --create-namespace \
   --set detector.enabled=false \
-  --set agent.stream.mode=file \
-  --set agent.stream.file.path=/var/log/sentinel-ebpf/events.bin \
-  --set agent.stream.file.rotateMaxBytes=52428800 \
-  --set agent.stream.file.rotateMaxFiles=5 \
-  --set agent.stream.file.compress=false \
-  --set agent.storage.pvc.enabled=true \
-  --set agent.storage.pvc.size="${PVC_SIZE}" \
-  --set agent.storage.pvc.storageClassName="${PVC_CLASS}" \
-  --set agent.image.repository="${AGENT_IMAGE}" \
-  --set agent.image.tag="${AGENT_TAG}"
+  --set probe.stream.mode=file \
+  --set probe.stream.file.path=/var/log/sentinel-ebpf/events.bin \
+  --set probe.stream.file.rotateMaxBytes=52428800 \
+  --set probe.stream.file.rotateMaxFiles=5 \
+  --set probe.stream.file.compress=false \
+  --set probe.storage.pvc.enabled=true \
+  --set probe.storage.pvc.size="${PVC_SIZE}" \
+  --set probe.storage.pvc.storageClassName="${PVC_CLASS}" \
+  --set probe.image.repository="${PROBE_IMAGE}" \
+  --set probe.image.tag="${PROBE_TAG}" \
+  --set probe.clusterName="${CLUSTER_NAME}"
 
 echo "[+] Waiting for DaemonSet rollout"
-kubectl -n "${NAMESPACE}" rollout status daemonset -l app.kubernetes.io/name=sentinel-ebpf,app.kubernetes.io/component=agent --timeout=180s
+kubectl -n "${NAMESPACE}" rollout status daemonset -l app.kubernetes.io/name=sentinel-ebpf,app.kubernetes.io/component=probe --timeout=180s
 
 echo "[+] Done. Logs will accumulate under /var/log/sentinel-ebpf/ in the mounted PVC."

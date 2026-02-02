@@ -9,7 +9,9 @@ ENV PATH="/root/.local/bin:${PATH}"
 
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
-COPY agent detector /app/
+COPY probe /app/probe
+COPY detector /app/detector
+COPY scripts /app/scripts
 COPY events_pb2.py events_pb2_grpc.py /app/
 RUN uv sync --no-dev --frozen
 

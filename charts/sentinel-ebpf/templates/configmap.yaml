@@ -5,7 +5,7 @@ metadata:
   labels:
     {{- include "sentinel-ebpf.labels" . | nindent 4 }}
 data:
-  agent-config.yaml: |
+  probe-config.yaml: |
     logLevel: {{ .Values.config.logLevel }}
     rulesFile: /etc/sentinel-ebpf/rules.yaml
     health:
@@ -14,23 +14,24 @@ data:
       enabled: {{ .Values.config.metrics.enabled }}
       port: {{ .Values.config.metrics.port }}
     grpc:
-      endpoint: {{ .Values.agent.grpc.endpoint | quote }}
-      tlsEnabled: {{ .Values.agent.grpc.tls.enabled }}
-      caSecret: {{ .Values.agent.grpc.tls.caSecret | quote }}
+      endpoint: {{ .Values.probe.grpc.endpoint | quote }}
+      tlsEnabled: {{ .Values.probe.grpc.tls.enabled }}
+      caSecret: {{ .Values.probe.grpc.tls.caSecret | quote }}
     stream:
-      mode: {{ .Values.agent.stream.mode | quote }}
-      batchSize: {{ .Values.agent.stream.batchSize }}
-      queueLength: {{ .Values.agent.stream.queueLength }}
+      mode: {{ .Values.probe.stream.mode | quote }}
+      batchSize: {{ .Values.probe.stream.batchSize }}
+      queueLength: {{ .Values.probe.stream.queueLength }}
+      ringBufferPages: {{ .Values.probe.stream.ringBufferPages }}
       file:
-        path: {{ .Values.agent.stream.file.path | quote }}
-        rotateMaxBytes: {{ .Values.agent.stream.file.rotateMaxBytes }}
-        rotateMaxFiles: {{ .Values.agent.stream.file.rotateMaxFiles }}
-        compress: {{ .Values.agent.stream.file.compress }}
+        path: {{ .Values.probe.stream.file.path | quote }}
+        rotateMaxBytes: {{ .Values.probe.stream.file.rotateMaxBytes }}
+        rotateMaxFiles: {{ .Values.probe.stream.file.rotateMaxFiles }}
+        compress: {{ .Values.probe.stream.file.compress }}
     probes:
       fileWrites:
-        enabled: {{ .Values.agent.probes.fileWrites.enabled }}
+        enabled: {{ .Values.probe.probes.fileWrites.enabled }}
         pathPrefixes:
-        {{- range .Values.agent.probes.fileWrites.pathPrefixes }}
+        {{- range .Values.probe.probes.fileWrites.pathPrefixes }}
           - {{ . | quote }}
         {{- else }}
           - "/"

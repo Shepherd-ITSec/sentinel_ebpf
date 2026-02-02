@@ -1,0 +1,96 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{geometry}
+\usepackage{setspace}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage[style=ieee]{biblatex}
+\usepackage{hyperref}
+\addbibresource{ref.bib}
+
+% Page setup
+\geometry{margin=2.5cm}
+\onehalfspacing
+
+% Title formatting - compact
+\titleformat{\section}
+{\normalfont\large\bfseries}
+{}
+{0em}
+{}
+\titleformat{\subsection}
+{\normalfont\normalsize\bfseries}
+{}
+{0em}
+{}
+% Itemize layout
+\setlist{leftmargin=*}
+
+% Remove page numbers
+\pagestyle{empty}
+
+\begin{document}
+
+% Project Title
+\begin{center}
+{\Large \textbf{Anomaly Detection on Cloud Native Systems using eBPF probes}}\\[0.3cm]
+% Student Information
+Felix Schäfer - s1147681 - Cyber Security and AI\\
+Supervised by: Prof. Lejla Batina, Zhuoran Liu\\
+% Second Examiner: \textit{[Second Examiner Name]}\\ % Uncomment if applicable
+Start and End Date: 01.02.2026 - 01.08.2026
+\end{center}
+\vspace{0.2cm}
+
+% Short Description
+\section*{Short Description}
+This project develops and validates a two component system that records predefined triggers with eBPF probes and applies an AI model to detect anomalous behavior in those recordings. The system will be deployed in a realistic cloud native environment and evaluated on real or carefully constructed datasets to measure detection quality and operational feasibility. The goal is not to reach state of the art accuracy, but to deliver a practical detector that is accurate enough to justify higher log levels and to provide forensic indicators for later human analysis. The expected outcome is a reproducible pipeline from probe design and data collection to model training, evaluation, and deployment guidance.
+
+% Research Questions
+\section*{Research Questions}
+\begin{itemize}
+    \item Can we use eBPF probes to extract meaningful information from cloud native systems?
+    \item Which AI methods are suitable for anomaly detection based on the collected data and constraints of online monitoring?
+    \item What detection accuracy and false positive rate can the system achieve under realistic workloads?
+    \item How does the trade off between model complexity and operational overhead affect practical deployment?
+    % Add or remove items as needed
+\end{itemize}
+
+% Methods
+\section*{Methods}
+\begin{itemize}
+    \item \textbf{Data Collection:} Define probe points and collect a dataset of cloud native system logs and events via eBPF probes. Acquire data from an industry partner if possible, otherwise construct a realistic synthetic workload that includes normal and anomalous behavior.
+    \item \textbf{Data Processing:} Normalize, enrich, and structure the collected data into features suitable for model training and evaluation, including temporal aggregation and context features where relevant.
+    \item \textbf{Model Training:} Train one or more anomaly detection models and document the effect of feature choices, model family, and training strategy on detection quality.
+    \item \textbf{Model Evaluation:} Evaluate the model using precision, recall, false positive rate, latency, and resource overhead. Compare baseline models to justify the chosen approach.
+\end{itemize}
+
+% Literature Overview
+\section*{Literature Overview}
+\begin{itemize}
+    \item \textbf{eBPF:} eBPF is a technology that allows you to write code that runs in the kernel of the operating system. We will use the bcc library for interaction. \cite{bcc2024}
+    \item \textbf{Cloud Native Systems:} Cloud native systems are systems that are designed to be deployed in a cloud environment. We will be using a Kubernetes k3s cluster to deploy the system. \cite{k3s2024}
+    \item \textbf{Anomaly Detection Models:} There are many different models for anomaly detection. I will consider models like the following:
+    \begin{itemize}
+        \item Anomaly detection in streaming data: A comparison and evaluation study \cite{IGLESIASVAZQUEZ2023120994}.
+        \item MoniLog: An Automated Log-Based Anomaly Detection System for Cloud Computing Infrastructures \cite{vervaet2023monilog}.
+        \item BERT based natural language processing (for path and file name analysis) \cite{devlin2018bert}.
+        \item River model collection (for online anomaly detection) \cite{montiel2021river}.
+    \end{itemize}
+\end{itemize}
+
+
+% Global Planning
+\section*{Rough Global Planning}
+\begin{itemize}
+    \item \textbf{Weeks 1-2:} Further literature review, refine research questions, define probe scope and success metrics.
+    \item \textbf{Weeks 3-6:} Implement and validate eBPF probes, set up the k3s environment, and secure access to data sources.
+    \item \textbf{Weeks 6-12:} Data collection, feature engineering, and baseline model experiments.
+    \item \textbf{Weeks 12-17:} Model evaluation, error analysis, and iteration on probes or model design based on findings.
+    \item \textbf{Weeks 17-24:} Write the thesis, integrate results, and finalize documentation and reproducibility materials.
+\end{itemize}
+
+\newpage
+\printbibliography
+\end{document}

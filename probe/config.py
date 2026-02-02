@@ -16,6 +16,7 @@ class StreamConfig:
   endpoint: str = "localhost:50051"
   batch_size: int = 64
   queue_length: int = 1024
+  ring_buffer_pages: int = 64
   tls_enabled: bool = False
   ca_secret: str = ""
   file_path: str = "/var/log/sentinel-ebpf/events.bin"
@@ -36,7 +37,7 @@ class AppConfig:
 
 
 def load_config() -> AppConfig:
-  path = os.environ.get("AGENT_CONFIG", "/etc/sentinel-ebpf/agent-config.yaml")
+  path = os.environ.get("PROBE_CONFIG", "/etc/sentinel-ebpf/probe-config.yaml")
   with open(path, "r", encoding="utf-8") as f:
     data = yaml.safe_load(f) or {}
 
@@ -51,6 +52,7 @@ def load_config() -> AppConfig:
     endpoint=grpc_cfg.get("endpoint", stream_cfg.get("endpoint", "localhost:50051")),
     batch_size=int(stream_cfg.get("batchSize", 64)),
     queue_length=int(stream_cfg.get("queueLength", 1024)),
+    ring_buffer_pages=int(stream_cfg.get("ringBufferPages", 64)),
     tls_enabled=grpc_cfg.get("tlsEnabled", False),
     ca_secret=grpc_cfg.get("caSecret", ""),
     file_path=stream_cfg.get("file", {}).get("path", "/var/log/sentinel-ebpf/events.bin"),

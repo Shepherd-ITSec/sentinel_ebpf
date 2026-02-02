@@ -54,6 +54,17 @@ def replay(path, target, pace, start_ms, end_ms):
     first_ts = None
     start_wall = None
     for obj in iter_events(Path(path), start_ms, end_ms):
+      # Handle both old map format and new array format for backward compatibility
+      data_field = obj.get("data", [])
+      if isinstance(data_field, dict):
+        # Old format: convert map to ordered array [filename, bytes, comm, pid, tid]
+        data_field = [
+          data_field.get("filename", ""),
+          data_field.get("bytes", ""),
+          data_field.get("comm", ""),
+          data_field.get("pid", ""),
+          data_field.get("tid", ""),
+        ]
       env = events_pb2.EventEnvelope(
         event_id=obj.get("event_id", ""),
         hostname=obj.get("hostname", ""),
@@ -62,7 +73,8 @@ def replay(path, target, pace, start_ms, end_ms):
         container_id=obj.get("container_id", ""),
         ts_unix_nano=int(obj.get("ts_unix_nano", 0)),
         event_type=obj.get("event_type", ""),
-        data=obj.get("data", {}),
+        data=data_field,
+        attributes=dict(obj.get("attributes", {}) or {}),
       )
       if pace == "realtime":
         ts = env.ts_unix_nano / 1_000_000_000

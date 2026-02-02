@@ -1,3 +1,4 @@
+import ctypes
 import gzip
 import json
 import logging
@@ -18,78 +19,241 @@ from bcc import BPF
 
 import events_pb2
 import events_pb2_grpc
-from agent.config import AppConfig, load_config
-from agent.rules import RuleEngine
+from probe.config import AppConfig, load_config
+from probe.rules import RuleEngine
+
+# BPF-side rule limits. Keep in sync with BPF program definitions.
+MAX_RULES = 64
+MAX_PREFIX_LEN = 128
+COMM_LEN = 16
+
+
+class BpfRule(ctypes.Structure):
+  _fields_ = [
+    ("enabled", ctypes.c_uint32),
+    ("event_type", ctypes.c_uint32),  # 0 read, 1 write
+    ("prefix_len", ctypes.c_uint32),
+    ("comm_len", ctypes.c_uint32),
+    ("pid", ctypes.c_uint32),
+    ("tid", ctypes.c_uint32),
+    ("uid", ctypes.c_uint32),
+    ("prefix", ctypes.c_char * MAX_PREFIX_LEN),
+    ("comm", ctypes.c_char * COMM_LEN),
+  ]
 
 
 BPF_PROGRAM = r"""
 #include <uapi/linux/ptrace.h>
+#include <linux/dcache.h>
+#include <linux/path.h>
 #include <linux/fs.h>
+
+#define MAX_RULES 64
+#define MAX_PREFIX_LEN 128
+#define COMM_LEN 16
+#define RINGBUF_PAGES __RINGBUF_PAGES__
+
+struct rule_t {
+    u32 enabled;
+    u32 event_type; // 0 open
+    u32 prefix_len;
+    u32 comm_len;
+    u32 pid;
+    u32 tid;
+    u32 uid;
+    char prefix[MAX_PREFIX_LEN];
+    char comm[COMM_LEN];
+};
 
 struct data_t {
     u64 ts;
     u32 pid;
     u32 tid;
-    u32 op; // 0 read, 1 write
-    u64 bytes;
-    char comm[16];
+    u32 uid;
+    u32 flags;
+    char comm[COMM_LEN];
     char filename[256];
 };
 
-BPF_PERF_OUTPUT(events);
+BPF_ARRAY(rules, struct rule_t, MAX_RULES);
+BPF_ARRAY(rule_count, u32, 1);
+BPF_RINGBUF_OUTPUT(events, RINGBUF_PAGES);
 
-int trace_write(struct pt_regs *ctx, struct file *file, const char __user *buf, size_t count, loff_t *pos) {
-    struct data_t data = {};
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    data.pid = pid_tgid >> 32;
-    data.tid = pid_tgid;
-    data.op = 1;
-    data.bytes = count;
-    data.ts = bpf_ktime_get_ns();
-    bpf_get_current_comm(&data.comm, sizeof(data.comm));
-
-    if (file) {
-        struct dentry *de = file->f_path.dentry;
-        if (de) {
-            bpf_probe_read_kernel_str(&data.filename, sizeof(data.filename), de->d_name.name);
+static __inline int comm_matches(struct data_t *data, const struct rule_t *rule) {
+    if (rule->comm_len == 0) {
+        return 1;
+    }
+#pragma unroll
+    for (int i = 0; i < COMM_LEN; i++) {
+        if (i >= rule->comm_len) {
+            return 1;
+        }
+        if (data->comm[i] != rule->comm[i]) {
+            return 0;
+        }
+        if (data->comm[i] == 0) {
+            return 0;
         }
     }
+    return 1;
+}
 
-    events.perf_submit(ctx, &data, sizeof(data));
+static __inline int prefix_matches(struct data_t *data, const struct rule_t *rule) {
+    if (rule->prefix_len == 0) {
+        return 1;
+    }
+#pragma unroll
+    for (int i = 0; i < MAX_PREFIX_LEN; i++) {
+        if (i >= rule->prefix_len) {
+            return 1;
+        }
+        if (data->filename[i] != rule->prefix[i]) {
+            return 0;
+        }
+        if (data->filename[i] == 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static __inline int rule_allows(struct data_t *data) {
+    u32 idx = 0;
+    u32 *count = rule_count.lookup(&idx);
+    if (!count || *count == 0) {
+        return 1;
+    }
+#pragma unroll
+    for (int i = 0; i < MAX_RULES; i++) {
+        if (i >= *count) {
+            break;
+        }
+        u32 key = i;
+        struct rule_t *rule = rules.lookup(&key);
+        if (!rule) {
+            continue;
+        }
+        if (!rule->enabled) {
+            continue;
+        }
+        if (rule->event_type != 0) {
+            continue;
+        }
+        if (rule->pid != 0 && rule->pid != data->pid) {
+            continue;
+        }
+        if (rule->tid != 0 && rule->tid != data->tid) {
+            continue;
+        }
+        if (rule->uid != 0 && rule->uid != data->uid) {
+            continue;
+        }
+        if (!comm_matches(data, rule)) {
+            continue;
+        }
+        if (!prefix_matches(data, rule)) {
+            continue;
+        }
+        return 1;
+    }
     return 0;
 }
 
-int trace_read(struct pt_regs *ctx, struct file *file, char __user *buf, size_t count, loff_t *pos) {
+int trace_open(struct pt_regs *ctx, const char __user *filename, int flags) {
     struct data_t data = {};
     u64 pid_tgid = bpf_get_current_pid_tgid();
     data.pid = pid_tgid >> 32;
     data.tid = pid_tgid;
-    data.op = 0;
-    data.bytes = count;
+    data.uid = bpf_get_current_uid_gid();
+    data.flags = flags;
     data.ts = bpf_ktime_get_ns();
     bpf_get_current_comm(&data.comm, sizeof(data.comm));
 
-    if (file) {
-        struct dentry *de = file->f_path.dentry;
-        if (de) {
-            bpf_probe_read_kernel_str(&data.filename, sizeof(data.filename), de->d_name.name);
-        }
+    if (filename) {
+        bpf_probe_read_user_str(&data.filename, sizeof(data.filename), filename);
     }
 
-    events.perf_submit(ctx, &data, sizeof(data));
+    if (!rule_allows(&data)) {
+        return 0;
+    }
+
+    events.ringbuf_output(&data, sizeof(data), 0);
+    return 0;
+}
+
+int trace_openat(struct pt_regs *ctx, int dfd, const char __user *filename, int flags) {
+    struct data_t data = {};
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    data.pid = pid_tgid >> 32;
+    data.tid = pid_tgid;
+    data.uid = bpf_get_current_uid_gid();
+    data.flags = flags;
+    data.ts = bpf_ktime_get_ns();
+    bpf_get_current_comm(&data.comm, sizeof(data.comm));
+
+    if (filename) {
+        bpf_probe_read_user_str(&data.filename, sizeof(data.filename), filename);
+    }
+
+    if (!rule_allows(&data)) {
+        return 0;
+    }
+
+    events.ringbuf_output(&data, sizeof(data), 0);
     return 0;
 }
 """
 
 
+def _build_bpf_program(ring_buffer_pages: int) -> str:
+  pages = max(1, int(ring_buffer_pages))
+  return BPF_PROGRAM.replace("__RINGBUF_PAGES__", str(pages))
+
+
 def _hostname_metadata():
   return {
     "hostname": socket.gethostname(),
+    "cluster": os.environ.get("CLUSTER_NAME", ""),
     "node": os.environ.get("NODE_NAME", ""),
     "pod": os.environ.get("POD_NAME", ""),
     "namespace": os.environ.get("POD_NAMESPACE", ""),
     "container_id": os.environ.get("CONTAINER_ID", ""),
   }
+
+
+def _event_attributes(meta: dict) -> dict:
+  attrs = {}
+  cluster = meta.get("cluster", "")
+  node = meta.get("node", "")
+  if cluster:
+    attrs["cluster"] = cluster
+  if node:
+    attrs["node"] = node
+  return attrs
+
+
+def _decode_open_flags(flags: int) -> str:
+  flag_names = []
+  if flags & os.O_RDONLY:
+    flag_names.append("O_RDONLY")
+  if flags & os.O_WRONLY:
+    flag_names.append("O_WRONLY")
+  if flags & os.O_RDWR:
+    flag_names.append("O_RDWR")
+  for name in [
+    "O_CREAT",
+    "O_TRUNC",
+    "O_APPEND",
+    "O_CLOEXEC",
+    "O_EXCL",
+    "O_DIRECTORY",
+    "O_NOFOLLOW",
+    "O_SYNC",
+    "O_DSYNC",
+  ]:
+    if hasattr(os, name) and (flags & getattr(os, name)):
+      flag_names.append(name)
+  return "|".join(flag_names) if flag_names else "0"
 
 
 class GrpcStreamer:
@@ -190,6 +354,7 @@ class FileSink:
     self._open()
 
   def publish(self, env: events_pb2.EventEnvelope):
+    # Serialize data as ordered array (more efficient than map)
     payload = {
       "event_id": env.event_id,
       "ts_unix_nano": env.ts_unix_nano,
@@ -198,7 +363,8 @@ class FileSink:
       "namespace": env.namespace,
       "container_id": env.container_id,
       "event_type": env.event_type,
-      "data": dict(env.data),
+      "data": list(env.data),  # Ordered vector
+      "attributes": dict(env.attributes),
     }
     blob = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     record = self.MAGIC + struct.pack("<I", len(blob)) + blob
@@ -241,14 +407,16 @@ def start_health_server(port: int) -> HTTPServer:
 class ProbeRunner:
   def __init__(self, cfg: AppConfig):
     self.cfg = cfg
-    self.bpf = BPF(text=BPF_PROGRAM)
-    self.bpf.attach_kprobe(event="vfs_write", fn_name="trace_write")
-    self.bpf.attach_kprobe(event="vfs_read", fn_name="trace_read")
+    self.bpf = BPF(text=_build_bpf_program(cfg.stream.ring_buffer_pages))
+    sys_prefix = self.bpf.get_syscall_prefix().decode()
+    self.bpf.attach_kprobe(event=f"{sys_prefix}open", fn_name="trace_open")
+    self.bpf.attach_kprobe(event=f"{sys_prefix}openat", fn_name="trace_openat")
     self.streamer = GrpcStreamer(cfg)
     self.filesink: Optional[FileSink] = None
     self._stop = threading.Event()
     self._metadata = _hostname_metadata()
     self.rule_engine = RuleEngine(cfg.rules_file)
+    self._load_rules_into_bpf()
     if self.cfg.stream.mode == "file":
       self.filesink = FileSink(
         path=self.cfg.stream.file_path,
@@ -257,15 +425,68 @@ class ProbeRunner:
         compress=self.cfg.stream.compress,
       )
 
+  def _compile_rules(self):
+    compiled = []
+    for rule in self.rule_engine.rules:
+      if not rule.enabled:
+        continue
+      if rule.event != "file_open":
+        continue
+      event_type = 0
+      prefixes = rule.match.path_prefixes or [""]
+      comms = rule.match.comms or [""]
+      pids = rule.match.pids or [0]
+      tids = rule.match.tids or [0]
+      uids = rule.match.uids or [0]
+      for prefix in prefixes:
+        for comm in comms:
+          for pid in pids:
+            for tid in tids:
+              for uid in uids:
+                compiled.append(
+                  {
+                    "event_type": event_type,
+                    "prefix": prefix,
+                    "comm": comm,
+                    "pid": pid,
+                    "tid": tid,
+                    "uid": uid,
+                  }
+                )
+    return compiled
+
+  def _load_rules_into_bpf(self):
+    compiled = self._compile_rules()
+    count = min(len(compiled), MAX_RULES)
+    rules_map = self.bpf["rules"]
+    count_map = self.bpf["rule_count"]
+    count_map[ctypes.c_int(0)] = ctypes.c_uint(count)
+    for idx in range(count):
+      item = compiled[idx]
+      prefix_bytes = item["prefix"].encode("utf-8")[:MAX_PREFIX_LEN]
+      comm_bytes = item["comm"].encode("utf-8")[:COMM_LEN]
+      entry = BpfRule(
+        enabled=1,
+        event_type=item["event_type"],
+        prefix_len=len(prefix_bytes),
+        comm_len=len(comm_bytes),
+        pid=item["pid"],
+        tid=item["tid"],
+        uid=item["uid"],
+        prefix=prefix_bytes,
+        comm=comm_bytes,
+      )
+      rules_map[ctypes.c_int(idx)] = entry
+
   def _handle_event(self, cpu, data, size):  # noqa: ARG002
     event = self.bpf["events"].event(data)
     filename = event.filename.decode(errors="ignore").rstrip("\x00")
     comm = event.comm.decode(errors="ignore").rstrip("\x00")
-    event_type = "file_read" if event.op == 0 else "file_write"
+    event_type = "file_open"
 
-    if not self.rule_engine.allow(event_type, filename, comm):
-      return
-
+    # Ordered vector: [filename, flags, comm, pid, tid, uid] for file_open
+    attributes = _event_attributes(self._metadata)
+    attributes["open_flags"] = _decode_open_flags(int(event.flags))
     env = events_pb2.EventEnvelope(
       event_id=str(uuid.uuid4()),
       hostname=self._metadata["hostname"],
@@ -274,13 +495,8 @@ class ProbeRunner:
       container_id=self._metadata["container_id"],
       ts_unix_nano=event.ts,
       event_type=event_type,
-      data={
-        "filename": filename,
-        "bytes": str(event.bytes),
-        "comm": comm,
-        "pid": str(event.pid),
-        "tid": str(event.tid),
-      },
+      data=[filename, str(event.flags), comm, str(event.pid), str(event.tid), str(event.uid)],
+      attributes=attributes,
     )
 
     if self.cfg.stream.mode == "stdout":
@@ -291,7 +507,8 @@ class ProbeRunner:
         "hostname": env.hostname,
         "pod": env.pod_name,
         "namespace": env.namespace,
-        "data": env.data,
+        "attributes": dict(env.attributes),
+        "data": list(env.data),  # Ordered vector
       }
       print(json.dumps(payload))
     elif self.cfg.stream.mode == "file" and self.filesink:
@@ -301,10 +518,10 @@ class ProbeRunner:
 
   def run(self):
     self.streamer.start()
-    self.bpf["events"].open_perf_buffer(self._handle_event)
+    self.bpf["events"].open_ring_buffer(self._handle_event)
     while not self._stop.is_set():
       try:
-        self.bpf.perf_buffer_poll(timeout=1000)
+        self.bpf.ring_buffer_poll(timeout=1000)
       except KeyboardInterrupt:
         self.stop()
       except Exception as exc:  # pylint: disable=broad-except

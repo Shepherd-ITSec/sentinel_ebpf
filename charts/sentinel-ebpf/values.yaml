@@ -1,9 +1,10 @@
 global:
   imagePullSecrets: []
 
-agent:
+probe:
+  clusterName: ""
   image:
-    repository: ghcr.io/example/sentinel-ebpf-agent
+    repository: ghcr.io/example/sentinel-ebpf-probe
     tag: "latest"
     pullPolicy: IfNotPresent
   grpc:
@@ -15,6 +16,7 @@ agent:
     mode: grpc # grpc | stdout | file
     batchSize: 64
     queueLength: 1024
+    ringBufferPages: 64
     file:
       path: /var/log/sentinel-ebpf/events.bin
       rotateMaxBytes: 52428800
@@ -77,15 +79,10 @@ config:
   health:
     port: 9101
   rules:
-    # Default capture-all reads/writes
+    # Default capture-all opens
     rules:
-      - name: capture-all-writes
+      - name: capture-all-opens
         enabled: true
-        event: file_write
-        match:
-          pathPrefixes: ["/"]
-      - name: capture-all-reads
-        enabled: true
-        event: file_read
+        event: file_open
         match:
           pathPrefixes: ["/"]
