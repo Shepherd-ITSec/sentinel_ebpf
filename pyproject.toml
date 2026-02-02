@@ -1,13 +1,24 @@
 [project]
 name = "sentinel-ebpf"
 version = "0.1.0"
-description = "Falco-like eBPF agent and detector"
-requires-python = ">=3.11"
+description = "Falco-like eBPF probe and detector"
+requires-python = ">=3.9,<3.13"
 dependencies = [
-  "bcc==0.1.10",
   "grpcio==1.76.0",
   "grpcio-tools==1.76.0",
+  "grpcio-health-checking==1.76.0",
+  "protobuf>=4.21.0",
   "PyYAML==6.0.2",
+  "numpy>=1.24.0,<2.0.0",
+  "river>=0.21.0",
+  "torch>=2.2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0.0",
+  "pytest-asyncio>=0.21.0",
+  "pytest-mock>=3.10.0",
 ]
 
 [build-system]

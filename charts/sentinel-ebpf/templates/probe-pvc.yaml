@@ -1,0 +1,17 @@
+{{- if .Values.probe.storage.pvc.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "sentinel-ebpf.fullname" . }}-logs
+  labels:
+    {{- include "sentinel-ebpf.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.probe.storage.pvc.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.probe.storage.pvc.size }}
+  {{- if .Values.probe.storage.pvc.storageClassName }}
+  storageClassName: {{ .Values.probe.storage.pvc.storageClassName }}
+  {{- end }}
+{{- end }}

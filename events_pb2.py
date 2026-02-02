@@ -26,7 +26,7 @@ from google.protobuf import empty_pb2 as google_dot_protobuf_dot_empty__pb2
 from google.protobuf import timestamp_pb2 as google_dot_protobuf_dot_timestamp__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0c\x65vents.proto\x12\x0bsentinel.v1\x1a\x1bgoogle/protobuf/empty.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xec\x02\n\rEventEnvelope\x12\x10\n\x08\x65vent_id\x18\x01 \x01(\t\x12\x10\n\x08hostname\x18\x02 \x01(\t\x12\x10\n\x08pod_name\x18\x03 \x01(\t\x12\x11\n\tnamespace\x18\x04 \x01(\t\x12\x14\n\x0c\x63ontainer_id\x18\x05 \x01(\t\x12\x12\n\nevent_type\x18\t \x01(\t\x12\x32\n\x04\x64\x61ta\x18\n \x03(\x0b\x32$.sentinel.v1.EventEnvelope.DataEntry\x12>\n\nattributes\x18\x14 \x03(\x0b\x32*.sentinel.v1.EventEnvelope.AttributesEntry\x12\x14\n\x0cts_unix_nano\x18\x1e \x01(\x04\x1a+\n\tDataEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\x1a\x31\n\x0f\x41ttributesEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"}\n\x11\x44\x65tectionResponse\x12\x10\n\x08\x65vent_id\x18\x01 \x01(\t\x12\x0f\n\x07\x61nomaly\x18\x02 \x01(\x08\x12\x0e\n\x06reason\x18\x03 \x01(\t\x12\r\n\x05score\x18\x04 \x01(\x01\x12&\n\x02ts\x18\x05 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\"\xa7\x01\n\rAnomalyReport\x12\x10\n\x08\x65vent_id\x18\x01 \x01(\t\x12\x0e\n\x06reason\x18\x02 \x01(\t\x12\r\n\x05score\x18\x03 \x01(\x01\x12\x36\n\x06labels\x18\x04 \x03(\x0b\x32&.sentinel.v1.AnomalyReport.LabelsEntry\x1a-\n\x0bLabelsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\x32\xa6\x01\n\x0f\x44\x65tectorService\x12N\n\x0cStreamEvents\x12\x1a.sentinel.v1.EventEnvelope\x1a\x1e.sentinel.v1.DetectionResponse(\x01\x30\x01\x12\x43\n\rReportAnomaly\x12\x1a.sentinel.v1.AnomalyReport\x1a\x16.google.protobuf.EmptyB\x05P\x01\xf8\x01\x01\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0c\x65vents.proto\x12\x0bsentinel.v1\x1a\x1bgoogle/protobuf/empty.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x99\x02\n\rEventEnvelope\x12\x10\n\x08\x65vent_id\x18\x01 \x01(\t\x12\x10\n\x08hostname\x18\x02 \x01(\t\x12\x10\n\x08pod_name\x18\x03 \x01(\t\x12\x11\n\tnamespace\x18\x04 \x01(\t\x12\x14\n\x0c\x63ontainer_id\x18\x05 \x01(\t\x12\x12\n\nevent_type\x18\t \x01(\t\x12\x0c\n\x04\x64\x61ta\x18\n \x03(\t\x12>\n\nattributes\x18\x14 \x03(\x0b\x32*.sentinel.v1.EventEnvelope.AttributesEntry\x12\x14\n\x0cts_unix_nano\x18\x1e \x01(\x04\x1a\x31\n\x0f\x41ttributesEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"}\n\x11\x44\x65tectionResponse\x12\x10\n\x08\x65vent_id\x18\x01 \x01(\t\x12\x0f\n\x07\x61nomaly\x18\x02 \x01(\x08\x12\x0e\n\x06reason\x18\x03 \x01(\t\x12\r\n\x05score\x18\x04 \x01(\x01\x12&\n\x02ts\x18\x05 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\"\xa7\x01\n\rAnomalyReport\x12\x10\n\x08\x65vent_id\x18\x01 \x01(\t\x12\x0e\n\x06reason\x18\x02 \x01(\t\x12\r\n\x05score\x18\x03 \x01(\x01\x12\x36\n\x06labels\x18\x04 \x03(\x0b\x32&.sentinel.v1.AnomalyReport.LabelsEntry\x1a-\n\x0bLabelsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\x32\xa6\x01\n\x0f\x44\x65tectorService\x12N\n\x0cStreamEvents\x12\x1a.sentinel.v1.EventEnvelope\x1a\x1e.sentinel.v1.DetectionResponse(\x01\x30\x01\x12\x43\n\rReportAnomaly\x12\x1a.sentinel.v1.AnomalyReport\x1a\x16.google.protobuf.EmptyB\x05P\x01\xf8\x01\x01\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -34,24 +34,20 @@ _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'events_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   _globals['DESCRIPTOR']._loaded_options = None
   _globals['DESCRIPTOR']._serialized_options = b'P\001\370\001\001'
-  _globals['_EVENTENVELOPE_DATAENTRY']._loaded_options = None
-  _globals['_EVENTENVELOPE_DATAENTRY']._serialized_options = b'8\001'
   _globals['_EVENTENVELOPE_ATTRIBUTESENTRY']._loaded_options = None
   _globals['_EVENTENVELOPE_ATTRIBUTESENTRY']._serialized_options = b'8\001'
   _globals['_ANOMALYREPORT_LABELSENTRY']._loaded_options = None
   _globals['_ANOMALYREPORT_LABELSENTRY']._serialized_options = b'8\001'
   _globals['_EVENTENVELOPE']._serialized_start=92
-  _globals['_EVENTENVELOPE']._serialized_end=456
-  _globals['_EVENTENVELOPE_DATAENTRY']._serialized_start=362
-  _globals['_EVENTENVELOPE_DATAENTRY']._serialized_end=405
-  _globals['_EVENTENVELOPE_ATTRIBUTESENTRY']._serialized_start=407
-  _globals['_EVENTENVELOPE_ATTRIBUTESENTRY']._serialized_end=456
-  _globals['_DETECTIONRESPONSE']._serialized_start=458
-  _globals['_DETECTIONRESPONSE']._serialized_end=583
-  _globals['_ANOMALYREPORT']._serialized_start=586
-  _globals['_ANOMALYREPORT']._serialized_end=753
-  _globals['_ANOMALYREPORT_LABELSENTRY']._serialized_start=708
-  _globals['_ANOMALYREPORT_LABELSENTRY']._serialized_end=753
-  _globals['_DETECTORSERVICE']._serialized_start=756
-  _globals['_DETECTORSERVICE']._serialized_end=922
+  _globals['_EVENTENVELOPE']._serialized_end=373
+  _globals['_EVENTENVELOPE_ATTRIBUTESENTRY']._serialized_start=324
+  _globals['_EVENTENVELOPE_ATTRIBUTESENTRY']._serialized_end=373
+  _globals['_DETECTIONRESPONSE']._serialized_start=375
+  _globals['_DETECTIONRESPONSE']._serialized_end=500
+  _globals['_ANOMALYREPORT']._serialized_start=503
+  _globals['_ANOMALYREPORT']._serialized_end=670
+  _globals['_ANOMALYREPORT_LABELSENTRY']._serialized_start=625
+  _globals['_ANOMALYREPORT_LABELSENTRY']._serialized_end=670
+  _globals['_DETECTORSERVICE']._serialized_start=673
+  _globals['_DETECTORSERVICE']._serialized_end=839
 # @@protoc_insertion_point(module_scope)

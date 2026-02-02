@@ -29,9 +29,9 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
 {{- define "sentinel-ebpf.serviceAccountName" -}}
-{{- if .Values.agent.serviceAccount.create -}}
-{{- default (include "sentinel-ebpf.fullname" .) .Values.agent.serviceAccount.name -}}
+{{- if .Values.probe.serviceAccount.create -}}
+{{- default (include "sentinel-ebpf.fullname" .) .Values.probe.serviceAccount.name -}}
 {{- else -}}
-{{- default "default" .Values.agent.serviceAccount.name -}}
+{{- default "default" .Values.probe.serviceAccount.name -}}
 {{- end -}}
 {{- end -}}

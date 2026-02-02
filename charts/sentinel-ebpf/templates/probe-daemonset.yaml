@@ -1,41 +1,42 @@
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: {{ include "sentinel-ebpf.fullname" . }}-agent
+  name: {{ include "sentinel-ebpf.fullname" . }}-probe
   labels:
     {{- include "sentinel-ebpf.labels" . | nindent 4 }}
+    app.kubernetes.io/component: probe
 spec:
   selector:
     matchLabels:
       {{- include "sentinel-ebpf.selectorLabels" . | nindent 6 }}
-      app.kubernetes.io/component: agent
+      app.kubernetes.io/component: probe
   template:
     metadata:
       labels:
         {{- include "sentinel-ebpf.selectorLabels" . | nindent 8 }}
-        app.kubernetes.io/component: agent
+        app.kubernetes.io/component: probe
       annotations:
-        {{- toYaml .Values.agent.podAnnotations | nindent 8 }}
+        {{- toYaml .Values.probe.podAnnotations | nindent 8 }}
     spec:
       serviceAccountName: {{ include "sentinel-ebpf.serviceAccountName" . }}
       hostPID: true
       imagePullSecrets:
         {{- toYaml .Values.global.imagePullSecrets | nindent 8 }}
       containers:
-        - name: agent
-          image: "{{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag }}"
-          imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
+        - name: probe
+          image: "{{ .Values.probe.image.repository }}:{{ .Values.probe.image.tag }}"
+          imagePullPolicy: {{ .Values.probe.image.pullPolicy }}
           securityContext:
-            {{- toYaml .Values.agent.securityContext | nindent 12 }}
+            {{- toYaml .Values.probe.securityContext | nindent 12 }}
           volumeMounts:
             - name: config
-              mountPath: /etc/sentinel-ebpf/agent-config.yaml
-              subPath: agent-config.yaml
+              mountPath: /etc/sentinel-ebpf/probe-config.yaml
+              subPath: probe-config.yaml
             - name: rules
               mountPath: /etc/sentinel-ebpf/rules.yaml
               subPath: rules.yaml
             - name: logs
-              mountPath: {{ regexReplaceAll "/[^/]+$" .Values.agent.stream.file.path "" | default "/var/log/sentinel-ebpf" | quote }}
+              mountPath: {{ regexReplaceAll "/[^/]+$" .Values.probe.stream.file.path "" | default "/var/log/sentinel-ebpf" | quote }}
             - name: modules
               mountPath: /lib/modules
               readOnly: true
@@ -43,8 +44,10 @@ spec:
               mountPath: /sys/kernel/debug
               readOnly: true
           env:
-            - name: AGENT_CONFIG
-              value: /etc/sentinel-ebpf/agent-config.yaml
+            - name: PROBE_CONFIG
+              value: /etc/sentinel-ebpf/probe-config.yaml
+            - name: CLUSTER_NAME
+              value: {{ .Values.probe.clusterName | quote }}
             - name: NODE_NAME
               valueFrom:
                 fieldRef:
@@ -75,13 +78,13 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 10
           resources:
-            {{- toYaml .Values.agent.resources | nindent 12 }}
+            {{- toYaml .Values.probe.resources | nindent 12 }}
       nodeSelector:
-        {{- toYaml .Values.agent.nodeSelector | nindent 8 }}
+        {{- toYaml .Values.probe.nodeSelector | nindent 8 }}
       tolerations:
-        {{- toYaml .Values.agent.tolerations | nindent 8 }}
+        {{- toYaml .Values.probe.tolerations | nindent 8 }}
       affinity:
-        {{- toYaml .Values.agent.affinity | nindent 8 }}
+        {{- toYaml .Values.probe.affinity | nindent 8 }}
       volumes:
         - name: config
           configMap:
@@ -90,7 +93,7 @@ spec:
           configMap:
             name: {{ include "sentinel-ebpf.fullname" . }}-config
         - name: logs
-          {{- if .Values.agent.storage.pvc.enabled }}
+          {{- if .Values.probe.storage.pvc.enabled }}
           persistentVolumeClaim:
             claimName: {{ include "sentinel-ebpf.fullname" . }}-logs
           {{- else }}

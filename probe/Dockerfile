@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends bpfcc-tools linux-headers-amd64 ca-certificates curl && \
+    apt-get install -y --no-install-recommends bpfcc-tools python3-bpfcc linux-headers-amd64 ca-certificates curl && \
     rm -rf /var/lib/apt/lists/*
 
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -9,7 +9,8 @@ ENV PATH="/root/.local/bin:${PATH}"
 
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
-COPY agent detector /app/
+COPY probe /app/probe
+COPY detector /app/detector
 COPY events_pb2.py events_pb2_grpc.py /app/
 RUN uv sync --no-dev --frozen
 
@@ -18,4 +19,4 @@ ENV PATH="/app/.venv/bin:${PATH}"
 ENV PYTHONPATH=/app
 RUN mkdir -p /etc/sentinel-ebpf
 
-ENTRYPOINT ["python", "-m", "agent.probe_runner"]
+ENTRYPOINT ["python", "-m", "probe.probe_runner"]
