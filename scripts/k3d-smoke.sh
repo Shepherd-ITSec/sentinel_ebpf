@@ -79,6 +79,18 @@ fi
 # Handle image building/pulling
 if [[ "${BUILD_IMAGES}" == "true" ]]; then
   info "Building images locally (--build flag provided)"
+  # When building locally, use lowercase local tags (Docker requires lowercase)
+  # Registry names with uppercase are fine for pulling, but not for building
+  LOCAL_PROBE_IMAGE="${PROBE_IMAGE}"
+  LOCAL_DETECTOR_IMAGE="${DETECTOR_IMAGE}"
+  # If using registry names, convert to local lowercase tags for building
+  if [[ "${PROBE_IMAGE}" == *"/"* ]]; then
+    LOCAL_PROBE_IMAGE="sentinel-ebpf-probe:latest"
+  fi
+  if [[ "${DETECTOR_IMAGE}" == *"/"* ]]; then
+    LOCAL_DETECTOR_IMAGE="sentinel-ebpf-detector:latest"
+  fi
+  
   # Prefer BuildKit only if buildx binary exists and works.
   BUILDX_BIN="${BUILDX_BIN:-/usr/local/lib/docker/cli-plugins/docker-buildx}"
   if [[ -x "$BUILDX_BIN" ]] && docker buildx version >/dev/null 2>&1; then
@@ -88,9 +100,12 @@ if [[ "${BUILD_IMAGES}" == "true" ]]; then
     info "Buildx missing or broken; forcing legacy builder (DOCKER_BUILDKIT=0)"
     export DOCKER_BUILDKIT=0
   fi
-  log_debug "H1" "build_start" "{\"builder\":\"$(if [[ ${DOCKER_BUILDKIT:-0} -eq 1 ]]; then echo buildkit; else echo legacy; fi)\",\"probe_image\":\"${PROBE_IMAGE}\",\"detector_image\":\"${DETECTOR_IMAGE}\"}"
-  docker build -f probe/Dockerfile -t "${PROBE_IMAGE}" .
-  docker build -f detector/Dockerfile -t "${DETECTOR_IMAGE}" .
+  log_debug "H1" "build_start" "{\"builder\":\"$(if [[ ${DOCKER_BUILDKIT:-0} -eq 1 ]]; then echo buildkit; else echo legacy; fi)\",\"probe_image\":\"${LOCAL_PROBE_IMAGE}\",\"detector_image\":\"${LOCAL_DETECTOR_IMAGE}\"}"
+  docker build -f probe/Dockerfile -t "${LOCAL_PROBE_IMAGE}" .
+  docker build -f detector/Dockerfile -t "${LOCAL_DETECTOR_IMAGE}" .
+  # Update image variables to use local tags for k3d import
+  PROBE_IMAGE="${LOCAL_PROBE_IMAGE}"
+  DETECTOR_IMAGE="${LOCAL_DETECTOR_IMAGE}"
   unset DOCKER_BUILDKIT
 else
   info "Checking for images locally or pulling from registry"
