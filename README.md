@@ -29,16 +29,16 @@ uv run make proto
 
 Build images (Dockerfiles use uv internally):
 ```bash
-docker build -t ghcr.io/Shepherd-ITSec/sentinel-ebpf-probe:latest ./probe
-docker build -t ghcr.io/Shepherd-ITSec/sentinel-ebpf-detector:latest ./detector
-docker build -t ghcr.io/Shepherd-ITSec/sentinel-ebpf-ui:latest ./ui
+docker build -t ghcr.io/shepherd-itsec/sentinel-ebpf-probe:latest ./probe
+docker build -t ghcr.io/shepherd-itsec/sentinel-ebpf-detector:latest ./detector
+docker build -t ghcr.io/shepherd-itsec/sentinel-ebpf-ui:latest ./ui
 ```
 
 ## Helm install
 ```bash
 helm install sentinel-ebpf ./charts/sentinel-ebpf \
-  --set probe.image.repository=ghcr.io/Shepherd-ITSec/sentinel-ebpf-probe \
-  --set detector.image.repository=ghcr.io/Shepherd-ITSec/sentinel-ebpf-detector
+  --set probe.image.repository=ghcr.io/shepherd-itsec/sentinel-ebpf-probe \
+  --set detector.image.repository=ghcr.io/shepherd-itsec/sentinel-ebpf-detector
 ```
 
 Key values and config (see `charts/sentinel-ebpf/values.yaml`):
