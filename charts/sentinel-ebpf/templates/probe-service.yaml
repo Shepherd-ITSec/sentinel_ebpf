@@ -1,0 +1,21 @@
+{{- if .Values.ui.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "sentinel-ebpf.fullname" . }}-probe
+  labels:
+    {{- include "sentinel-ebpf.labels" . | nindent 4 }}
+    app.kubernetes.io/component: probe
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "sentinel-ebpf.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: probe
+  ports:
+    - name: health
+      port: 9101
+      targetPort: health
+    - name: metrics
+      port: 9102
+      targetPort: metrics
+{{- end }}

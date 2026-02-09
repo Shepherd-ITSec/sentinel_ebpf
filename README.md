@@ -12,7 +12,7 @@ Minimal Falco-style pipeline (not affiliated with Falco) with two components:
 - `charts/sentinel-ebpf/` – Helm chart wiring the DaemonSet + detector Deployment, ConfigMap, RBAC, HPA option.
 - `scripts/`
   - `k3d-setup.sh` – install docker/k3d/helm/uv (optional bpf headers) on Debian/Ubuntu.
-  - `k3d-smoke.sh` – build images, spin up k3d, install chart, run a quick write/read test.
+  - `k3d-smoke.sh` – uses registry images by default (or --build to build locally), spins up k3d, installs chart, runs a quick write/read test.
   - `deploy-probe.sh` – deploy probe only (file logging) into an existing cluster with permission checks.
   - `preflight-check.sh` – local node checks for BCC/kernel prerequisites.
   - `decode_logs.py` – EVT1 → NDJSON decoder for offline training.
@@ -29,15 +29,16 @@ uv run make proto
 
 Build images (Dockerfiles use uv internally):
 ```bash
-docker build -t ghcr.io/example/sentinel-ebpf-probe:latest ./probe
-docker build -t ghcr.io/example/sentinel-ebpf-detector:latest ./detector
+docker build -t ghcr.io/Shepherd-ITSec/sentinel-ebpf-probe:latest ./probe
+docker build -t ghcr.io/Shepherd-ITSec/sentinel-ebpf-detector:latest ./detector
+docker build -t ghcr.io/Shepherd-ITSec/sentinel-ebpf-ui:latest ./ui
 ```
 
 ## Helm install
 ```bash
 helm install sentinel-ebpf ./charts/sentinel-ebpf \
-  --set probe.image.repository=ghcr.io/example/sentinel-ebpf-probe \
-  --set detector.image.repository=ghcr.io/example/sentinel-ebpf-detector
+  --set probe.image.repository=ghcr.io/Shepherd-ITSec/sentinel-ebpf-probe \
+  --set detector.image.repository=ghcr.io/Shepherd-ITSec/sentinel-ebpf-detector
 ```
 
 Key values and config (see `charts/sentinel-ebpf/values.yaml`):
@@ -55,6 +56,7 @@ Key values and config (see `charts/sentinel-ebpf/values.yaml`):
 - Health/readiness: probe HTTP `/healthz` (9101), metrics placeholder `/metrics` (9102). Detector TCP probe on gRPC port.
 - Config is mounted from ConfigMap to `/etc/sentinel-ebpf/probe-config.yaml`; rules file mounted to `/etc/sentinel-ebpf/rules.yaml`.
 - File mode logs land at `probe.stream.file.path`; use PVC for persistence in clusters.
+- Optional debug UI is disabled by default; enable it only when needed.
 
 ## Testing (kind/minikube quick start)
 1. Build/push images to a registry reachable by the cluster.
@@ -179,7 +181,13 @@ Test coverage:
 
 ## Scripts quick reference
 - `scripts/k3d-setup.sh`: `sudo bash scripts/k3d-setup.sh [--install-ebpf]` installs docker/helm/k3d/uv (and optionally bpf headers). Warns if buildx missing.
-- `scripts/k3d-smoke.sh`: From repo root, builds images, creates k3d cluster, installs chart, triggers test read/write, tails logs. Falls back to legacy builder if buildx missing.
+- `scripts/k3d-smoke.sh`: From repo root, uses registry images by default (checks locally, then pulls from ghcr.io), creates k3d cluster, installs chart, triggers test read/write, tails logs. Use `--build` flag to build images locally instead. Falls back to legacy builder if buildx missing.
 - `scripts/deploy-probe.sh`: Deploy probe in file mode to an existing cluster with permission checks; overrides via env (`NAMESPACE`, `PROBE_IMAGE`, `PROBE_TAG`, `PVC_SIZE`, `PVC_CLASS`, etc.).
 - `scripts/decode_logs.py`: Decode EVT1 (or .gz) to NDJSON for offline training.
 - `scripts/replay_logs.py`: Feed EVT1 logs into a DetectorService endpoint; supports realtime pacing and time-window filters.
+
+## Optional debug UI (in-cluster)
+- Enable UI: `--set ui.enabled=true`
+- Access: `kubectl -n <ns> port-forward svc/sentinel-ebpf-ui 8080:8080`
+- UI shows probe health, detector gRPC health, probe metrics, and log tail.
+- Tune: `ui.pollSeconds`, `ui.logLimit`, `ui.logPath`

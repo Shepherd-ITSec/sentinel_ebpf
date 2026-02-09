@@ -4,29 +4,31 @@ set -euo pipefail
 # Quick k3d-based smoke test for sentinel-ebpf on a single-node cluster.
 # Prereqs: docker, k3d, helm. Runs best on Linux where /lib/modules and
 # /sys/kernel/debug can be mounted into k3d nodes for eBPF.
+#
+# By default, uses images from ghcr.io/Shepherd-ITSec/ (checks locally first, then pulls).
+# Use --build flag to build images locally instead.
 
 CLUSTER_NAME="${CLUSTER_NAME:-sentinel-ebpf}"
-PROBE_IMAGE="${PROBE_IMAGE:-sentinel-ebpf-probe:latest}"
-DETECTOR_IMAGE="${DETECTOR_IMAGE:-sentinel-ebpf-detector:latest}"
+PROBE_IMAGE="${PROBE_IMAGE:-ghcr.io/Shepherd-ITSec/sentinel-ebpf-probe:latest}"
+DETECTOR_IMAGE="${DETECTOR_IMAGE:-ghcr.io/Shepherd-ITSec/sentinel-ebpf-detector:latest}"
 CHART_PATH="${CHART_PATH:-./charts/sentinel-ebpf}"
 NAMESPACE="${NAMESPACE:-default}"
+BUILD_IMAGES="${BUILD_IMAGES:-false}"
 
-#region debug probe log setup
-LOG_PATH="/home/user/master/.cursor/debug.log"
-SESSION_ID="debug-session"
-RUN_ID="smoke-$(date +%s)"
-log_debug() {
-  local hypo="$1"; shift
-  local msg="$1"; shift
-  local data="$1"; shift
-  mkdir -p "$(dirname "${LOG_PATH}")"
-  touch "${LOG_PATH}" || true
-  # shellcheck disable=SC2129
-  echo "{\"sessionId\":\"${SESSION_ID}\",\"runId\":\"${RUN_ID}\",\"hypothesisId\":\"${hypo}\",\"location\":\"scripts/k3d-smoke.sh\",\"message\":\"${msg}\",\"data\":${data},\"timestamp\":$(date +%s%3N)}" >> "${LOG_PATH}" 2>/dev/null || true
-  # also emit to stdout for immediate visibility
-  echo "[log-debug ${hypo}] ${msg} ${data}" || true
-}
-#endregion
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --build)
+      BUILD_IMAGES=true
+      shift
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      echo "Usage: $0 [--build]" >&2
+      exit 1
+      ;;
+  esac
+done
 
 info() { echo "[+] $*"; }
 
@@ -38,30 +40,82 @@ require docker
 require k3d
 require helm
 
+# Check Docker access early
+if ! docker info >/dev/null 2>&1; then
+  echo "Error: Cannot access Docker daemon. Permission denied." >&2
+  echo "  - Ensure your user is in the 'docker' group: sudo usermod -aG docker $USER" >&2
+  echo "  - Or run with sudo (not recommended)" >&2
+  echo "  - After adding to docker group, log out and back in" >&2
+  exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 cd "${ROOT_DIR}"
+
+#region debug probe log setup
+LOG_PATH="${LOG_PATH:-${ROOT_DIR}/.debug.log}"
+SESSION_ID="debug-session"
+RUN_ID="smoke-$(date +%s)"
+log_debug() {
+  local hypo="$1"; shift
+  local msg="$1"; shift
+  local data="$1"; shift
+  mkdir -p "$(dirname "${LOG_PATH}")" 2>/dev/null || true
+  touch "${LOG_PATH}" 2>/dev/null || true
+  # shellcheck disable=SC2129
+  echo "{\"sessionId\":\"${SESSION_ID}\",\"runId\":\"${RUN_ID}\",\"hypothesisId\":\"${hypo}\",\"location\":\"scripts/k3d-smoke.sh\",\"message\":\"${msg}\",\"data\":${data},\"timestamp\":$(date +%s%3N)}" >> "${LOG_PATH}" 2>/dev/null || true
+  # also emit to stdout for immediate visibility
+  echo "[log-debug ${hypo}] ${msg} ${data}" || true
+}
+#endregion
 
 if [[ ! -f "${ROOT_DIR}/pyproject.toml" || ! -f "${ROOT_DIR}/uv.lock" ]]; then
   echo "pyproject.toml or uv.lock missing in ${ROOT_DIR}; run from repo root" >&2
   exit 1
 fi
 
-# Prefer BuildKit only if buildx binary exists and works.
-BUILDX_BIN="${BUILDX_BIN:-/usr/local/lib/docker/cli-plugins/docker-buildx}"
-if [[ -x "$BUILDX_BIN" ]] && docker buildx version >/dev/null 2>&1; then
-  info "Building images with BuildKit (buildx available)"
-  export DOCKER_BUILDKIT=1
+# Handle image building/pulling
+if [[ "${BUILD_IMAGES}" == "true" ]]; then
+  info "Building images locally (--build flag provided)"
+  # Prefer BuildKit only if buildx binary exists and works.
+  BUILDX_BIN="${BUILDX_BIN:-/usr/local/lib/docker/cli-plugins/docker-buildx}"
+  if [[ -x "$BUILDX_BIN" ]] && docker buildx version >/dev/null 2>&1; then
+    info "Building images with BuildKit (buildx available)"
+    export DOCKER_BUILDKIT=1
+  else
+    info "Buildx missing or broken; forcing legacy builder (DOCKER_BUILDKIT=0)"
+    export DOCKER_BUILDKIT=0
+  fi
+  log_debug "H1" "build_start" "{\"builder\":\"$(if [[ ${DOCKER_BUILDKIT:-0} -eq 1 ]]; then echo buildkit; else echo legacy; fi)\",\"probe_image\":\"${PROBE_IMAGE}\",\"detector_image\":\"${DETECTOR_IMAGE}\"}"
+  docker build -f probe/Dockerfile -t "${PROBE_IMAGE}" .
+  docker build -f detector/Dockerfile -t "${DETECTOR_IMAGE}" .
+  unset DOCKER_BUILDKIT
 else
-  info "Buildx missing or broken; forcing legacy builder (DOCKER_BUILDKIT=0)"
-  export DOCKER_BUILDKIT=0
+  info "Checking for images locally or pulling from registry"
+  # Check if probe image exists locally
+  if ! docker image inspect "${PROBE_IMAGE}" >/dev/null 2>&1; then
+    info "Probe image not found locally, pulling from registry: ${PROBE_IMAGE}"
+    docker pull "${PROBE_IMAGE}" || {
+      echo "Failed to pull ${PROBE_IMAGE}. Use --build to build locally or ensure images are available." >&2
+      exit 1
+    }
+  else
+    info "Using existing local probe image: ${PROBE_IMAGE}"
+  fi
+  
+  # Check if detector image exists locally
+  if ! docker image inspect "${DETECTOR_IMAGE}" >/dev/null 2>&1; then
+    info "Detector image not found locally, pulling from registry: ${DETECTOR_IMAGE}"
+    docker pull "${DETECTOR_IMAGE}" || {
+      echo "Failed to pull ${DETECTOR_IMAGE}. Use --build to build locally or ensure images are available." >&2
+      exit 1
+    }
+  else
+    info "Using existing local detector image: ${DETECTOR_IMAGE}"
+  fi
 fi
-log_debug "H1" "build_start" "{\"builder\":\"$(if [[ ${DOCKER_BUILDKIT:-0} -eq 1 ]]; then echo buildkit; else echo legacy; fi)\",\"probe_image\":\"${PROBE_IMAGE}\",\"detector_image\":\"${DETECTOR_IMAGE}\"}"
-docker build -f probe/Dockerfile -t "${PROBE_IMAGE}" .
-docker build -f detector/Dockerfile -t "${DETECTOR_IMAGE}" .
-
-unset DOCKER_BUILDKIT
 
 info "Creating k3d cluster ${CLUSTER_NAME}"
 k3d cluster delete "${CLUSTER_NAME}" >/dev/null 2>&1 || true

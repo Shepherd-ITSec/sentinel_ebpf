@@ -4,7 +4,7 @@ global:
 probe:
   clusterName: ""
   image:
-    repository: ghcr.io/example/sentinel-ebpf-probe
+    repository: ghcr.io/Shepherd-ITSec/sentinel-ebpf-probe
     tag: "latest"
     pullPolicy: IfNotPresent
   grpc:
@@ -53,7 +53,7 @@ probe:
 detector:
   enabled: true
   image:
-    repository: ghcr.io/example/sentinel-ebpf-detector
+    repository: ghcr.io/Shepherd-ITSec/sentinel-ebpf-detector
     tag: "latest"
     pullPolicy: IfNotPresent
   service:
@@ -70,6 +70,30 @@ detector:
     maxReplicas: 3
     targetCPUUtilizationPercentage: 80
     targetMemoryUtilizationPercentage: 80
+
+ui:
+  enabled: false
+  image:
+    repository: ghcr.io/Shepherd-ITSec/sentinel-ebpf-ui
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8080
+  logPath: /var/log/sentinel-ebpf/events.bin
+  pollSeconds: 10
+  logLimit: 50
+  detectorGrpcAddr: "sentinel-ebpf-detector:50051"
+  probeHealthUrl: "http://sentinel-ebpf-probe:9101/healthz"
+  probeMetricsUrl: "http://sentinel-ebpf-probe:9102/metrics"
+  detectorMetricsUrl: ""
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
 
 config:
   logLevel: info
