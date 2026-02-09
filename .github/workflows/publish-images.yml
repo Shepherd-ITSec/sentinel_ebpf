@@ -27,6 +27,14 @@ jobs:
       - name: Install uv
         run: pip install uv
 
+      - name: Cache uv
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-${{ hashFiles('**/uv.lock') }}
+          restore-keys: |
+            uv-${{ runner.os }}-
+
       - name: Run tests
         run: |
           uv sync --extra dev
@@ -44,6 +52,9 @@ jobs:
           - name: sentinel-ebpf-detector
             context: .
             dockerfile: detector/Dockerfile
+          - name: sentinel-ebpf-ui
+            context: .
+            dockerfile: ui/Dockerfile
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -75,3 +86,5 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

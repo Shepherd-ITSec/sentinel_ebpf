@@ -5,7 +5,7 @@ set -euo pipefail
 # Defaults target the local chart; override via env:
 #   NAMESPACE=default
 #   CHART_PATH=./charts/sentinel-ebpf
-#   PROBE_IMAGE=ghcr.io/example/sentinel-ebpf-probe
+#   PROBE_IMAGE=ghcr.io/Shepherd-ITSec/sentinel-ebpf-probe
 #   PROBE_TAG=latest
 #   PVC_SIZE=5Gi
 #   PVC_CLASS=""
@@ -14,7 +14,7 @@ set -euo pipefail
 NAMESPACE="${NAMESPACE:-default}"
 CHART_PATH="${CHART_PATH:-./charts/sentinel-ebpf}"
 RELEASE="${RELEASE:-sentinel-ebpf}"
-PROBE_IMAGE="${PROBE_IMAGE:-ghcr.io/example/sentinel-ebpf-probe}"
+PROBE_IMAGE="${PROBE_IMAGE:-ghcr.io/Shepherd-ITSec/sentinel-ebpf-probe}"
 PROBE_TAG="${PROBE_TAG:-latest}"
 PVC_SIZE="${PVC_SIZE:-5Gi}"
 PVC_CLASS="${PVC_CLASS:-}"
