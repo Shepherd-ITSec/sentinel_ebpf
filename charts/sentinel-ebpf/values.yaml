@@ -4,7 +4,7 @@ global:
 probe:
   clusterName: ""
   image:
-    repository: ghcr.io/Shepherd-ITSec/sentinel-ebpf-probe
+    repository: ghcr.io/shepherd-itsec/sentinel-ebpf-probe
     tag: "latest"
     pullPolicy: IfNotPresent
   grpc:
@@ -53,7 +53,7 @@ probe:
 detector:
   enabled: true
   image:
-    repository: ghcr.io/Shepherd-ITSec/sentinel-ebpf-detector
+    repository: ghcr.io/shepherd-itsec/sentinel-ebpf-detector
     tag: "latest"
     pullPolicy: IfNotPresent
   service:
@@ -74,7 +74,7 @@ detector:
 ui:
   enabled: false
   image:
-    repository: ghcr.io/Shepherd-ITSec/sentinel-ebpf-ui
+    repository: ghcr.io/shepherd-itsec/sentinel-ebpf-ui
     tag: "latest"
     pullPolicy: IfNotPresent
   service:

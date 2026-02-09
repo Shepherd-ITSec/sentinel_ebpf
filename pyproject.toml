@@ -2,7 +2,7 @@
 name = "sentinel-ebpf"
 version = "0.1.0"
 description = "Falco-like eBPF probe and detector"
-requires-python = ">=3.9,<3.13"
+requires-python = ">=3.9,<3.14"
 dependencies = [
   "grpcio==1.76.0",
   "grpcio-tools==1.76.0",
