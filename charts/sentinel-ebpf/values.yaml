@@ -8,7 +8,8 @@ probe:
     tag: "latest"
     pullPolicy: IfNotPresent
   grpc:
-    endpoint: "sentinel-ebpf-detector:50051"
+    # Default: use detector service name from release (fullname-detector:port). Override if needed.
+    endpoint: ""
     tls:
       enabled: false
       caSecret: ""
@@ -83,9 +84,10 @@ ui:
   logPath: /var/log/sentinel-ebpf/events.bin
   pollSeconds: 10
   logLimit: 50
-  detectorGrpcAddr: "sentinel-ebpf-detector:50051"
-  probeHealthUrl: "http://sentinel-ebpf-probe:9101/healthz"
-  probeMetricsUrl: "http://sentinel-ebpf-probe:9102/metrics"
+  # Defaults use chart fullname (e.g. sentinel-ebpf-sentinel-ebpf-detector:50051). Override if needed.
+  detectorGrpcAddr: ""
+  probeHealthUrl: ""
+  probeMetricsUrl: ""
   detectorMetricsUrl: ""
   resources:
     requests:

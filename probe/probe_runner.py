@@ -23,8 +23,9 @@ from probe.config import AppConfig, load_config
 from probe.rules import RuleEngine
 
 # BPF-side rule limits. Keep in sync with BPF program definitions.
-MAX_RULES = 64
-MAX_PREFIX_LEN = 128
+# Verifier limit ~8192 jumps; unrolled loops (MAX_RULES * (MAX_PREFIX_LEN + COMM_LEN)) must stay under.
+MAX_RULES = 24
+MAX_PREFIX_LEN = 24
 COMM_LEN = 16
 
 
@@ -48,8 +49,8 @@ BPF_PROGRAM = r"""
 #include <linux/path.h>
 #include <linux/fs.h>
 
-#define MAX_RULES 64
-#define MAX_PREFIX_LEN 128
+#define MAX_RULES 24
+#define MAX_PREFIX_LEN 24
 #define COMM_LEN 16
 #define RINGBUF_PAGES __RINGBUF_PAGES__
 
@@ -79,84 +80,63 @@ BPF_ARRAY(rules, struct rule_t, MAX_RULES);
 BPF_ARRAY(rule_count, u32, 1);
 BPF_RINGBUF_OUTPUT(events, RINGBUF_PAGES);
 
+/* No early return/break in loop so clang can unroll (fixed trip count COMM_LEN). */
 static __inline int comm_matches(struct data_t *data, const struct rule_t *rule) {
+    int match = 1;
     if (rule->comm_len == 0) {
         return 1;
     }
 #pragma unroll
     for (int i = 0; i < COMM_LEN; i++) {
-        if (i >= rule->comm_len) {
-            return 1;
-        }
-        if (data->comm[i] != rule->comm[i]) {
-            return 0;
-        }
-        if (data->comm[i] == 0) {
-            return 0;
+        if (i < rule->comm_len) {
+            if (data->comm[i] != rule->comm[i] || data->comm[i] == 0) {
+                match = 0;
+            }
         }
     }
-    return 1;
+    return match;
 }
 
+/* No early return/break in loop so clang can unroll (fixed trip count MAX_PREFIX_LEN). */
 static __inline int prefix_matches(struct data_t *data, const struct rule_t *rule) {
+    int match = 1;
     if (rule->prefix_len == 0) {
         return 1;
     }
 #pragma unroll
     for (int i = 0; i < MAX_PREFIX_LEN; i++) {
-        if (i >= rule->prefix_len) {
-            return 1;
-        }
-        if (data->filename[i] != rule->prefix[i]) {
-            return 0;
-        }
-        if (data->filename[i] == 0) {
-            return 0;
+        if (i < rule->prefix_len) {
+            if (data->filename[i] != rule->prefix[i] || data->filename[i] == 0) {
+                match = 0;
+            }
         }
     }
-    return 1;
+    return match;
 }
 
+/* No break/continue/return in loop so clang can unroll (fixed trip count MAX_RULES). */
 static __inline int rule_allows(struct data_t *data) {
     u32 idx = 0;
     u32 *count = rule_count.lookup(&idx);
     if (!count || *count == 0) {
         return 1;
     }
+    int allowed = 0;
 #pragma unroll
     for (int i = 0; i < MAX_RULES; i++) {
-        if (i >= *count) {
-            break;
+        if (i < *count) {
+            u32 key = i;
+            struct rule_t *rule = rules.lookup(&key);
+            if (rule && rule->enabled && rule->event_type == 0 &&
+                (rule->pid == 0 || rule->pid == data->pid) &&
+                (rule->tid == 0 || rule->tid == data->tid) &&
+                (rule->uid == 0 || rule->uid == data->uid) &&
+                comm_matches(data, rule) && prefix_matches(data, rule)) {
+                allowed = 1;
+            }
         }
-        u32 key = i;
-        struct rule_t *rule = rules.lookup(&key);
-        if (!rule) {
-            continue;
-        }
-        if (!rule->enabled) {
-            continue;
-        }
-        if (rule->event_type != 0) {
-            continue;
-        }
-        if (rule->pid != 0 && rule->pid != data->pid) {
-            continue;
-        }
-        if (rule->tid != 0 && rule->tid != data->tid) {
-            continue;
-        }
-        if (rule->uid != 0 && rule->uid != data->uid) {
-            continue;
-        }
-        if (!comm_matches(data, rule)) {
-            continue;
-        }
-        if (!prefix_matches(data, rule)) {
-            continue;
-        }
-        return 1;
     }
-    return 0;
+    return allowed;
 }
 
 int trace_open(struct pt_regs *ctx, const char __user *filename, int flags) {

@@ -98,8 +98,8 @@ async def serve():
 
   listen_addr = f"[::]:{cfg.port}"
   server.add_insecure_port(listen_addr)
-  logging.info("detector listening on %s", listen_addr)
   await server.start()
+  logging.info("detector listening on %s", listen_addr)
   try:
     await server.wait_for_termination()
   except KeyboardInterrupt:
@@ -129,8 +129,8 @@ def main():
       health_svc.set("", health_pb2.HealthCheckResponse.SERVING)
       listen_addr = f"[::]:{cfg.port}"
       server.add_insecure_port(listen_addr)
-      logging.info("detector listening on %s", listen_addr)
       await server.start()
+      logging.info("detector listening on %s", listen_addr)
       # Replay from log into this server.
       replay(args.replay_log, f"localhost:{cfg.port}", args.replay_pace, args.replay_start_ms, args.replay_end_ms)
       await server.wait_for_termination()

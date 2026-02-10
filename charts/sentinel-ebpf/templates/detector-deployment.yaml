@@ -37,13 +37,14 @@ spec:
           livenessProbe:
             tcpSocket:
               port: grpc
-            initialDelaySeconds: 5
+            initialDelaySeconds: 20
             periodSeconds: 10
           readinessProbe:
             tcpSocket:
               port: grpc
-            initialDelaySeconds: 5
-            periodSeconds: 10
+            # Detector does model init (e.g. halfspacetrees) before binding; give time before first check
+            initialDelaySeconds: 15
+            periodSeconds: 5
           resources:
             {{- toYaml .Values.detector.resources | nindent 12 }}
       nodeSelector:

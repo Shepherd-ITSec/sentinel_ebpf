@@ -32,11 +32,11 @@ spec:
             - name: LOG_PATH
               value: {{ .Values.ui.logPath | quote }}
             - name: DETECTOR_GRPC_ADDR
-              value: {{ .Values.ui.detectorGrpcAddr | quote }}
+              value: {{ .Values.ui.detectorGrpcAddr | default (printf "%s-detector:%d" (include "sentinel-ebpf.fullname" .) (int .Values.detector.service.port)) | quote }}
             - name: PROBE_HEALTH_URL
-              value: {{ .Values.ui.probeHealthUrl | quote }}
+              value: {{ .Values.ui.probeHealthUrl | default (printf "http://%s-probe:%d/healthz" (include "sentinel-ebpf.fullname" .) (int .Values.config.health.port)) | quote }}
             - name: PROBE_METRICS_URL
-              value: {{ .Values.ui.probeMetricsUrl | quote }}
+              value: {{ .Values.ui.probeMetricsUrl | default (printf "http://%s-probe:%d/metrics" (include "sentinel-ebpf.fullname" .) (int .Values.config.metrics.port)) | quote }}
             - name: DETECTOR_METRICS_URL
               value: {{ .Values.ui.detectorMetricsUrl | quote }}
           ports:

@@ -9,9 +9,6 @@ dependencies = [
   "grpcio-health-checking==1.76.0",
   "protobuf>=4.21.0",
   "PyYAML==6.0.2",
-  "numpy>=1.24.0,<2.0.0",
-  "river>=0.21.0",
-  "torch>=2.2.0",
 ]
 
 [project.optional-dependencies]
@@ -20,6 +17,21 @@ dev = [
   "pytest-asyncio>=0.21.0",
   "pytest-mock>=3.10.0",
 ]
+# Detector (ML) only; probe image stays small by not installing these
+# CPU-only torch keeps detector image small for k3d/CI; use detector-cuda extra for GPU if needed
+detector = [
+  "numpy>=1.24.0,<2.0.0",
+  "river>=0.21.0",
+  "torch>=2.2.0",
+]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [build-system]
 requires = ["setuptools"]
