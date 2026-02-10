@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>sentinel-ebpf debug</title>
+    <style>
+      :root {
+        --bg: #0f1419;
+        --bg-card: #1a2332;
+        --border: #2d3a4f;
+        --text: #e6edf3;
+        --text-muted: #8b949e;
+        --accent: #58a6ff;
+        --accent-dim: #388bfd66;
+        --pre-bg: #161b22;
+        --success: #3fb950;
+        --error: #f85149;
+      }
+      [data-theme="light"] {
+        --bg: #f0f2f5;
+        --bg-card: #ffffff;
+        --border: #d0d7de;
+        --text: #1f2328;
+        --text-muted: #656d76;
+        --accent: #0969da;
+        --accent-dim: #0969da22;
+        --pre-bg: #f6f8fa;
+      }
+      * { box-sizing: border-box; }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        margin: 0;
+        padding: 24px;
+        line-height: 1.5;
+        min-height: 100vh;
+      }
+      .header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-bottom: 24px;
+        padding-bottom: 16px;
+        border-bottom: 1px solid var(--border);
+      }
+      .header h1 {
+        margin: 0;
+        font-size: 1.5rem;
+        font-weight: 600;
+        color: var(--text);
+        letter-spacing: -0.02em;
+      }
+      .header .subtitle {
+        color: var(--text-muted);
+        font-size: 0.875rem;
+      }
+      .toggle-wrap {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .toggle-btn {
+        background: var(--bg-card);
+        color: var(--text);
+        border: 1px solid var(--border);
+        padding: 6px 12px;
+        border-radius: 6px;
+        font-size: 0.8125rem;
+        cursor: pointer;
+        transition: background 0.15s, border-color 0.15s;
+      }
+      .toggle-btn:hover {
+        background: var(--border);
+      }
+      .section {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        margin-bottom: 16px;
+        overflow: hidden;
+      }
+      .section h3 {
+        margin: 0;
+        padding: 12px 16px;
+        font-size: 0.8125rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--accent);
+        background: var(--accent-dim);
+        border-bottom: 1px solid var(--border);
+      }
+      .section-inner {
+        padding: 16px;
+      }
+      .section pre {
+        margin: 0;
+        padding: 16px;
+        font-family: "SF Mono", "Consolas", "Liberation Mono", Menlo, monospace;
+        font-size: 0.8125rem;
+        line-height: 1.5;
+        background: var(--pre-bg);
+        color: var(--text);
+        overflow: auto;
+        max-height: 320px;
+        border: none;
+      }
+      .section pre:empty::before {
+        content: "Loading…";
+        color: var(--text-muted);
+      }
+      .status-grid {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 8px 16px;
+        font-size: 0.875rem;
+      }
+      .status-grid dt {
+        color: var(--text-muted);
+        margin: 0;
+      }
+      .status-grid dd {
+        margin: 0;
+        font-family: "SF Mono", Consolas, monospace;
+      }
+      .status-ok { color: var(--success); }
+      .metrics-blocks { display: flex; flex-direction: column; gap: 16px; }
+      .metrics-block h4 { margin: 0 0 8px 0; font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; font-weight: 600; }
+      .metrics-block pre { font-size: 0.75rem; max-height: 160px; margin: 0; }
+      .metrics-table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+      .metrics-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); }
+      .metrics-table tr:last-child td { border-bottom: none; }
+      .metric-name { font-family: var(--mono); color: var(--text-muted); font-size: 0.8125rem; }
+      .metric-value { text-align: right; font-weight: 500; color: var(--text); }
+      .metrics-empty { color: var(--text-muted); font-size: 0.875rem; font-style: italic; padding: 8px 0; }
+      .logs-message {
+        font-size: 0.8125rem;
+        color: var(--text-muted);
+        margin-bottom: 12px;
+      }
+      .table-wrap {
+        overflow: auto;
+        max-height: 400px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.8125rem;
+      }
+      th, td {
+        padding: 8px 12px;
+        text-align: left;
+        border-bottom: 1px solid var(--border);
+      }
+      th {
+        background: var(--pre-bg);
+        color: var(--accent);
+        font-weight: 600;
+        white-space: nowrap;
+        cursor: pointer;
+        user-select: none;
+      }
+      th:hover { text-decoration: underline; }
+      tr:last-child td { border-bottom: none; }
+      tr:hover td { background: var(--pre-bg); }
+      .badge {
+        display: inline-block;
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-size: 0.75rem;
+      }
+      .badge-ok { background: var(--success); color: var(--bg); }
+      .badge-anomaly { background: var(--error); color: #fff; }
+      .poll-hint {
+        font-size: 0.75rem;
+        color: var(--text-muted);
+        margin-top: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <div>
+        <h1>sentinel-ebpf</h1>
+        <div class="subtitle">Lightweight status, metrics, and log tail.</div>
+      </div>
+      <div class="toggle-wrap">
+        <span class="subtitle">Poll every %POLL_SECONDS%s</span>
+        <button type="button" class="toggle-btn" id="theme-btn" aria-label="Toggle theme">Light</button>
+      </div>
+    </div>
+    <div class="section">
+      <h3>Status</h3>
+      <div class="section-inner" id="status"></div>
+    </div>
+    <div class="section">
+      <h3>Metrics</h3>
+      <div class="section-inner" id="metrics"></div>
+    </div>
+    <div class="section">
+      <h3>Logs (tail)</h3>
+      <div class="section-inner" id="logs"></div>
+    </div>
+    <script>
+      const pollSeconds = parseInt("%POLL_SECONDS%", 10) || 10;
+      const logLimit = parseInt("%LOG_LIMIT%", 10) || 50;
+      const themeBtn = document.getElementById("theme-btn");
+      const html = document.documentElement;
+      function applyTheme(theme) {
+        html.setAttribute("data-theme", theme === "light" ? "light" : "");
+        themeBtn.textContent = theme === "light" ? "Dark" : "Light";
+        try { localStorage.setItem("sentinel-ui-theme", theme); } catch (e) {}
+      }
+      const saved = localStorage.getItem("sentinel-ui-theme");
+      if (saved === "light") applyTheme("light");
+      else applyTheme("dark");
+      themeBtn.addEventListener("click", function() {
+        applyTheme(html.getAttribute("data-theme") === "light" ? "dark" : "light");
+      });
+      async function fetchJson(url) {
+        const r = await fetch(url);
+        return await r.json();
+      }
+      function renderStatus(data) {
+        const el = document.getElementById("status");
+        if (typeof data !== "object" || data === null) {
+          el.innerHTML = "<pre>" + escapeHtml(String(data)) + "</pre>";
+          return;
+        }
+        const items = [
+          ["Timestamp", new Date((data.ts || 0) * 1000).toISOString()],
+          ["Probe health", data.probe_health || "—"],
+          ["Detector health", data.detector_health || "—"],
+        ];
+        el.innerHTML = "<dl class=\"status-grid\">" +
+          items.map(([k, v]) => "<dt>" + escapeHtml(k) + "</dt><dd class=\"" + (v === "ok" || v === "SERVING" ? "status-ok" : "") + "\">" + escapeHtml(String(v)) + "</dd>").join("") +
+          "</dl>";
+      }
+      function parsePrometheusMetrics(text) {
+        if (!text || typeof text !== "string") return [];
+        const lines = text.split("\n").filter(l => l.trim() && !l.startsWith("#"));
+        const metrics = [];
+        for (const line of lines) {
+          const match = line.match(/^(\w+)\s+(.+)$/);
+          if (match) {
+            const [, name, value] = match;
+            const numValue = parseFloat(value);
+            metrics.push({
+              name: name,
+              value: isNaN(numValue) ? value : numValue,
+              displayValue: isNaN(numValue) ? value : numValue.toLocaleString()
+            });
+          }
+        }
+        return metrics;
+      }
+      function renderMetrics(data) {
+        const el = document.getElementById("metrics");
+        if (typeof data !== "object" || data === null) {
+          el.innerHTML = "<pre>" + escapeHtml(String(data)) + "</pre>";
+          return;
+        }
+        const probeText = data.probe_metrics != null ? String(data.probe_metrics) : "";
+        const detectorText = data.detector_metrics != null ? String(data.detector_metrics) : "";
+        const probeMetrics = parsePrometheusMetrics(probeText);
+        const detectorMetrics = parsePrometheusMetrics(detectorText);
+        
+        function renderMetricsTable(metrics, title) {
+          if (metrics.length === 0) {
+            return `<div class="metrics-block"><h4>${title}</h4><div class="metrics-empty">No metrics available</div></div>`;
+          }
+          const rows = metrics.map(m => 
+            `<tr><td class="metric-name">${escapeHtml(m.name)}</td><td class="metric-value">${escapeHtml(String(m.displayValue))}</td></tr>`
+          ).join("");
+          return `<div class="metrics-block"><h4>${title}</h4><table class="metrics-table"><tbody>${rows}</tbody></table></div>`;
+        }
+        
+        const probeHtml = probeMetrics.length > 0 
+          ? renderMetricsTable(probeMetrics, "Probe")
+          : `<div class="metrics-block"><h4>Probe</h4><div class="metrics-empty">No metrics available</div></div>`;
+        
+        const detectorHtml = detectorMetrics.length > 0
+          ? renderMetricsTable(detectorMetrics, "Detector")
+          : `<div class="metrics-block"><h4>Detector</h4><div class="metrics-empty">No metrics endpoint configured (detector uses gRPC only)</div></div>`;
+        
+        el.innerHTML = `<div class="metrics-blocks">${probeHtml}${detectorHtml}</div>`;
+      }
+      let logsSortKey = "ts_unix_nano";
+      let logsSortDir = "desc";
+      let lastLogsData = null;
+      function renderLogs(data) {
+        lastLogsData = data;
+        const el = document.getElementById("logs");
+        if (typeof data !== "object" || data === null) {
+          el.innerHTML = "<pre>" + escapeHtml(String(data)) + "</pre>";
+          return;
+        }
+        const message = data.message || "";
+        let entries = Array.isArray(data.entries) ? data.entries : [];
+        const keys = ["ts_unix_nano", "event_type", "hostname", "filename", "anomaly", "score", "reason"];
+        function getCell(entry, key) {
+          if (key === "filename") {
+            const d = entry.data;
+            return Array.isArray(d) && d.length > 0 ? d[0] : (entry.prefix || "—");
+          }
+          if (key === "ts_unix_nano") {
+            const ns = entry.ts_unix_nano;
+            if (ns == null) return "—";
+            let nsNum = Number(ns);
+            if (isNaN(nsNum) || nsNum <= 0) return "—";
+            
+            // Detect unit: if value is less than 1e12, it's likely seconds, not nanoseconds
+            // Current timestamps in nanoseconds are ~1.7e15 (year 2024)
+            // Current timestamps in seconds are ~1.7e9
+            let ms;
+            if (nsNum < 1e12) {
+              // Likely seconds, convert to milliseconds
+              ms = nsNum * 1000;
+            } else {
+              // Likely nanoseconds, convert to milliseconds
+              // 1 second = 1,000 milliseconds = 1,000,000,000 nanoseconds
+              // So: milliseconds = nanoseconds / 1,000,000
+              ms = nsNum / 1e6;
+            }
+            
+            const date = new Date(ms);
+            if (isNaN(date.getTime())) return "—";
+            
+            // Format as readable date/time: "YYYY-MM-DD HH:MM:SS.mmm"
+            const iso = date.toISOString();
+            return iso.replace("T", " ").replace("Z", "");
+          }
+          const v = entry[key];
+          if (v === true || v === false) return v ? "Yes" : "No";
+          return v != null ? String(v) : "—";
+        }
+        function compare(a, b) {
+          const va = getCell(a, logsSortKey);
+          const vb = getCell(b, logsSortKey);
+          if (logsSortKey === "ts_unix_nano") {
+            const na = Number(a.ts_unix_nano);
+            const nb = Number(b.ts_unix_nano);
+            return logsSortDir === "asc" ? na - nb : nb - na;
+          }
+          if (logsSortKey === "anomaly" || logsSortKey === "score") {
+            const na = Number(a[logsSortKey]);
+            const nb = Number(b[logsSortKey]);
+            if (!isNaN(na) && !isNaN(nb)) return logsSortDir === "asc" ? na - nb : nb - na;
+          }
+          const c = String(va).localeCompare(String(vb));
+          return logsSortDir === "asc" ? c : -c;
+        }
+        entries = entries.slice().sort(compare);
+        const headers = [
+          { key: "ts_unix_nano", label: "Time" },
+          { key: "event_type", label: "Type" },
+          { key: "hostname", label: "Host" },
+          { key: "filename", label: "Path" },
+          { key: "anomaly", label: "Anomaly" },
+          { key: "score", label: "Score" },
+          { key: "reason", label: "Reason" },
+        ];
+        let table = "<div class=\"logs-message\">" + escapeHtml(message || (entries.length ? "Live tail from detector." : "No events yet.")) + "</div>";
+        if (entries.length === 0) {
+          table += "<p class=\"logs-message\">No entries.</p>";
+        } else {
+          table += "<div class=\"table-wrap\"><table><thead><tr>";
+          headers.forEach(function(h) {
+            const sort = h.key === logsSortKey ? logsSortDir : "";
+            let arrow = "";
+            if (sort === "asc") arrow = " ↑";
+            else if (sort === "desc") arrow = " ↓";
+            else if (sort === "") arrow = " ↕";
+            table += "<th data-sort=\"" + sort + "\" data-key=\"" + escapeHtml(h.key) + "\">" + escapeHtml(h.label) + arrow + "</th>";
+          });
+          table += "</tr></thead><tbody>";
+          entries.forEach(function(entry) {
+            table += "<tr>";
+            headers.forEach(function(h) {
+              let cell = getCell(entry, h.key);
+              if (h.key === "anomaly" && (entry.anomaly === true || cell === "Yes")) {
+                cell = "<span class=\"badge badge-anomaly\">Yes</span>";
+              } else if (h.key === "anomaly" && (entry.anomaly === false || cell === "No")) {
+                cell = "<span class=\"badge badge-ok\">No</span>";
+              } else {
+                cell = escapeHtml(cell);
+              }
+              table += "<td>" + cell + "</td>";
+            });
+            table += "</tr>";
+          });
+          table += "</tbody></table></div>";
+        }
+        el.innerHTML = table;
+        el.querySelectorAll("th[data-key]").forEach(function(th) {
+          th.addEventListener("click", function() {
+            const key = th.getAttribute("data-key");
+            if (key === logsSortKey) logsSortDir = logsSortDir === "asc" ? "desc" : "asc";
+            else { logsSortKey = key; logsSortDir = "asc"; }
+            if (lastLogsData) renderLogs(lastLogsData);
+          });
+        });
+      }
+      function escapeHtml(s) {
+        const div = document.createElement("div");
+        div.textContent = s;
+        return div.innerHTML;
+      }
+      async function refresh() {
+        try {
+          const status = await fetchJson("/api/status");
+          renderStatus(status);
+        } catch (e) {
+          document.getElementById("status").innerHTML = "<pre>" + escapeHtml(String(e)) + "</pre>";
+        }
+        try {
+          const metrics = await fetchJson("/api/metrics");
+          renderMetrics(metrics);
+        } catch (e) {
+          document.getElementById("metrics").innerHTML = "<pre>" + escapeHtml(String(e)) + "</pre>";
+        }
+        try {
+          const logs = await fetchJson("/api/logs?limit=" + logLimit);
+          renderLogs(logs);
+        } catch (e) {
+          document.getElementById("logs").innerHTML = "<pre>" + escapeHtml(String(e)) + "</pre>";
+        }
+      }
+      refresh();
+      setInterval(refresh, pollSeconds * 1000);
+    </script>
+  </body>
+</html>

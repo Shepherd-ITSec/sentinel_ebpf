@@ -36,12 +36,30 @@ spec:
             - name: PROBE_HEALTH_URL
               value: {{ .Values.ui.probeHealthUrl | default (printf "http://%s-probe:%d/healthz" (include "sentinel-ebpf.fullname" .) (int .Values.config.health.port)) | quote }}
             - name: PROBE_METRICS_URL
-              value: {{ .Values.ui.probeMetricsUrl | default (printf "http://%s-probe:%d/metrics" (include "sentinel-ebpf.fullname" .) (int .Values.config.metrics.port)) | quote }}
+              value: {{ .Values.ui.probeMetricsUrl | default (printf "http://%s-probe:%d/metrics" (include "sentinel-ebpf.fullname" .) (int .Values.config.health.port)) | quote }}
             - name: DETECTOR_METRICS_URL
-              value: {{ .Values.ui.detectorMetricsUrl | quote }}
+              value: {{ .Values.ui.detectorMetricsUrl | default (printf "http://%s-detector:%d/metrics" (include "sentinel-ebpf.fullname" .) (int .Values.detector.eventsPort)) | quote }}
+            - name: DETECTOR_EVENTS_URL
+              value: {{ .Values.ui.detectorEventsUrl | default (printf "http://%s-detector:%d/recent_events" (include "sentinel-ebpf.fullname" .) (int .Values.detector.eventsPort)) | quote }}
           ports:
             - name: http
               containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
           volumeMounts:
             - name: logs
               mountPath: {{ regexReplaceAll "/[^/]+$" .Values.ui.logPath "" | default "/var/log/sentinel-ebpf" | quote }}

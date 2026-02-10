@@ -14,4 +14,7 @@ spec:
     - name: grpc
       port: {{ .Values.detector.service.port }}
       targetPort: grpc
+    - name: events
+      port: {{ .Values.detector.eventsPort }}
+      targetPort: events
 {{- end }}
