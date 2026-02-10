@@ -77,6 +77,17 @@ if ! docker info >/dev/null 2>&1; then
   exit 1
 fi
 
+# Probe needs kernel headers at /lib/modules/$(uname -r)/build (mounted into k3d nodes)
+KERNEL_RELEASE="$(uname -r)"
+KERNEL_BUILD="/lib/modules/${KERNEL_RELEASE}/build"
+if [[ ! -d "${KERNEL_BUILD}" ]]; then
+  echo "Error: Kernel headers not found at ${KERNEL_BUILD}" >&2
+  echo "  The probe compiles BPF at runtime and needs kernel headers on the host." >&2
+  echo "  Install them, then re-run this script:" >&2
+  echo "    sudo apt install linux-headers-${KERNEL_RELEASE}" >&2
+  exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
@@ -264,7 +275,7 @@ next_step "Waiting for daemonset and detector..."
 wait_for_resource() {
   local kind="$1"; shift
   local selector="$1"; shift
-  local timeout="${1:-30}"
+  local timeout="${1:-10}"
   local start
   start=$(date +%s)
   while true; do
@@ -279,21 +290,20 @@ wait_for_resource() {
   done
 }
 
-info "Waiting for daemonset and detector"
-if wait_for_resource "daemonset" "app.kubernetes.io/name=sentinel-ebpf,app.kubernetes.io/component=probe" 30; then
+if wait_for_resource "daemonset" "app.kubernetes.io/name=sentinel-ebpf,app.kubernetes.io/component=probe" 10; then
   count_ds=$(kubectl -n "${NAMESPACE}" get ds -l app.kubernetes.io/name=sentinel-ebpf,app.kubernetes.io/component=probe -o name | wc -l || true)
   log_debug "H3" "ds_found" "{\"count\":${count_ds}}"
-  kubectl rollout status daemonset -l app.kubernetes.io/name=sentinel-ebpf -l app.kubernetes.io/component=probe --timeout=60s -n "${NAMESPACE}" || true
-else
-  log_debug "H3" "ds_missing" "{\"namespace\":\"${NAMESPACE}\"}"
+  kubectl rollout status daemonset -l app.kubernetes.io/name=sentinel-ebpf -l app.kubernetes.io/component=probe --timeout=90s -n "${NAMESPACE}" &
+  rollout_ds_pid=$!
 fi
 
-if wait_for_resource "deploy" "app.kubernetes.io/name=sentinel-ebpf,app.kubernetes.io/component=detector" 30; then
+if wait_for_resource "deploy" "app.kubernetes.io/name=sentinel-ebpf,app.kubernetes.io/component=detector" 10; then
   count_dep=$(kubectl -n "${NAMESPACE}" get deploy -l app.kubernetes.io/name=sentinel-ebpf,app.kubernetes.io/component=detector -o name | wc -l || true)
   log_debug "H4" "deploy_found" "{\"count\":${count_dep}}"
-  kubectl rollout status deploy -l app.kubernetes.io/name=sentinel-ebpf -l app.kubernetes.io/component=detector --timeout=60s -n "${NAMESPACE}" || true
-else
-  log_debug "H4" "deploy_missing" "{\"namespace\":\"${NAMESPACE}\"}"
+  kubectl rollout status deploy -l app.kubernetes.io/name=sentinel-ebpf -l app.kubernetes.io/component=detector --timeout=90s -n "${NAMESPACE}" || true
+fi
+if [[ -n "${rollout_ds_pid:-}" ]]; then
+  wait "${rollout_ds_pid}" || true
 fi
 
 next_step "Collecting status and running test pod..."

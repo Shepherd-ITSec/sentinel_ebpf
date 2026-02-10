@@ -28,7 +28,7 @@ class OnlineHalfSpaceTrees:
 
   def score_and_learn(self, features: Dict[str, float]) -> float:
     score = self.model.score_one(features)
-    self.model = self.model.learn_one(features)
+    self.model.learn_one(features)  # in-place; learn_one returns None
     return float(score)
 
 

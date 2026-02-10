@@ -158,9 +158,9 @@ Events are converted to 10-dimensional feature vectors:
 
 ## Testing
 
-Run tests with pytest (dev extras install pytest into the venv):
+Run tests with pytest (dev = pytest; detector = numpy, river, torch for ML tests):
 ```bash
-uv sync --extra dev
+uv sync --extra dev --extra detector
 uv run python -m pytest tests/ -v
 ```
 

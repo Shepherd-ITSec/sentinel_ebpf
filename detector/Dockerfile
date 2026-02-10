@@ -13,7 +13,7 @@ COPY probe /app/probe
 COPY detector /app/detector
 COPY scripts /app/scripts
 COPY events_pb2.py events_pb2_grpc.py /app/
-RUN uv sync --no-dev --frozen
+RUN uv sync --no-dev --frozen --extra detector
 
 ENV VIRTUAL_ENV=/app/.venv
 ENV PATH="/app/.venv/bin:${PATH}"

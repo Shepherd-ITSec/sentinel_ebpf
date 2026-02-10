@@ -14,7 +14,7 @@ data:
       enabled: {{ .Values.config.metrics.enabled }}
       port: {{ .Values.config.metrics.port }}
     grpc:
-      endpoint: {{ .Values.probe.grpc.endpoint | quote }}
+      endpoint: {{ .Values.probe.grpc.endpoint | default (printf "%s-detector:%d" (include "sentinel-ebpf.fullname" .) (int .Values.detector.service.port)) | quote }}
       tlsEnabled: {{ .Values.probe.grpc.tls.enabled }}
       caSecret: {{ .Values.probe.grpc.tls.caSecret | quote }}
     stream:

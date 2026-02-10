@@ -22,6 +22,21 @@ spec:
       hostPID: true
       imagePullSecrets:
         {{- toYaml .Values.global.imagePullSecrets | nindent 8 }}
+      initContainers:
+        - name: wait-for-detector
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              H="${DETECTOR_GRPC_ENDPOINT%:*}"
+              P="${DETECTOR_GRPC_ENDPOINT#*:}"
+              echo "Waiting for detector at $H:$P"
+              until nc -z "$H" "$P"; do sleep 1; done
+              echo "Detector is up"
+          env:
+            - name: DETECTOR_GRPC_ENDPOINT
+              value: {{ .Values.probe.grpc.endpoint | default (printf "%s-detector:%d" (include "sentinel-ebpf.fullname" .) (int .Values.detector.service.port)) | quote }}
       containers:
         - name: probe
           image: "{{ .Values.probe.image.repository }}:{{ .Values.probe.image.tag }}"

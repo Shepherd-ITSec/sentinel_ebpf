@@ -37,7 +37,7 @@ jobs:
 
       - name: Run tests
         run: |
-          uv sync --extra dev
+          uv sync --extra dev --extra detector
           uv run python -m pytest tests/ -v -k "not cuda"
 
   build-and-push:
