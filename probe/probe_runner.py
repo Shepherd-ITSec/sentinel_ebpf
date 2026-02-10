@@ -43,151 +43,19 @@ class BpfRule(ctypes.Structure):
   ]
 
 
-BPF_PROGRAM = r"""
-#include <uapi/linux/ptrace.h>
-#include <linux/dcache.h>
-#include <linux/path.h>
-#include <linux/fs.h>
-
-#define MAX_RULES 24
-#define MAX_PREFIX_LEN 24
-#define COMM_LEN 16
-#define RINGBUF_PAGES __RINGBUF_PAGES__
-
-struct rule_t {
-    u32 enabled;
-    u32 event_type; // 0 open
-    u32 prefix_len;
-    u32 comm_len;
-    u32 pid;
-    u32 tid;
-    u32 uid;
-    char prefix[MAX_PREFIX_LEN];
-    char comm[COMM_LEN];
-};
-
-struct data_t {
-    u64 ts;
-    u32 pid;
-    u32 tid;
-    u32 uid;
-    u32 flags;
-    char comm[COMM_LEN];
-    char filename[256];
-};
-
-BPF_ARRAY(rules, struct rule_t, MAX_RULES);
-BPF_ARRAY(rule_count, u32, 1);
-BPF_RINGBUF_OUTPUT(events, RINGBUF_PAGES);
-
-/* No early return/break in loop so clang can unroll (fixed trip count COMM_LEN). */
-static __inline int comm_matches(struct data_t *data, const struct rule_t *rule) {
-    int match = 1;
-    if (rule->comm_len == 0) {
-        return 1;
-    }
-#pragma unroll
-    for (int i = 0; i < COMM_LEN; i++) {
-        if (i < rule->comm_len) {
-            if (data->comm[i] != rule->comm[i] || data->comm[i] == 0) {
-                match = 0;
-            }
-        }
-    }
-    return match;
-}
-
-/* No early return/break in loop so clang can unroll (fixed trip count MAX_PREFIX_LEN). */
-static __inline int prefix_matches(struct data_t *data, const struct rule_t *rule) {
-    int match = 1;
-    if (rule->prefix_len == 0) {
-        return 1;
-    }
-#pragma unroll
-    for (int i = 0; i < MAX_PREFIX_LEN; i++) {
-        if (i < rule->prefix_len) {
-            if (data->filename[i] != rule->prefix[i] || data->filename[i] == 0) {
-                match = 0;
-            }
-        }
-    }
-    return match;
-}
-
-/* No break/continue/return in loop so clang can unroll (fixed trip count MAX_RULES). */
-static __inline int rule_allows(struct data_t *data) {
-    u32 idx = 0;
-    u32 *count = rule_count.lookup(&idx);
-    if (!count || *count == 0) {
-        return 1;
-    }
-    int allowed = 0;
-#pragma unroll
-    for (int i = 0; i < MAX_RULES; i++) {
-        if (i < *count) {
-            u32 key = i;
-            struct rule_t *rule = rules.lookup(&key);
-            if (rule && rule->enabled && rule->event_type == 0 &&
-                (rule->pid == 0 || rule->pid == data->pid) &&
-                (rule->tid == 0 || rule->tid == data->tid) &&
-                (rule->uid == 0 || rule->uid == data->uid) &&
-                comm_matches(data, rule) && prefix_matches(data, rule)) {
-                allowed = 1;
-            }
-        }
-    }
-    return allowed;
-}
-
-int trace_open(struct pt_regs *ctx, const char __user *filename, int flags) {
-    struct data_t data = {};
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    data.pid = pid_tgid >> 32;
-    data.tid = pid_tgid;
-    data.uid = bpf_get_current_uid_gid();
-    data.flags = flags;
-    data.ts = bpf_ktime_get_ns();
-    bpf_get_current_comm(&data.comm, sizeof(data.comm));
-
-    if (filename) {
-        bpf_probe_read_user_str(&data.filename, sizeof(data.filename), filename);
-    }
-
-    if (!rule_allows(&data)) {
-        return 0;
-    }
-
-    events.ringbuf_output(&data, sizeof(data), 0);
-    return 0;
-}
-
-int trace_openat(struct pt_regs *ctx, int dfd, const char __user *filename, int flags) {
-    struct data_t data = {};
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    data.pid = pid_tgid >> 32;
-    data.tid = pid_tgid;
-    data.uid = bpf_get_current_uid_gid();
-    data.flags = flags;
-    data.ts = bpf_ktime_get_ns();
-    bpf_get_current_comm(&data.comm, sizeof(data.comm));
-
-    if (filename) {
-        bpf_probe_read_user_str(&data.filename, sizeof(data.filename), filename);
-    }
-
-    if (!rule_allows(&data)) {
-        return 0;
-    }
-
-    events.ringbuf_output(&data, sizeof(data), 0);
-    return 0;
-}
-"""
+def _load_bpf_program() -> str:
+  """Load BPF program from separate file."""
+  bpffile = Path(__file__).parent / "probe.bpf.c"
+  if not bpffile.exists():
+    raise FileNotFoundError(f"BPF program file not found: {bpffile}")
+  return bpffile.read_text(encoding="utf-8")
 
 
 def _build_bpf_program(ring_buffer_pages: int) -> str:
+  """Load and build BPF program with ring buffer pages substitution."""
   pages = max(1, int(ring_buffer_pages))
-  return BPF_PROGRAM.replace("__RINGBUF_PAGES__", str(pages))
+  program = _load_bpf_program()
+  return program.replace("__RINGBUF_PAGES__", str(pages))
 
 
 def _hostname_metadata():
@@ -389,14 +257,31 @@ class ProbeRunner:
     self.cfg = cfg
     self.bpf = BPF(text=_build_bpf_program(cfg.stream.ring_buffer_pages))
     sys_prefix = self.bpf.get_syscall_prefix().decode()
-    self.bpf.attach_kprobe(event=f"{sys_prefix}open", fn_name="trace_open")
-    self.bpf.attach_kprobe(event=f"{sys_prefix}openat", fn_name="trace_openat")
+    # Use kretprobe (return probe) to read filename after syscall completes
+    # This ensures user memory is accessible (kernel has paged it in during syscall execution)
+    # We also need entry probes to capture context (pid, flags, etc.)
+    self.bpf.attach_kprobe(event=f"{sys_prefix}open", fn_name="trace_open_entry")
+    self.bpf.attach_kretprobe(event=f"{sys_prefix}open", fn_name="trace_open_ret")
+    self.bpf.attach_kprobe(event=f"{sys_prefix}openat", fn_name="trace_openat_entry")
+    self.bpf.attach_kretprobe(event=f"{sys_prefix}openat", fn_name="trace_openat_ret")
     self.streamer = GrpcStreamer(cfg)
     self.filesink: Optional[FileSink] = None
     self._stop = threading.Event()
     self._metadata = _hostname_metadata()
     self.rule_engine = RuleEngine(cfg.rules_file)
     self._load_rules_into_bpf()
+    # Get boot time to convert boot-relative timestamps to Unix epoch nanoseconds
+    # bpf_ktime_get_ns() returns nanoseconds since boot, we need Unix epoch
+    # Read /proc/uptime to get seconds since boot, then calculate boot time
+    try:
+      with open("/proc/uptime", "r") as f:
+        uptime_seconds = float(f.read().split()[0])
+      current_time_ns = int(time.time() * 1e9)
+      self._boot_time_ns = current_time_ns - int(uptime_seconds * 1e9)
+    except Exception:
+      # Fallback: assume boot time is current time (will be slightly off)
+      logging.warning("Could not read /proc/uptime, using current time as boot time")
+      self._boot_time_ns = 0
     if self.cfg.stream.mode == "file":
       self.filesink = FileSink(
         path=self.cfg.stream.file_path,
@@ -464,6 +349,10 @@ class ProbeRunner:
     comm = event.comm.decode(errors="ignore").rstrip("\x00")
     event_type = "file_open"
 
+    # Convert boot-relative timestamp to Unix epoch nanoseconds
+    # bpf_ktime_get_ns() returns nanoseconds since boot, not since epoch
+    ts_unix_nano = event.ts + self._boot_time_ns
+
     # Ordered vector: [filename, flags, comm, pid, tid, uid] for file_open
     attributes = _event_attributes(self._metadata)
     attributes["open_flags"] = _decode_open_flags(int(event.flags))
@@ -473,7 +362,7 @@ class ProbeRunner:
       pod_name=self._metadata["pod"],
       namespace=self._metadata["namespace"],
       container_id=self._metadata["container_id"],
-      ts_unix_nano=event.ts,
+      ts_unix_nano=ts_unix_nano,
       event_type=event_type,
       data=[filename, str(event.flags), comm, str(event.pid), str(event.tid), str(event.uid)],
       attributes=attributes,

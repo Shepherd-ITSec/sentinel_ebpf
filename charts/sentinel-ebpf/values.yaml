@@ -60,6 +60,27 @@ detector:
   service:
     type: ClusterIP
     port: 50051
+  eventsPort: 50052  # HTTP API for recent events (UI log tail in gRPC mode)
+  # Model configuration (River anomaly detection)
+  model:
+    algorithm: "memstream"  # halfspacetrees | loda | memstream
+    threshold: 0.5  # Anomaly score threshold (0-1)
+    # Half-Space Trees parameters
+    hst_n_trees: 25
+    hst_height: 15
+    hst_window_size: 250
+    # LODA parameters
+    loda_n_projections: 20
+    loda_bins: 64
+    loda_range: 3.0
+    loda_ema_alpha: 0.01
+    loda_hist_decay: 1.0
+    # MemStream parameters
+    mem_hidden_dim: 32
+    mem_latent_dim: 8
+    mem_memory_size: 128
+    mem_lr: 0.001
+    seed: 42
   resources: {}
   nodeSelector: {}
   tolerations: []
@@ -82,10 +103,11 @@ ui:
     type: ClusterIP
     port: 8080
   logPath: /var/log/sentinel-ebpf/events.bin
-  pollSeconds: 10
+  pollSeconds: 3
   logLimit: 50
-  # Defaults use chart fullname (e.g. sentinel-ebpf-sentinel-ebpf-detector:50051). Override if needed.
+  # Defaults use chart fullname. Override if needed.
   detectorGrpcAddr: ""
+  detectorEventsUrl: ""  # recent-events API for log tail in gRPC mode (default: http://...-detector:50052/recent_events)
   probeHealthUrl: ""
   probeMetricsUrl: ""
   detectorMetricsUrl: ""

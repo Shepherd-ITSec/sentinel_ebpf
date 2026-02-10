@@ -31,9 +31,43 @@ spec:
           env:
             - name: DETECTOR_PORT
               value: "{{ .Values.detector.service.port }}"
+            - name: DETECTOR_EVENTS_PORT
+              value: "{{ .Values.detector.eventsPort }}"
+            - name: DETECTOR_MODEL_ALGORITHM
+              value: {{ .Values.detector.model.algorithm | quote }}
+            - name: DETECTOR_THRESHOLD
+              value: {{ .Values.detector.model.threshold | quote }}
+            - name: DETECTOR_HST_N_TREES
+              value: {{ .Values.detector.model.hst_n_trees | quote }}
+            - name: DETECTOR_HST_HEIGHT
+              value: {{ .Values.detector.model.hst_height | quote }}
+            - name: DETECTOR_HST_WINDOW_SIZE
+              value: {{ .Values.detector.model.hst_window_size | quote }}
+            - name: DETECTOR_LODA_PROJECTIONS
+              value: {{ .Values.detector.model.loda_n_projections | quote }}
+            - name: DETECTOR_LODA_BINS
+              value: {{ .Values.detector.model.loda_bins | quote }}
+            - name: DETECTOR_LODA_RANGE
+              value: {{ .Values.detector.model.loda_range | quote }}
+            - name: DETECTOR_LODA_EMA_ALPHA
+              value: {{ .Values.detector.model.loda_ema_alpha | quote }}
+            - name: DETECTOR_LODA_HIST_DECAY
+              value: {{ .Values.detector.model.loda_hist_decay | quote }}
+            - name: DETECTOR_MEMSTREAM_HIDDEN_DIM
+              value: {{ .Values.detector.model.mem_hidden_dim | quote }}
+            - name: DETECTOR_MEMSTREAM_LATENT_DIM
+              value: {{ .Values.detector.model.mem_latent_dim | quote }}
+            - name: DETECTOR_MEMSTREAM_MEMORY_SIZE
+              value: {{ .Values.detector.model.mem_memory_size | quote }}
+            - name: DETECTOR_MEMSTREAM_LR
+              value: {{ .Values.detector.model.mem_lr | quote }}
+            - name: DETECTOR_MODEL_SEED
+              value: {{ .Values.detector.model.seed | quote }}
           ports:
             - containerPort: {{ .Values.detector.service.port }}
               name: grpc
+            - containerPort: {{ .Values.detector.eventsPort }}
+              name: events
           livenessProbe:
             tcpSocket:
               port: grpc

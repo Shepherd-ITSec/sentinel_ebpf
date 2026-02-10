@@ -17,9 +17,12 @@ MAGIC = b"EVT1"
 def _http_get(url: str, timeout: float = 2.0) -> str:
   if not url:
     return ""
-  req = Request(url, headers={"User-Agent": "sentinel-ebpf-ui"})
-  with urlopen(req, timeout=timeout) as resp:  # noqa: S310
-    return resp.read().decode("utf-8", errors="replace")
+  try:
+    req = Request(url, headers={"User-Agent": "sentinel-ebpf-ui"})
+    with urlopen(req, timeout=timeout) as resp:  # noqa: S310
+      return resp.read().decode("utf-8", errors="replace")
+  except Exception as exc:  # noqa: BLE001
+    return f"error: {exc}"
 
 
 def _grpc_health(addr: str, timeout: float = 2.0) -> str:
@@ -76,12 +79,35 @@ def _tail_ndjson(path: Path, limit: int):
   return list(entries)
 
 
+def _fetch_recent_events_from_detector(events_url: str, limit: int):
+  """Fetch recent events from detector's HTTP API (gRPC mode log tail)."""
+  if not events_url:
+    return None
+  try:
+    url = f"{events_url}?limit={limit}" if "?" not in events_url else f"{events_url}&limit={limit}"
+    raw = _http_get(url, timeout=3.0)
+    if raw.startswith("error:"):
+      return None
+    data = json.loads(raw)
+    return data.get("entries", [])
+  except Exception:  # noqa: BLE001
+    return None
+
+
 def _read_logs(path_str: str, limit: int):
   if not path_str:
-    return {"error": "LOG_PATH not set", "entries": []}
+    return {"message": "LOG_PATH not set", "entries": []}
   path = Path(path_str)
   if not path.exists():
-    return {"error": f"log file not found: {path}", "entries": []}
+    # gRPC mode: try detector recent-events API
+    events_url = os.environ.get("DETECTOR_EVENTS_URL", "")
+    entries = _fetch_recent_events_from_detector(events_url, limit) if events_url else None
+    if entries is not None:
+      return {"message": "Live tail from detector (gRPC stream).", "entries": entries}
+    return {
+      "message": "No log file at this path. When the probe streams to the detector (gRPC), it does not write to a file; use file mode and a shared volume to see logs here.",
+      "entries": [],
+    }
   try:
     with _open_stream(path) as f:
       magic = f.read(4)
@@ -92,66 +118,12 @@ def _read_logs(path_str: str, limit: int):
     return {"error": str(exc), "entries": []}
 
 
-HTML = """<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8">
-    <title>sentinel-ebpf debug</title>
-    <style>
-      body { font-family: sans-serif; margin: 16px; }
-      pre { background: #f4f4f4; padding: 8px; overflow: auto; }
-      .section { margin-bottom: 16px; }
-      .small { color: #666; }
-    </style>
-  </head>
-  <body>
-    <h2>sentinel-ebpf debug</h2>
-    <div class="small">Lightweight status, metrics, and log tail.</div>
-    <div class="section">
-      <h3>Status</h3>
-      <pre id="status"></pre>
-    </div>
-    <div class="section">
-      <h3>Metrics</h3>
-      <pre id="metrics"></pre>
-    </div>
-    <div class="section">
-      <h3>Logs (tail)</h3>
-      <pre id="logs"></pre>
-    </div>
-    <script>
-      const pollSeconds = parseInt("%POLL_SECONDS%", 10) || 10;
-      const logLimit = parseInt("%LOG_LIMIT%", 10) || 50;
-      async function fetchJson(url) {
-        const r = await fetch(url);
-        return await r.json();
-      }
-      async function refresh() {
-        try {
-          const status = await fetchJson("/api/status");
-          document.getElementById("status").textContent = JSON.stringify(status, null, 2);
-        } catch (e) {
-          document.getElementById("status").textContent = String(e);
-        }
-        try {
-          const metrics = await fetchJson("/api/metrics");
-          document.getElementById("metrics").textContent = JSON.stringify(metrics, null, 2);
-        } catch (e) {
-          document.getElementById("metrics").textContent = String(e);
-        }
-        try {
-          const logs = await fetchJson(`/api/logs?limit=${logLimit}`);
-          document.getElementById("logs").textContent = JSON.stringify(logs, null, 2);
-        } catch (e) {
-          document.getElementById("logs").textContent = String(e);
-        }
-      }
-      refresh();
-      setInterval(refresh, pollSeconds * 1000);
-    </script>
-  </body>
-</html>
-"""
+def _load_html_template() -> str:
+  path = Path(__file__).resolve().parent / "index.html"
+  return path.read_text(encoding="utf-8")
+
+
+_HTML_TEMPLATE = _load_html_template()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -167,7 +139,7 @@ class Handler(BaseHTTPRequestHandler):
     if self.path == "/" or self.path.startswith("/index"):
       poll = os.environ.get("UI_POLL_SECONDS", "10")
       limit = os.environ.get("UI_LOG_LIMIT", "50")
-      html = HTML.replace("%POLL_SECONDS%", poll).replace("%LOG_LIMIT%", limit)
+      html = _HTML_TEMPLATE.replace("%POLL_SECONDS%", poll).replace("%LOG_LIMIT%", limit)
       data = html.encode("utf-8")
       self.send_response(200)
       self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -192,8 +164,8 @@ class Handler(BaseHTTPRequestHandler):
       detector_metrics = os.environ.get("DETECTOR_METRICS_URL", "")
       metrics = {
         "ts": int(time.time()),
-        "probe_metrics": _http_get(probe_metrics),
-        "detector_metrics": _http_get(detector_metrics),
+        "probe_metrics": _http_get(probe_metrics) if probe_metrics else "(not configured)",
+        "detector_metrics": _http_get(detector_metrics) if detector_metrics else "(not configured)",
       }
       self._json(metrics)
       return

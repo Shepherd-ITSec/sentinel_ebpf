@@ -165,6 +165,7 @@ if [[ "${BUILD_IMAGES}" == "true" ]]; then
   log_debug "H1" "build_start" "{\"builder\":\"$(if [[ ${DOCKER_BUILDKIT:-0} -eq 1 ]]; then echo buildkit; else echo legacy; fi)\",\"probe_image\":\"${LOCAL_PROBE_IMAGE}\",\"detector_image\":\"${LOCAL_DETECTOR_IMAGE}\"}"
   docker build -f probe/Dockerfile -t "${LOCAL_PROBE_IMAGE}" .
   docker build -f detector/Dockerfile -t "${LOCAL_DETECTOR_IMAGE}" .
+  docker build -f ui/Dockerfile -t sentinel-ebpf-ui:latest .
   # Update image variables to use local tags for k3d import
   PROBE_IMAGE="${LOCAL_PROBE_IMAGE}"
   DETECTOR_IMAGE="${LOCAL_DETECTOR_IMAGE}"
@@ -245,13 +246,21 @@ CLUSTER_CREATED_THIS_RUN=1
 
 next_step "Importing images into cluster..."
 info "Importing images into cluster"
-k3d image import -c "${CLUSTER_NAME}" "${PROBE_IMAGE}" "${DETECTOR_IMAGE}"
+k3d image import -c "${CLUSTER_NAME}" "${PROBE_IMAGE}" "${DETECTOR_IMAGE}" sentinel-ebpf-ui:latest
 
 info "Ensuring kubeconfig is set"
 export KUBECONFIG="$(k3d kubeconfig write "${CLUSTER_NAME}")"
 
 next_step "Installing Helm chart..."
 info "Installing Helm chart"
+UI_SET_ARGS=()
+if [[ "${BUILD_IMAGES}" == "true" ]]; then
+  UI_SET_ARGS=(
+    --set ui.enabled=true
+    --set ui.image.repository=sentinel-ebpf-ui
+    --set ui.image.tag=latest
+  )
+fi
 helm upgrade --install sentinel-ebpf "${CHART_PATH}" \
   --namespace "${NAMESPACE}" \
   --create-namespace \
@@ -259,7 +268,8 @@ helm upgrade --install sentinel-ebpf "${CHART_PATH}" \
   --set probe.image.tag="$(cut -d: -f2 <<< "${PROBE_IMAGE}")" \
   --set probe.clusterName="${CLUSTER_NAME}" \
   --set detector.image.repository="$(cut -d: -f1 <<< "${DETECTOR_IMAGE}")" \
-  --set detector.image.tag="$(cut -d: -f2 <<< "${DETECTOR_IMAGE}")"
+  --set detector.image.tag="$(cut -d: -f2 <<< "${DETECTOR_IMAGE}")" \
+  "${UI_SET_ARGS[@]}"
 INSTALL_RC=$?
 log_debug "H2" "helm_install" "{\"rc\":${INSTALL_RC},\"namespace\":\"${NAMESPACE}\"}"
 if [[ ${INSTALL_RC} -ne 0 ]]; then
@@ -355,8 +365,19 @@ det_cond=$(kubectl -n "${NAMESPACE}" get pods -l app.kubernetes.io/name=sentinel
 log_debug "H13" "pod_conditions" "$(printf '{\"probe\":\"%s\",\"detector\":\"%s\"}' "${probe_cond}" "${det_cond}")"
 
 next_step "Triggering test and showing logs..."
-info "Triggering a test write/read from a pod"
-kubectl run tester --rm -i --tty --image=busybox --restart=Never -- sh -c "echo x >> /etc/hosts && cat /etc/hosts >/dev/null"
+info "Triggering activity generator (normal + suspicious file accesses)"
+if [ -f "${ROOT_DIR}/scripts/generate-activity.sh" ]; then
+  kubectl run activity-generator --rm -i --restart=Never \
+    --image=busybox:1.36 \
+    --namespace="${NAMESPACE}" \
+    -- sh -c "$(cat "${ROOT_DIR}/scripts/generate-activity.sh")" || {
+    echo "Activity generator failed, falling back to simple test" >&2
+    kubectl run tester --rm -i --tty --image=busybox --restart=Never -- sh -c "echo x >> /etc/hosts && cat /etc/hosts >/dev/null"
+  }
+else
+  info "Activity generator script not found, using simple test"
+  kubectl run tester --rm -i --tty --image=busybox --restart=Never -- sh -c "echo x >> /etc/hosts && cat /etc/hosts >/dev/null"
+fi
 
 info "Recent probe logs"
 if [[ -n "${ds_name}" ]]; then
