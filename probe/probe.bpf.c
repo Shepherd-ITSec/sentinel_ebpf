@@ -1,7 +1,4 @@
-#include <uapi/linux/ptrace.h>
-#include <linux/dcache.h>
-#include <linux/path.h>
-#include <linux/fs.h>
+#include <bcc/helpers.h>
 
 #define MAX_RULES 24
 #define MAX_PREFIX_LEN 24
@@ -30,21 +27,9 @@ struct data_t {
     char filename[256];
 };
 
-// Map to store filename pointer and context at syscall entry for kretprobe
-struct entry_data_t {
-    u64 ts;
-    u32 pid;
-    u32 tid;
-    u32 uid;
-    u32 flags;
-    char comm[COMM_LEN];
-    u64 filename_ptr;
-};
-
 BPF_ARRAY(rules, struct rule_t, MAX_RULES);
 BPF_ARRAY(rule_count, u32, 1);
 BPF_RINGBUF_OUTPUT(events, RINGBUF_PAGES);
-BPF_HASH(entry_map, u64, struct entry_data_t);  // key: pid_tgid, value: entry context
 
 /* No early return/break in loop so clang can unroll (fixed trip count COMM_LEN). */
 static __inline int comm_matches(struct data_t *data, const struct rule_t *rule) {
@@ -109,44 +94,19 @@ static __inline int rule_allows(struct data_t *data) {
     return allowed;
 }
 
-// Entry probe: store context for kretprobe
-int trace_open_entry(struct pt_regs *ctx, const char __user *filename, int flags) {
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    struct entry_data_t entry = {};
-    entry.pid = pid_tgid >> 32;
-    entry.tid = pid_tgid;
-    entry.uid = bpf_get_current_uid_gid();
-    entry.flags = flags;
-    entry.ts = bpf_ktime_get_ns();
-    bpf_get_current_comm(&entry.comm, sizeof(entry.comm));
-    entry.filename_ptr = (u64)filename;
-    entry_map.update(&pid_tgid, &entry);
-    return 0;
-}
-
-// Return probe: read filename after syscall completes (memory is accessible)
-int trace_open_ret(struct pt_regs *ctx) {
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    struct entry_data_t *entry = entry_map.lookup(&pid_tgid);
-    if (!entry) {
-        return 0;
-    }
-    
+TRACEPOINT_PROBE(syscalls, sys_enter_open) {
     struct data_t data = {};
-    data.pid = entry->pid;
-    data.tid = entry->tid;
-    data.uid = entry->uid;
-    data.flags = entry->flags;
-    data.ts = entry->ts;
-    __builtin_memcpy(&data.comm, &entry->comm, COMM_LEN);
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    data.pid = pid_tgid >> 32;
+    data.tid = pid_tgid;
+    data.uid = bpf_get_current_uid_gid();
+    data.flags = args->flags;
+    data.ts = bpf_ktime_get_ns();
+    bpf_get_current_comm(&data.comm, sizeof(data.comm));
     
-    // Read filename at return - memory is guaranteed to be accessible
-    if (entry->filename_ptr) {
-        long ret = bpf_probe_read_user_str(&data.filename, sizeof(data.filename), (const char __user *)entry->filename_ptr);
-        // ret > 0 = success, ret <= 0 = error or empty
+    if (args->filename != 0) {
+        bpf_probe_read_user_str(&data.filename, sizeof(data.filename), args->filename);
     }
-    
-    entry_map.delete(&pid_tgid);
     
     if (!rule_allows(&data)) {
         return 0;
@@ -156,44 +116,19 @@ int trace_open_ret(struct pt_regs *ctx) {
     return 0;
 }
 
-// Entry probe for openat
-int trace_openat_entry(struct pt_regs *ctx, int dfd, const char __user *filename, int flags) {
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    struct entry_data_t entry = {};
-    entry.pid = pid_tgid >> 32;
-    entry.tid = pid_tgid;
-    entry.uid = bpf_get_current_uid_gid();
-    entry.flags = flags;
-    entry.ts = bpf_ktime_get_ns();
-    bpf_get_current_comm(&entry.comm, sizeof(entry.comm));
-    entry.filename_ptr = (u64)filename;
-    entry_map.update(&pid_tgid, &entry);
-    return 0;
-}
-
-// Return probe for openat
-int trace_openat_ret(struct pt_regs *ctx) {
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    struct entry_data_t *entry = entry_map.lookup(&pid_tgid);
-    if (!entry) {
-        return 0;
-    }
-    
+TRACEPOINT_PROBE(syscalls, sys_enter_openat) {
     struct data_t data = {};
-    data.pid = entry->pid;
-    data.tid = entry->tid;
-    data.uid = entry->uid;
-    data.flags = entry->flags;
-    data.ts = entry->ts;
-    __builtin_memcpy(&data.comm, &entry->comm, COMM_LEN);
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    data.pid = pid_tgid >> 32;
+    data.tid = pid_tgid;
+    data.uid = bpf_get_current_uid_gid();
+    data.flags = args->flags;
+    data.ts = bpf_ktime_get_ns();
+    bpf_get_current_comm(&data.comm, sizeof(data.comm));
     
-    // Read filename at return - memory is guaranteed to be accessible
-    if (entry->filename_ptr) {
-        long ret = bpf_probe_read_user_str(&data.filename, sizeof(data.filename), (const char __user *)entry->filename_ptr);
-        // ret > 0 = success, ret <= 0 = error or empty
+    if (args->filename != 0) {
+        bpf_probe_read_user_str(&data.filename, sizeof(data.filename), args->filename);
     }
-    
-    entry_map.delete(&pid_tgid);
     
     if (!rule_allows(&data)) {
         return 0;

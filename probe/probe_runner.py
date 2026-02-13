@@ -115,34 +115,66 @@ class GrpcStreamer:
     try:
       self.queue.put_nowait(evt)
     except queue.Full:
-      logging.warning("dropping event: queue full")
+      # Log first few drops, then throttle logging to avoid spam
+      if not hasattr(self, '_drop_count'):
+        self._drop_count = 0
+      self._drop_count += 1
+      if self._drop_count <= 10 or self._drop_count % 1000 == 0:
+        logging.warning("dropping event: queue full (total dropped: %d)", self._drop_count)
 
   def _request_iter(self):
+    # Use blocking get with timeout to avoid busy-waiting
+    # This allows the generator to yield items as they become available
     while not self._stop.is_set():
       try:
-        item = self.queue.get(timeout=1)
+        # Use get() instead of get_nowait() to block until item available or timeout
+        item = self.queue.get(timeout=0.1)
+        if item is None:
+          break
+        yield item
+        # Mark task as done to allow queue size to decrease
+        self.queue.task_done()
       except queue.Empty:
+        # Yield control briefly when queue is empty
         continue
-      if item is None:
-        break
-      yield item
 
   def _run_stream(self):
     backoff = 1
+    events_sent = 0
+    last_queue_size_log = 0
     while not self._stop.is_set():
       try:
+        queue_size = self.queue.qsize()
+        if queue_size > 0 and (events_sent == 0 or queue_size != last_queue_size_log):
+          logging.info("Connecting to detector at %s (queue size: %d)", self.cfg.stream.endpoint, queue_size)
+          last_queue_size_log = queue_size
         with grpc.insecure_channel(self.cfg.stream.endpoint) as channel:
           stub = events_pb2_grpc.DetectorServiceStub(channel)
+          if events_sent == 0:
+            logging.info("gRPC stream connected, starting to send events")
           for resp in stub.StreamEvents(self._request_iter()):
+            events_sent += 1
             if resp.anomaly:
               logging.warning("anomaly: %s score=%.3f reason=%s", resp.event_id, resp.score, resp.reason)
             else:
               logging.debug("response: %s", resp.event_id)
-        backoff = 1
+            # Log progress periodically
+            if events_sent % 10000 == 0:
+              logging.info("Sent %d events to detector (queue size: %d)", events_sent, self.queue.qsize())
+          logging.warning("gRPC stream ended (detector closed connection) after %d events", events_sent)
+          backoff = 1
+          events_sent = 0
       except grpc.RpcError as rpc_err:
-        logging.error("grpc stream error: %s", rpc_err)
+        logging.error("grpc stream error: %s (events sent before error: %d, queue size: %d)", 
+                     rpc_err, events_sent, self.queue.qsize())
         time.sleep(backoff)
         backoff = min(backoff * 2, 30)
+        events_sent = 0
+      except Exception as exc:
+        logging.error("Unexpected error in gRPC stream: %s (queue size: %d)", exc, self.queue.qsize(), exc_info=True)
+        time.sleep(backoff)
+        backoff = min(backoff * 2, 30)
+        events_sent = 0
 
   def start(self):
     if self.cfg.stream.mode != "grpc":
@@ -256,14 +288,6 @@ class ProbeRunner:
   def __init__(self, cfg: AppConfig):
     self.cfg = cfg
     self.bpf = BPF(text=_build_bpf_program(cfg.stream.ring_buffer_pages))
-    sys_prefix = self.bpf.get_syscall_prefix().decode()
-    # Use kretprobe (return probe) to read filename after syscall completes
-    # This ensures user memory is accessible (kernel has paged it in during syscall execution)
-    # We also need entry probes to capture context (pid, flags, etc.)
-    self.bpf.attach_kprobe(event=f"{sys_prefix}open", fn_name="trace_open_entry")
-    self.bpf.attach_kretprobe(event=f"{sys_prefix}open", fn_name="trace_open_ret")
-    self.bpf.attach_kprobe(event=f"{sys_prefix}openat", fn_name="trace_openat_entry")
-    self.bpf.attach_kretprobe(event=f"{sys_prefix}openat", fn_name="trace_openat_ret")
     self.streamer = GrpcStreamer(cfg)
     self.filesink: Optional[FileSink] = None
     self._stop = threading.Event()
