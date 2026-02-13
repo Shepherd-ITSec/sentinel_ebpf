@@ -130,6 +130,8 @@ class GrpcStreamer:
     self._stop = threading.Event()
     self._thread: Optional[threading.Thread] = None
     self._drop_count = 0
+    self._events_sent = 0  # Track total events sent
+    self._events_sent_lock = threading.Lock()  # Lock for events_sent counter
     self._batch_size = max(1, cfg.stream.batch_size)
 
   def publish(self, evt: events_pb2.EventEnvelope):
@@ -188,7 +190,7 @@ class GrpcStreamer:
 
   async def _run_stream(self):
     backoff = 1
-    events_sent_ref = [0]  # Use list for mutable reference
+    events_sent_ref = [0]  # Use list for mutable reference (per-stream counter)
     last_queue_size_log = 0
     # Reuse channel for better performance
     channel = None
@@ -221,12 +223,18 @@ class GrpcStreamer:
         # Stream events asynchronously - responses don't block sending
         # This is the key advantage of async: we can send and receive concurrently
         response_count = 0
+        initial_events_sent = 0
+        with self._events_sent_lock:
+          initial_events_sent = self._events_sent
+        
         async for resp in stub.StreamEvents(self._request_iter()):
           response_count += 1
           events_sent_ref[0] = response_count
-          # Update total events sent counter
-          with self._events_sent_lock:
-            self._events_sent = response_count
+          # Update total events sent counter (cumulative across all streams)
+          # Update every 100 events to reduce lock contention
+          if response_count % 100 == 0:
+            with self._events_sent_lock:
+              self._events_sent = initial_events_sent + response_count
           # Only log anomalies for performance - skip normal responses
           if resp.anomaly:
             logging.warning("anomaly: %s score=%.3f reason=%s", resp.event_id, resp.score, resp.reason)
@@ -236,11 +244,15 @@ class GrpcStreamer:
               queue_size = len(self._queue)
             logging.info("Processed %d responses from detector (queue size: %d)", response_count, queue_size)
         
+        # Update final count for this stream
+        with self._events_sent_lock:
+          self._events_sent = initial_events_sent + response_count
+        
         logging.warning("gRPC stream ended (detector closed connection) after %d events", events_sent_ref[0])
         await channel.close()
         channel = None
         backoff = 1
-        events_sent_ref[0] = 0
+        events_sent_ref[0] = 0  # Reset per-stream counter
         
       except grpc.RpcError as rpc_err:
         if channel:
@@ -248,6 +260,11 @@ class GrpcStreamer:
           channel = None
         with self._lock:
           queue_size = len(self._queue)
+        # Update final count for this stream before resetting
+        if response_count > 0:
+          with self._events_sent_lock:
+            self._events_sent = initial_events_sent + response_count
+        
         logging.error("grpc stream error: %s (events processed: %d, queue size: %d)", 
                      rpc_err, events_sent_ref[0], queue_size)
         await asyncio.sleep(backoff)
@@ -259,6 +276,11 @@ class GrpcStreamer:
           channel = None
         with self._lock:
           queue_size = len(self._queue)
+        # Update final count for this stream before resetting
+        if response_count > 0:
+          with self._events_sent_lock:
+            self._events_sent = initial_events_sent + response_count
+        
         logging.error("Unexpected error in gRPC stream: %s (queue size: %d)", exc, queue_size, exc_info=True)
         await asyncio.sleep(backoff)
         backoff = min(backoff * 2, 30)

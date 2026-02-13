@@ -122,8 +122,9 @@ grpc:
       assert cfg.metrics_enabled is True
       assert cfg.stream.mode == "grpc"
       assert cfg.stream.endpoint == "localhost:50051"
-      assert cfg.stream.batch_size == 64
-      assert cfg.stream.queue_length == 1024
+      assert cfg.stream.batch_size == 512  # Updated default for better performance
+      assert cfg.stream.queue_length == 50000  # Updated default for better performance
+      assert cfg.stream.ring_buffer_pages == 256  # Updated default for better performance
     finally:
       del os.environ["PROBE_CONFIG"]
 

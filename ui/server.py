@@ -16,9 +16,9 @@ from grpc_health.v1 import health_pb2, health_pb2_grpc
 
 logging.basicConfig(level=logging.WARNING)
 
-# Track the timestamp of the newest event we counted in the last poll
-# This allows us to count only new events since the last poll
-_last_event_timestamp_ns = 0
+# Track the number of events we've seen in the buffer (to detect new events)
+# Since the buffer rotates, we track the total count from the detector
+_last_total_events = 0
 _last_poll_lock = threading.Lock()
 
 # Track per-poll counts for time-series chart (rolling window of last N polls)
@@ -231,13 +231,30 @@ class Handler(BaseHTTPRequestHandler):
 
     if self.path.startswith("/api/calls_chart"):
       # Get recent events and count by event_type for current poll interval
-      global _last_event_timestamp_ns
+      # Use total events count from metrics to track new events since last poll
+      global _last_total_events
       detector_events_url = os.environ.get("DETECTOR_EVENTS_URL", "")
+      detector_metrics_url = os.environ.get("DETECTOR_METRICS_URL", "")
       counts = {}
-      newest_event_ts_ns = 0
+      
+      current_time = time.time()
       
       if detector_events_url:
         try:
+          # Get current total events processed from metrics
+          current_total_events = 0
+          if detector_metrics_url:
+            try:
+              metrics_text = _http_get(detector_metrics_url, timeout=2.0)
+              for line in metrics_text.split("\n"):
+                if line.startswith("sentinel_ebpf_detector_events_total"):
+                  parts = line.split()
+                  if len(parts) >= 2:
+                    current_total_events = int(float(parts[1]))
+                    break
+            except Exception:
+              pass
+          
           # DETECTOR_EVENTS_URL should already point to /recent_events endpoint
           # Request up to 10000 events (matching detector buffer size)
           if "?" in detector_events_url:
@@ -250,49 +267,55 @@ class Handler(BaseHTTPRequestHandler):
               data = json.loads(raw)
               entries = data.get("entries", [])
               
-              # Get the timestamp of the newest event we counted last time
+              # Get the last total events count
               with _last_poll_lock:
-                last_event_ts_ns = _last_event_timestamp_ns
-                is_first_poll = (last_event_ts_ns == 0)
+                last_total_events = _last_total_events
+                is_first_poll = (last_total_events == 0)
               
-              logging.info(f"Chart poll: is_first_poll={is_first_poll}, last_event_ts_ns={last_event_ts_ns}, entries={len(entries)}")
-              
-              # Count events that are newer than the last event we counted
-              # On first poll, count all events (they're all "new")
-              # On subsequent polls, only count events newer than the last event timestamp
-              for entry in entries:
-                event_ts_ns = entry.get("ts_unix_nano", 0)
-                if is_first_poll:
-                  # First poll: count all events
-                  event_type = entry.get("event_type", "unknown")
-                  counts[event_type] = counts.get(event_type, 0) + 1
-                  # Track the newest event timestamp
-                  if event_ts_ns > newest_event_ts_ns:
-                    newest_event_ts_ns = event_ts_ns
-                else:
-                  # Subsequent polls: only count events newer than last event timestamp
-                  if event_ts_ns > last_event_ts_ns:
+              if is_first_poll:
+                # First poll: initialize counter and show recent events immediately
+                # Use a reasonable window (last 30 seconds) to show activity right away
+                # This provides immediate feedback while avoiding huge spikes of very old events
+                recent_window_seconds = 30
+                recent_threshold_ns = int(current_time * 1e9) - (recent_window_seconds * 1_000_000_000)
+                
+                for entry in entries:
+                  event_ts_ns = entry.get("ts_unix_nano", 0)
+                  # Count events from the last 30 seconds
+                  if event_ts_ns > recent_threshold_ns:
                     event_type = entry.get("event_type", "unknown")
                     counts[event_type] = counts.get(event_type, 0) + 1
-                    # Track the newest event timestamp
-                    if event_ts_ns > newest_event_ts_ns:
-                      newest_event_ts_ns = event_ts_ns
-              
-              logging.info(f"Chart poll result: counts={counts}, newest_event_ts_ns={newest_event_ts_ns}")
+                
+                # Always initialize the counter on first poll, even if no recent events
+                # This ensures subsequent polls can track new events immediately
+                with _last_poll_lock:
+                  _last_total_events = current_total_events if current_total_events > 0 else 0
+              else:
+                # Subsequent polls: count events that arrived since last poll
+                # Calculate how many new events were processed
+                new_events_count = current_total_events - last_total_events
+                
+                if new_events_count > 0:
+                  # Count the newest events in the buffer (up to new_events_count)
+                  # Since entries are returned oldest-first (first N entries), 
+                  # the newest events are at the end
+                  new_entries = entries[-new_events_count:] if new_events_count <= len(entries) else entries
+                  
+                  for entry in new_entries:
+                    event_type = entry.get("event_type", "unknown")
+                    counts[event_type] = counts.get(event_type, 0) + 1
+                
+                # Update the last total events count
+                with _last_poll_lock:
+                  _last_total_events = current_total_events
               
               # Store this poll's data in history
-              poll_time = time.time()
+              poll_time = current_time
               with _poll_history_lock:
                 _poll_history.append({
                   "time": poll_time,
                   "counts": counts.copy() if counts else {}
                 })
-              
-              # Update the last event timestamp to the newest event we counted
-              if newest_event_ts_ns > 0:
-                with _last_poll_lock:
-                  if newest_event_ts_ns > _last_event_timestamp_ns:
-                    _last_event_timestamp_ns = newest_event_ts_ns
             except json.JSONDecodeError as e:
               logging.error(f"Failed to parse JSON from detector: {e}, raw={raw[:200]}")
             except Exception as e:
