@@ -16,6 +16,7 @@ dev = [
   "pytest>=7.0.0",
   "pytest-asyncio>=0.21.0",
   "pytest-mock>=3.10.0",
+  "requests>=2.31.0",
 ]
 # Detector (ML) only; probe image stays small by not installing these
 # CPU-only torch keeps detector image small for k3d/CI; use detector-cuda extra for GPU if needed

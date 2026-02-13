@@ -7,9 +7,12 @@ from typing import List
 class DetectorConfig:
   port: int = 50051
   events_http_port: int = 50052  # 0 to disable; serves GET /recent_events for UI log tail in gRPC mode
+  recent_events_buffer_size: int = 10000  # Size of recent events ring buffer for UI (default: 10000)
   high_write_bytes: int = 10 * 1024 * 1024
   sensitive_prefixes: List[str] = field(default_factory=lambda: ["/etc", "/bin", "/usr", "/sbin", "/boot"])
   allowed_comms: List[str] = field(default_factory=list)
+  # Parallel processing configuration
+  worker_count: int = 4  # Number of parallel model instances for concurrent processing
   # River model configuration
   model_algorithm: str = "halfspacetrees"  # halfspacetrees | loda | memstream
   threshold: float = 0.5  # Anomaly score threshold (0-1)
@@ -30,10 +33,14 @@ class DetectorConfig:
 
 def load_config() -> DetectorConfig:
   port = int(os.environ.get("DETECTOR_PORT", "50051"))
+  recent_events_buffer_size = int(os.environ.get("DETECTOR_RECENT_EVENTS_BUFFER_SIZE", "10000"))
   events_http_port = int(os.environ.get("DETECTOR_EVENTS_PORT", "50052"))
   high_write_bytes = int(os.environ.get("DETECTOR_HIGH_WRITE_BYTES", str(10 * 1024 * 1024)))
   sensitive = os.environ.get("DETECTOR_SENSITIVE_PREFIXES", "/etc,/bin,/usr,/sbin,/boot")
   allowed = os.environ.get("DETECTOR_ALLOWED_COMMS", "")
+  
+  # Parallel processing: number of worker model instances
+  worker_count = int(os.environ.get("DETECTOR_WORKER_COUNT", "4"))
   
   model_algorithm = os.environ.get("DETECTOR_MODEL_ALGORITHM", "halfspacetrees")
   threshold = float(os.environ.get("DETECTOR_THRESHOLD", "0.5"))
@@ -54,9 +61,11 @@ def load_config() -> DetectorConfig:
   return DetectorConfig(
     port=port,
     events_http_port=events_http_port,
+    recent_events_buffer_size=recent_events_buffer_size,
     high_write_bytes=high_write_bytes,
     sensitive_prefixes=[p for p in sensitive.split(",") if p],
     allowed_comms=[c for c in allowed.split(",") if c],
+    worker_count=worker_count,
     model_algorithm=model_algorithm,
     threshold=threshold,
     hst_n_trees=hst_n_trees,

@@ -15,9 +15,9 @@ probe:
       caSecret: ""
   stream:
     mode: grpc # grpc | stdout | file
-    batchSize: 64
-    queueLength: 10000  # Increased from 1024 to handle high event rates
-    ringBufferPages: 64
+    batchSize: 512  # Increased from 64 for better throughput
+    queueLength: 50000  # Increased from 10000 to handle very high event rates
+    ringBufferPages: 256  # Increased from 64 for higher throughput
     file:
       path: /var/log/sentinel-ebpf/events.bin
       rotateMaxBytes: 52428800
@@ -61,6 +61,8 @@ detector:
     type: ClusterIP
     port: 50051
   eventsPort: 50052  # HTTP API for recent events (UI log tail in gRPC mode)
+  anomalyLogPath: ""  # Path to log anomalies to file (empty to disable, e.g., /var/log/sentinel-ebpf/anomalies.jsonl)
+  workerCount: 4  # Number of parallel model workers for concurrent processing
   # Model configuration (River anomaly detection)
   model:
     algorithm: "memstream"  # halfspacetrees | loda | memstream

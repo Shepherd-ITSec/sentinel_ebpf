@@ -1,5 +1,6 @@
 """Online anomaly detection models."""
 import logging
+import threading
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -163,6 +164,9 @@ class OnlineMemStream:
     self._memory: Optional[torch.Tensor] = None
     self._mem_index = 0
     self._mem_filled = 0
+    self._init_lock = threading.Lock()  # Lock for thread-safe initialization
+    self._memory_lock = threading.Lock()  # Lock for thread-safe memory updates
+    self._optimizer_lock = threading.Lock()  # Lock for thread-safe optimizer operations
     logging.info(
       "Initialized %s (hidden=%d, latent=%d, memory=%d, lr=%.5f)",
       self.algorithm,
@@ -181,8 +185,12 @@ class OnlineMemStream:
     self._memory = torch.zeros(self.memory_size, self.latent_dim, dtype=torch.float32)
 
   def _vectorize(self, features: Dict[str, float]) -> torch.Tensor:
+    # Thread-safe initialization check
     if self._feature_keys is None:
-      self._init_from_features(features)
+      with self._init_lock:
+        # Double-check pattern: another thread might have initialized while we waited
+        if self._feature_keys is None:
+          self._init_from_features(features)
     if self._feature_keys is None:
       raise RuntimeError("MemStream feature keys not initialized")
     vec = np.array([float(features[k]) for k in self._feature_keys], dtype=np.float32)
@@ -199,16 +207,26 @@ class OnlineMemStream:
   def _update_memory(self, z: torch.Tensor) -> None:
     if self._memory is None:
       return
-    if self._mem_filled < self.memory_size:
-      self._memory[self._mem_filled] = z
-      self._mem_filled += 1
-      return
-    self._memory[self._mem_index] = z
-    self._mem_index = (self._mem_index + 1) % self.memory_size
+    # Ensure z is detached from computation graph
+    z_detached = z.detach().cpu() if z.requires_grad else z.cpu()
+    
+    with self._memory_lock:
+      if self._mem_filled < self.memory_size:
+        # Direct assignment is safe here since we're using a lock
+        self._memory[self._mem_filled] = z_detached
+        self._mem_filled += 1
+      else:
+        # Direct assignment is safe here since we're using a lock
+        self._memory[self._mem_index] = z_detached
+        self._mem_index = (self._mem_index + 1) % self.memory_size
 
   def score_and_learn(self, features: Dict[str, float]) -> float:
+    # Thread-safe initialization check
     if self._model is None or self._optimizer is None:
-      self._init_from_features(features)
+      with self._init_lock:
+        # Double-check pattern: another thread might have initialized while we waited
+        if self._model is None or self._optimizer is None:
+          self._init_from_features(features)
     if self._model is None or self._optimizer is None:
       raise RuntimeError("MemStream not initialized")
 
@@ -221,13 +239,18 @@ class OnlineMemStream:
       recon_error = torch.mean((x - recon) ** 2).item()
     score = 1.0 - float(np.exp(-recon_error))
 
-    self._optimizer.zero_grad()
-    z_train, recon_train = self._model(x)
-    loss = torch.mean((x - recon_train) ** 2)
-    loss.backward()
-    self._optimizer.step()
-
-    self._update_memory(z_train.detach().squeeze(0))
+    # Thread-safe optimizer operations
+    with self._optimizer_lock:
+      self._optimizer.zero_grad()
+      z_train, recon_train = self._model(x)
+      loss = torch.mean((x - recon_train) ** 2)
+      loss.backward()
+      self._optimizer.step()
+      # Detach before releasing lock
+      z_for_memory = z_train.detach().squeeze(0)
+    
+    # Update memory after releasing optimizer lock
+    self._update_memory(z_for_memory)
     return score
 
 
