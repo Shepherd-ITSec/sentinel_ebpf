@@ -15,7 +15,7 @@ class DetectorConfig:
   worker_count: int = 4  # Number of parallel model instances for concurrent processing
   # River model configuration
   model_algorithm: str = "halfspacetrees"  # halfspacetrees | loda | memstream
-  threshold: float = 0.5  # Anomaly score threshold (0-1)
+  threshold: float = 0.5  # Anomaly score threshold (0-1). Most scores are small (normal events); only anomalies score high.
   hst_n_trees: int = 25
   hst_height: int = 15
   hst_window_size: int = 250
