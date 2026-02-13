@@ -1,11 +1,16 @@
 import asyncio
 import json
 import logging
+import os
 import threading
 import time
 from collections import deque
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+from typing import Optional, Tuple
+
+# Import Optional for type hints
 from urllib.parse import parse_qs, urlparse
 
 import grpc
@@ -20,8 +25,17 @@ from detector.model import OnlineAnomalyDetector
 from scripts.replay_logs import replay  # type: ignore
 
 # Ring buffer of recent events for UI log tail in gRPC mode (GET /recent_events).
-RECENT_EVENTS: deque = deque(maxlen=500)
+# Size is set during initialization from config
+RECENT_EVENTS: Optional[deque] = None
 _events_lock = threading.Lock()
+
+# Anomaly list for UI (all anomalies, not just recent)
+ANOMALIES: deque = deque(maxlen=1000)  # Keep last 1000 anomalies
+_anomalies_lock = threading.Lock()
+
+# Anomaly log file
+_anomaly_log_path: Optional[Path] = None
+_anomaly_log_lock = threading.Lock()
 
 # Metrics counters (thread-safe)
 _metrics_lock = threading.Lock()
@@ -31,6 +45,40 @@ _metrics = {
   "errors_total": 0,
   "last_event_timestamp": 0.0,
 }
+
+
+def _init_anomaly_log():
+  """Initialize anomaly log file if configured."""
+  global _anomaly_log_path
+  log_path = os.environ.get("ANOMALY_LOG_PATH", "")
+  if log_path:
+    _anomaly_log_path = Path(log_path)
+    _anomaly_log_path.parent.mkdir(parents=True, exist_ok=True)
+    logging.info("Anomaly logging enabled: %s", _anomaly_log_path)
+
+
+def _log_anomaly(evt, resp) -> None:
+  """Log anomaly to file if configured."""
+  if not _anomaly_log_path or not resp.anomaly:
+    return
+  try:
+    entry = {
+      "timestamp": datetime.now(timezone.utc).isoformat(),
+      "event_id": evt.event_id,
+      "event_type": evt.event_type or "",
+      "data": list(evt.data) if evt.data else [],
+      "hostname": evt.hostname or "",
+      "pod_name": evt.pod_name or "",
+      "namespace": evt.namespace or "",
+      "ts_unix_nano": evt.ts_unix_nano,
+      "score": round(resp.score, 4),
+      "reason": resp.reason or "",
+    }
+    with _anomaly_log_lock:
+      with _anomaly_log_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry) + "\n")
+  except Exception as e:
+    logging.error(f"Failed to log anomaly to file: {e}", exc_info=True)
 
 
 def _recent_events_append(evt, resp) -> None:
@@ -45,7 +93,27 @@ def _recent_events_append(evt, resp) -> None:
     "reason": resp.reason or "",
   }
   with _events_lock:
-    RECENT_EVENTS.append(entry)
+    if RECENT_EVENTS is not None:
+      RECENT_EVENTS.append(entry)
+  
+  # Add to anomalies list if it's an anomaly
+  if resp.anomaly:
+    anomaly_entry = {
+      "event_id": evt.event_id,
+      "event_type": evt.event_type or "",
+      "data": list(evt.data) if evt.data else [],
+      "hostname": evt.hostname or "",
+      "pod_name": evt.pod_name or "",
+      "namespace": evt.namespace or "",
+      "ts_unix_nano": evt.ts_unix_nano,
+      "score": round(resp.score, 4),
+      "reason": resp.reason or "",
+    }
+    with _anomalies_lock:
+      ANOMALIES.append(anomaly_entry)
+    
+    # Log to file
+    _log_anomaly(evt, resp)
 
 
 def _now_timestamp() -> timestamp_pb2.Timestamp:
@@ -54,8 +122,11 @@ def _now_timestamp() -> timestamp_pb2.Timestamp:
   return ts
 
 
-class RuleBasedDetector(events_pb2_grpc.DetectorServiceServicer):
-  def __init__(self, cfg: DetectorConfig):
+class ModelWorker:
+  """A worker with its own model instance for parallel processing."""
+  
+  def __init__(self, worker_id: int, cfg: DetectorConfig):
+    self.worker_id = worker_id
     self.cfg = cfg
     self.detector = OnlineAnomalyDetector(
       algorithm=cfg.model_algorithm,
@@ -71,12 +142,13 @@ class RuleBasedDetector(events_pb2_grpc.DetectorServiceServicer):
       mem_latent_dim=cfg.mem_latent_dim,
       mem_memory_size=cfg.mem_memory_size,
       mem_lr=cfg.mem_lr,
-      seed=cfg.model_seed,
+      seed=cfg.model_seed + worker_id,  # Different seed per worker for diversity
     )
+    self.processed_count = 0
 
-  def _score_event(self, evt):
+  def score_event(self, evt: events_pb2.EventEnvelope) -> events_pb2.DetectionResponse:
     """
-    Score an event using River and learn online on every event.
+    Score an event using this worker's model instance.
     """
     anomaly = False
     reason = ""
@@ -91,12 +163,13 @@ class RuleBasedDetector(events_pb2_grpc.DetectorServiceServicer):
       if anomaly:
         reason = f"{self.detector.algorithm} anomaly score {score:.3f} exceeds threshold {self.cfg.threshold}"
     except Exception as e:
-      logging.error(f"Error scoring event {evt.event_id}: {e}", exc_info=True)
+      logging.error(f"Error scoring event {evt.event_id} in worker {self.worker_id}: {e}", exc_info=True)
       # On error, mark as normal
       anomaly = False
       score = 0.0
       reason = f"Scoring error: {str(e)}"
     
+    self.processed_count += 1
     return events_pb2.DetectionResponse(  # type: ignore[attr-defined]
       event_id=evt.event_id,
       anomaly=anomaly,
@@ -105,23 +178,98 @@ class RuleBasedDetector(events_pb2_grpc.DetectorServiceServicer):
       ts=_now_timestamp(),
     )
 
+
+class RuleBasedDetector(events_pb2_grpc.DetectorServiceServicer):
+  def __init__(self, cfg: DetectorConfig):
+    self.cfg = cfg
+    # Create pool of model workers for parallel processing
+    self.worker_count = max(1, cfg.worker_count)
+    self.workers = [ModelWorker(i, cfg) for i in range(self.worker_count)]
+    self._worker_index = 0
+    self._worker_lock = threading.Lock()
+    logging.info("Initialized detector with %d parallel workers", self.worker_count)
+
+  def _get_worker(self) -> ModelWorker:
+    """Get next worker using round-robin distribution."""
+    with self._worker_lock:
+      worker = self.workers[self._worker_index]
+      self._worker_index = (self._worker_index + 1) % self.worker_count
+      return worker
+
+  async def _process_event_async(self, evt: events_pb2.EventEnvelope) -> Tuple[events_pb2.EventEnvelope, events_pb2.DetectionResponse]:
+    """Process event asynchronously using a worker from the pool."""
+    # Run CPU-bound scoring in executor to avoid blocking event loop
+    worker = self._get_worker()
+    loop = asyncio.get_event_loop()
+    resp = await loop.run_in_executor(None, worker.score_event, evt)
+    return evt, resp
+
   async def StreamEvents(self, request_iterator, context):  # noqa: N802
-    async for evt in request_iterator:
-      resp = self._score_event(evt)
-      _recent_events_append(evt, resp)
-      # Update metrics
-      with _metrics_lock:
-        _metrics["events_total"] += 1
-        _metrics["last_event_timestamp"] = time.time()
-        if resp.anomaly:
-          _metrics["anomalies_total"] += 1
-        if resp.reason and "error" in resp.reason.lower():
-          _metrics["errors_total"] += 1
-      if resp.anomaly:
-        logging.warning("anomaly id=%s reason=%s score=%.3f", resp.event_id, resp.reason, resp.score)
-      else:
-        logging.debug("event ok id=%s", resp.event_id)
-      yield resp
+    # Process events in parallel using asyncio tasks
+    # Use a semaphore to limit concurrent processing to worker_count
+    semaphore = asyncio.Semaphore(self.worker_count)
+    
+    async def process_with_semaphore(evt: events_pb2.EventEnvelope):
+      async with semaphore:
+        return await self._process_event_async(evt)
+    
+    # Process events as they arrive, maintaining parallelism
+    pending_tasks = {}
+    task_counter = 0
+    
+    async def process_and_yield(evt: events_pb2.EventEnvelope, task_id: int):
+      evt_result, resp_result = await process_with_semaphore(evt)
+      return task_id, evt_result, resp_result
+    
+    try:
+      while True:
+        # Collect events up to worker_count for parallel processing
+        batch = []
+        for _ in range(self.worker_count):
+          try:
+            evt = await request_iterator.__anext__()
+            batch.append(evt)
+          except StopAsyncIteration:
+            break
+        
+        if not batch:
+          # No more events, wait for pending tasks
+          break
+        
+        # Process batch in parallel
+        tasks = [process_and_yield(evt, task_counter + i) for i, evt in enumerate(batch)]
+        task_counter += len(batch)
+        
+        # Wait for all tasks in batch to complete
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Yield responses and update metrics/recent events
+        for result in results:
+          if isinstance(result, Exception):
+            logging.error(f"Error processing event: {result}", exc_info=True)
+            continue
+          
+          task_id, evt, resp = result
+          _recent_events_append(evt, resp)
+          
+          # Update metrics (thread-safe)
+          with _metrics_lock:
+            _metrics["events_total"] += 1
+            _metrics["last_event_timestamp"] = time.time()
+            if resp.anomaly:
+              _metrics["anomalies_total"] += 1
+            if resp.reason and "error" in resp.reason.lower():
+              _metrics["errors_total"] += 1
+          
+          if resp.anomaly:
+            logging.warning("anomaly id=%s reason=%s score=%.3f", resp.event_id, resp.reason, resp.score)
+          else:
+            logging.debug("event ok id=%s", resp.event_id)
+          
+          yield resp
+    
+    except StopAsyncIteration:
+      pass
 
   async def ReportAnomaly(self, request, context):  # noqa: N802
     logging.warning("reported anomaly id=%s reason=%s score=%.3f labels=%s", request.event_id, request.reason, request.score, dict(request.labels))
@@ -129,8 +277,14 @@ class RuleBasedDetector(events_pb2_grpc.DetectorServiceServicer):
 
 
 async def serve():
+  global RECENT_EVENTS
   cfg = load_config()
+  
+  # Initialize recent events buffer with configured size
+  RECENT_EVENTS = deque(maxlen=cfg.recent_events_buffer_size)
+  logging.info("Initialized recent events buffer with size %d", cfg.recent_events_buffer_size)
   logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+  _init_anomaly_log()
   server = grpc.aio.server()
   events_pb2_grpc.add_DetectorServiceServicer_to_server(RuleBasedDetector(cfg), server)
 
@@ -153,11 +307,14 @@ async def serve():
           try:
             qs = parse_qs(parsed.query)
             if "limit" in qs:
-              limit = max(1, min(500, int(qs["limit"][0])))
+              limit = max(1, min(10000, int(qs["limit"][0])))  # Increased max limit to match buffer size
           except (ValueError, IndexError):
             pass
           with _events_lock:
-            entries = list(RECENT_EVENTS)[-limit:]
+            if RECENT_EVENTS is None:
+              entries = []
+            else:
+              entries = list(RECENT_EVENTS)[-limit:]
           body = json.dumps({"entries": entries}).encode("utf-8")
           self.send_response(200)
           self.send_header("Content-Type", "application/json")
@@ -187,11 +344,32 @@ async def serve():
             "",
             "# HELP sentinel_ebpf_detector_recent_events_count Current number of events in recent buffer",
             "# TYPE sentinel_ebpf_detector_recent_events_count gauge",
-            f"sentinel_ebpf_detector_recent_events_count {len(RECENT_EVENTS)}",
+            f"sentinel_ebpf_detector_recent_events_count {len(RECENT_EVENTS) if RECENT_EVENTS is not None else 0}",
+            "",
+            "# HELP sentinel_ebpf_detector_worker_count Number of parallel workers",
+            "# TYPE sentinel_ebpf_detector_worker_count gauge",
+            f"sentinel_ebpf_detector_worker_count {cfg.worker_count}",
           ]
           body = "\n".join(lines).encode("utf-8")
           self.send_response(200)
           self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+          self.send_header("Content-Length", str(len(body)))
+          self.end_headers()
+          self.wfile.write(body)
+        elif parsed.path == "/anomalies":
+          # Return list of all anomalies
+          limit = 1000
+          try:
+            qs = parse_qs(parsed.query)
+            if "limit" in qs:
+              limit = max(1, min(5000, int(qs["limit"][0])))
+          except (ValueError, IndexError):
+            pass
+          with _anomalies_lock:
+            entries = list(ANOMALIES)[-limit:]
+          body = json.dumps({"entries": entries, "total": len(ANOMALIES)}).encode("utf-8")
+          self.send_response(200)
+          self.send_header("Content-Type", "application/json")
           self.send_header("Content-Length", str(len(body)))
           self.end_headers()
           self.wfile.write(body)

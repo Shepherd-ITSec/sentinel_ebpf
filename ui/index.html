@@ -4,6 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>sentinel-ebpf debug</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js"></script>
     <style>
       :root {
         --bg: #0f1419;
@@ -182,6 +183,45 @@
         color: var(--text-muted);
         margin-top: 8px;
       }
+      .main-layout {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+        margin-bottom: 16px;
+      }
+      .left-column, .right-column {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+      .chart-container {
+        min-height: 200px;
+        position: relative;
+      }
+      .chart-wrapper {
+        position: relative;
+        height: 200px;
+      }
+      .anomaly-item {
+        padding: 8px;
+        border-bottom: 1px solid var(--border);
+        font-size: 0.8125rem;
+      }
+      .anomaly-item:last-child {
+        border-bottom: none;
+      }
+      .anomaly-score {
+        font-weight: 600;
+        color: var(--error);
+      }
+      .logs-full-width {
+        width: 100%;
+      }
+      @media (max-width: 1200px) {
+        .main-layout {
+          grid-template-columns: 1fr;
+        }
+      }
     </style>
   </head>
   <body>
@@ -195,15 +235,35 @@
         <button type="button" class="toggle-btn" id="theme-btn" aria-label="Toggle theme">Light</button>
       </div>
     </div>
-    <div class="section">
-      <h3>Status</h3>
-      <div class="section-inner" id="status"></div>
+    <div class="main-layout">
+      <div class="left-column">
+        <div class="section">
+          <h3>Status</h3>
+          <div class="section-inner" id="status"></div>
+        </div>
+        <div class="section">
+          <h3>Metrics</h3>
+          <div class="section-inner" id="metrics"></div>
+        </div>
+      </div>
+      <div class="right-column">
+        <div class="section">
+          <h3>Event Types (per poll)</h3>
+          <div class="section-inner">
+            <div class="chart-container">
+              <div class="chart-wrapper">
+                <canvas id="chart"></canvas>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="section">
+          <h3>Anomalies</h3>
+          <div class="section-inner" id="anomalies"></div>
+        </div>
+      </div>
     </div>
-    <div class="section">
-      <h3>Metrics</h3>
-      <div class="section-inner" id="metrics"></div>
-    </div>
-    <div class="section">
+    <div class="section logs-full-width">
       <h3>Logs (tail)</h3>
       <div class="section-inner" id="logs"></div>
     </div>
@@ -224,8 +284,16 @@
         applyTheme(html.getAttribute("data-theme") === "light" ? "dark" : "light");
       });
       async function fetchJson(url) {
-        const r = await fetch(url);
-        return await r.json();
+        try {
+          const r = await fetch(url);
+          if (!r.ok) {
+            throw new Error(`HTTP ${r.status}: ${r.statusText}`);
+          }
+          return await r.json();
+        } catch (e) {
+          console.error(`Failed to fetch ${url}:`, e);
+          throw e;
+        }
       }
       function renderStatus(data) {
         const el = document.getElementById("status");
@@ -238,21 +306,46 @@
           ["Probe health", data.probe_health || "—"],
           ["Detector health", data.detector_health || "—"],
         ];
+        if (data.detector_worker_count != null) {
+          items.push(["Detector workers", data.detector_worker_count]);
+        }
         el.innerHTML = "<dl class=\"status-grid\">" +
           items.map(([k, v]) => "<dt>" + escapeHtml(k) + "</dt><dd class=\"" + (v === "ok" || v === "SERVING" ? "status-ok" : "") + "\">" + escapeHtml(String(v)) + "</dd>").join("") +
           "</dl>";
       }
+      // Human-readable metric name mappings
+      const metricNameMap = {
+        "sentinel_ebpf_detector_events_total": "Events Processed",
+        "sentinel_ebpf_detector_anomalies_total": "Anomalies Detected",
+        "sentinel_ebpf_detector_errors_total": "Errors",
+        "sentinel_ebpf_detector_last_event_timestamp_seconds": "Last Event Time",
+        "sentinel_ebpf_detector_recent_events_count": "Recent Events Buffer",
+        "sentinel_ebpf_detector_worker_count": "Worker Threads",
+        "sentinel_ebpf_probe_events_sent_total": "Events Sent",
+        "sentinel_ebpf_probe_queue_size": "Queue Size",
+        "sentinel_ebpf_probe_events_dropped_total": "Events Dropped"
+      };
+      
+      // Track previous metrics for throughput calculation
+      let previousMetrics = {
+        events_total: null,
+        timestamp: null
+      };
+      
       function parsePrometheusMetrics(text) {
         if (!text || typeof text !== "string") return [];
         const lines = text.split("\n").filter(l => l.trim() && !l.startsWith("#"));
         const metrics = [];
         for (const line of lines) {
-          const match = line.match(/^(\w+)\s+(.+)$/);
+          // Match metric name (can contain letters, numbers, underscores) followed by whitespace and value
+          const match = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s+(.+)$/);
           if (match) {
             const [, name, value] = match;
             const numValue = parseFloat(value);
+            const readableName = metricNameMap[name] || name.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase());
             metrics.push({
               name: name,
+              readableName: readableName,
               value: isNaN(numValue) ? value : numValue,
               displayValue: isNaN(numValue) ? value : numValue.toLocaleString()
             });
@@ -271,22 +364,53 @@
         const probeMetrics = parsePrometheusMetrics(probeText);
         const detectorMetrics = parsePrometheusMetrics(detectorText);
         
-        function renderMetricsTable(metrics, title) {
-          if (metrics.length === 0) {
+        // Calculate throughput for detector
+        let throughput = null;
+        const eventsTotalMetric = detectorMetrics.find(m => m.name === "sentinel_ebpf_detector_events_total");
+        const currentTimestamp = data.ts || Date.now() / 1000;
+        
+        if (eventsTotalMetric && typeof eventsTotalMetric.value === "number") {
+          const currentEvents = eventsTotalMetric.value;
+          if (previousMetrics.events_total !== null && previousMetrics.timestamp !== null) {
+            const timeDelta = currentTimestamp - previousMetrics.timestamp;
+            const eventsDelta = currentEvents - previousMetrics.events_total;
+            if (timeDelta > 0) {
+              throughput = eventsDelta / timeDelta;
+            }
+          }
+          previousMetrics.events_total = currentEvents;
+          previousMetrics.timestamp = currentTimestamp;
+        }
+        
+        function renderMetricsTable(metrics, title, extraRows = []) {
+          if (metrics.length === 0 && extraRows.length === 0) {
             return `<div class="metrics-block"><h4>${title}</h4><div class="metrics-empty">No metrics available</div></div>`;
           }
-          const rows = metrics.map(m => 
-            `<tr><td class="metric-name">${escapeHtml(m.name)}</td><td class="metric-value">${escapeHtml(String(m.displayValue))}</td></tr>`
-          ).join("");
-          return `<div class="metrics-block"><h4>${title}</h4><table class="metrics-table"><tbody>${rows}</tbody></table></div>`;
+          const allRows = [
+            ...metrics.map(m => 
+              `<tr><td class="metric-name">${escapeHtml(m.readableName)}</td><td class="metric-value">${escapeHtml(String(m.displayValue))}</td></tr>`
+            ),
+            ...extraRows
+          ];
+          return `<div class="metrics-block"><h4>${title}</h4><table class="metrics-table"><tbody>${allRows.join("")}</tbody></table></div>`;
+        }
+        
+        const detectorExtraRows = [];
+        if (throughput !== null && !isNaN(throughput) && throughput >= 0) {
+          const throughputFormatted = throughput >= 1000 
+            ? `${(throughput / 1000).toFixed(2)}k events/s`
+            : `${throughput.toFixed(2)} events/s`;
+          detectorExtraRows.push(
+            `<tr><td class="metric-name">Throughput</td><td class="metric-value">${escapeHtml(throughputFormatted)}</td></tr>`
+          );
         }
         
         const probeHtml = probeMetrics.length > 0 
           ? renderMetricsTable(probeMetrics, "Probe")
           : `<div class="metrics-block"><h4>Probe</h4><div class="metrics-empty">No metrics available</div></div>`;
         
-        const detectorHtml = detectorMetrics.length > 0
-          ? renderMetricsTable(detectorMetrics, "Detector")
+        const detectorHtml = detectorMetrics.length > 0 || detectorExtraRows.length > 0
+          ? renderMetricsTable(detectorMetrics, "Detector", detectorExtraRows)
           : `<div class="metrics-block"><h4>Detector</h4><div class="metrics-empty">No metrics endpoint configured (detector uses gRPC only)</div></div>`;
         
         el.innerHTML = `<div class="metrics-blocks">${probeHtml}${detectorHtml}</div>`;
@@ -412,24 +536,258 @@
         div.textContent = s;
         return div.innerHTML;
       }
+      let chartInstance = null;
+      function renderChart(data) {
+        const container = document.querySelector(".chart-container");
+        if (!container) {
+          console.error("Chart container not found");
+          return;
+        }
+        
+        // Check if Chart.js is loaded
+        if (typeof Chart === "undefined") {
+          container.innerHTML = "<div class=\"metrics-empty\">Chart.js library not loaded</div>";
+          console.error("Chart.js not loaded");
+          return;
+        }
+        
+        // Ensure canvas exists first, before checking data
+        let canvas = document.getElementById("chart");
+        let wrapper = canvas ? canvas.closest(".chart-wrapper") : null;
+        if (!canvas || !wrapper) {
+          // Create canvas if it doesn't exist
+          wrapper = document.createElement("div");
+          wrapper.className = "chart-wrapper";
+          canvas = document.createElement("canvas");
+          canvas.id = "chart";
+          wrapper.appendChild(canvas);
+          container.innerHTML = "";
+          container.appendChild(wrapper);
+        }
+        
+        if (typeof data !== "object" || data === null || !data.time_buckets) {
+          if (chartInstance) {
+            chartInstance.destroy();
+            chartInstance = null;
+          }
+          // Don't clear container, just hide/show message
+          const existingMsg = container.querySelector(".metrics-empty");
+          if (!existingMsg) {
+            const msg = document.createElement("div");
+            msg.className = "metrics-empty";
+            msg.textContent = "No data available";
+            wrapper.style.display = "none";
+            container.appendChild(msg);
+          }
+          console.log("No chart data:", data);
+          return;
+        }
+        
+        const timeBuckets = data.time_buckets || [];
+        if (timeBuckets.length === 0) {
+          if (chartInstance) {
+            chartInstance.destroy();
+            chartInstance = null;
+          }
+          // Don't clear container, just hide/show message
+          const existingMsg = container.querySelector(".metrics-empty");
+          if (!existingMsg) {
+            const msg = document.createElement("div");
+            msg.className = "metrics-empty";
+            msg.textContent = "No events in this poll interval";
+            wrapper.style.display = "none";
+            container.appendChild(msg);
+          }
+          return;
+        }
+        
+        // Hide any "no data" messages and show chart
+        const existingMsg = container.querySelector(".metrics-empty");
+        if (existingMsg) {
+          existingMsg.remove();
+        }
+        wrapper.style.display = "block";
+        
+        // Collect all unique event types across all time buckets
+        const eventTypes = new Set();
+        timeBuckets.forEach(bucket => {
+          Object.keys(bucket.counts || {}).forEach(type => eventTypes.add(type));
+        });
+        const sortedEventTypes = Array.from(eventTypes).sort();
+        
+        // Extract time labels (x-axis)
+        const timeLabels = timeBuckets.map(bucket => bucket.time);
+        
+        // Create datasets: one per event type
+        const isDark = document.documentElement.getAttribute("data-theme") !== "light";
+        const textColor = isDark ? "#e6edf3" : "#1f2328";
+        const gridColor = isDark ? "#2d3a4f" : "#d0d7de";
+        
+        // Color palette for different event types
+        const colors = [
+          isDark ? "#58a6ff" : "#0969da",  // Blue
+          isDark ? "#f85149" : "#cf222e",  // Red
+          isDark ? "#3fb950" : "#1a7f37",  // Green
+          isDark ? "#d29922" : "#9a6700",  // Yellow/Orange
+          isDark ? "#a371f7" : "#8250df",  // Purple
+          isDark ? "#79c0ff" : "#0969da",  // Light Blue
+          isDark ? "#ff7b72" : "#cf222e",  // Light Red
+          isDark ? "#7ee787" : "#1a7f37",  // Light Green
+        ];
+        
+        const datasets = sortedEventTypes.map((eventType, idx) => {
+          const color = colors[idx % colors.length];
+          return {
+            label: eventType,
+            data: timeBuckets.map(bucket => bucket.counts[eventType] || 0),
+            backgroundColor: color + "80",
+            borderColor: color,
+            borderWidth: 1
+          };
+        });
+        
+        try {
+          if (chartInstance) {
+            chartInstance.data.labels = timeLabels;
+            chartInstance.data.datasets = datasets;
+            chartInstance.update();
+          } else {
+            if (!canvas || !canvas.parentElement) {
+              console.error("Canvas not found or not in DOM");
+              return;
+            }
+            chartInstance = new Chart(canvas, {
+              type: "bar",
+              data: {
+                labels: timeLabels,
+                datasets: datasets
+              },
+              options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                  legend: {
+                    display: true,
+                    position: "top",
+                    labels: {
+                      color: textColor,
+                      usePointStyle: true
+                    }
+                  },
+                  tooltip: {
+                    enabled: true,
+                    mode: "index",
+                    intersect: false
+                  }
+                },
+                scales: {
+                  y: {
+                    beginAtZero: true,
+                    stacked: false,
+                    ticks: {
+                      color: textColor,
+                      precision: 0
+                    },
+                    grid: {
+                      color: gridColor
+                    }
+                  },
+                  x: {
+                    stacked: false,
+                    ticks: {
+                      color: textColor
+                    },
+                    grid: {
+                      color: gridColor
+                    }
+                  }
+                }
+              }
+            });
+            console.log("Chart created successfully");
+          }
+        } catch (e) {
+          console.error("Error rendering chart:", e);
+          container.innerHTML = "<div class=\"metrics-empty\">Error rendering chart: " + escapeHtml(String(e)) + "</div>";
+        }
+      }
+
+      function renderAnomalies(data) {
+        const el = document.getElementById("anomalies");
+        if (typeof data !== "object" || data === null) {
+          el.innerHTML = "<pre>" + escapeHtml(String(data)) + "</pre>";
+          return;
+        }
+        const entries = Array.isArray(data.entries) ? data.entries : [];
+        if (entries.length === 0) {
+          el.innerHTML = "<div class=\"metrics-empty\">No anomalies detected</div>";
+          return;
+        }
+        let html = `<div style="max-height: 400px; overflow-y: auto;">`;
+        entries.slice().reverse().forEach(entry => {
+          const ts = entry.ts_unix_nano ? (() => {
+            const ns = Number(entry.ts_unix_nano);
+            if (isNaN(ns) || ns <= 0) return "—";
+            const ms = ns < 1e12 ? ns * 1000 : ns / 1e6;
+            const date = new Date(ms);
+            return isNaN(date.getTime()) ? "—" : date.toISOString().replace("T", " ").replace("Z", "");
+          })() : "—";
+          const filename = Array.isArray(entry.data) && entry.data.length > 0 ? entry.data[0] : "—";
+          html += `<div class="anomaly-item">`;
+          html += `<div><strong>${escapeHtml(ts)}</strong> <span class="anomaly-score">Score: ${escapeHtml(String(entry.score || 0))}</span></div>`;
+          html += `<div style="color: var(--text-muted); font-size: 0.75rem; margin-top: 4px;">${escapeHtml(filename)}</div>`;
+          html += `<div style="color: var(--text-muted); font-size: 0.75rem; margin-top: 2px;">${escapeHtml(entry.reason || "")}</div>`;
+          html += `</div>`;
+        });
+        html += `</div>`;
+        el.innerHTML = html;
+      }
+
       async function refresh() {
         try {
           const status = await fetchJson("/api/status");
           renderStatus(status);
         } catch (e) {
-          document.getElementById("status").innerHTML = "<pre>" + escapeHtml(String(e)) + "</pre>";
+          const statusEl = document.getElementById("status");
+          if (statusEl) {
+            statusEl.innerHTML = "<div class=\"metrics-empty\">Error loading status: " + escapeHtml(String(e)) + "</div>";
+          }
         }
         try {
           const metrics = await fetchJson("/api/metrics");
           renderMetrics(metrics);
         } catch (e) {
-          document.getElementById("metrics").innerHTML = "<pre>" + escapeHtml(String(e)) + "</pre>";
+          const metricsEl = document.getElementById("metrics");
+          if (metricsEl) {
+            metricsEl.innerHTML = "<div class=\"metrics-empty\">Error loading metrics: " + escapeHtml(String(e)) + "</div>";
+          }
+        }
+        try {
+          const chart = await fetchJson("/api/calls_chart");
+          renderChart(chart);
+        } catch (e) {
+          const container = document.querySelector(".chart-container");
+          if (container) {
+            container.innerHTML = "<div class=\"metrics-empty\">Error loading chart: " + escapeHtml(String(e)) + "</div>";
+          }
+        }
+        try {
+          const anomalies = await fetchJson("/api/anomalies?limit=100");
+          renderAnomalies(anomalies);
+        } catch (e) {
+          const anomaliesEl = document.getElementById("anomalies");
+          if (anomaliesEl) {
+            anomaliesEl.innerHTML = "<div class=\"metrics-empty\">Error loading anomalies: " + escapeHtml(String(e)) + "</div>";
+          }
         }
         try {
           const logs = await fetchJson("/api/logs?limit=" + logLimit);
           renderLogs(logs);
         } catch (e) {
-          document.getElementById("logs").innerHTML = "<pre>" + escapeHtml(String(e)) + "</pre>";
+          const logsEl = document.getElementById("logs");
+          if (logsEl) {
+            logsEl.innerHTML = "<div class=\"metrics-empty\">Error loading logs: " + escapeHtml(String(e)) + "</div>";
+          }
         }
       }
       refresh();

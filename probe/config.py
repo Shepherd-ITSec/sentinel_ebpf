@@ -14,9 +14,9 @@ class ProbeConfig:
 class StreamConfig:
   mode: str = "grpc"  # grpc|stdout|file
   endpoint: str = "localhost:50051"
-  batch_size: int = 64
-  queue_length: int = 1024
-  ring_buffer_pages: int = 64
+  batch_size: int = 512  # Increased batch size for better gRPC throughput (was 128)
+  queue_length: int = 50000  # Increased default queue size (was 10000)
+  ring_buffer_pages: int = 256  # Increased ring buffer pages for higher throughput (was 128)
   tls_enabled: bool = False
   ca_secret: str = ""
   file_path: str = "/var/log/sentinel-ebpf/events.bin"
@@ -50,9 +50,9 @@ def load_config() -> AppConfig:
   stream = StreamConfig(
     mode=stream_cfg.get("mode", "grpc"),
     endpoint=grpc_cfg.get("endpoint", stream_cfg.get("endpoint", "localhost:50051")),
-    batch_size=int(stream_cfg.get("batchSize", 64)),
-    queue_length=int(stream_cfg.get("queueLength", 1024)),
-    ring_buffer_pages=int(stream_cfg.get("ringBufferPages", 64)),
+    batch_size=int(stream_cfg.get("batchSize", 512)),  # Increased default from 64
+    queue_length=int(stream_cfg.get("queueLength", 50000)),  # Increased default from 1024
+    ring_buffer_pages=int(stream_cfg.get("ringBufferPages", 256)),  # Increased default from 64
     tls_enabled=grpc_cfg.get("tlsEnabled", False),
     ca_secret=grpc_cfg.get("caSecret", ""),
     file_path=stream_cfg.get("file", {}).get("path", "/var/log/sentinel-ebpf/events.bin"),

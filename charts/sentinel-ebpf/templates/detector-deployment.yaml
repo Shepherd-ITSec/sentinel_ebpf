@@ -63,6 +63,14 @@ spec:
               value: {{ .Values.detector.model.mem_lr | quote }}
             - name: DETECTOR_MODEL_SEED
               value: {{ .Values.detector.model.seed | quote }}
+            - name: DETECTOR_WORKER_COUNT
+              value: {{ .Values.detector.workerCount | quote }}
+            - name: DETECTOR_RECENT_EVENTS_BUFFER_SIZE
+              value: {{ .Values.detector.recentEventsBufferSize | quote }}
+            {{- if .Values.detector.anomalyLogPath }}
+            - name: ANOMALY_LOG_PATH
+              value: {{ .Values.detector.anomalyLogPath | quote }}
+            {{- end }}
           ports:
             - containerPort: {{ .Values.detector.service.port }}
               name: grpc

@@ -20,3 +20,4 @@ tests/test_models_optional.py
 tests/test_replay_logs.py
 tests/test_rules.py
 tests/test_rules_filtered.py
+tests/test_speed.py
