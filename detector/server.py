@@ -195,6 +195,14 @@ class RuleBasedDetector(events_pb2_grpc.DetectorServiceServicer):
       worker = self.workers[self._worker_index]
       self._worker_index = (self._worker_index + 1) % self.worker_count
       return worker
+  
+  def _score_event(self, evt: events_pb2.EventEnvelope) -> events_pb2.DetectionResponse:
+    """
+    Score an event using a worker (for testing purposes).
+    This is a synchronous wrapper around the worker's score_event method.
+    """
+    worker = self._get_worker()
+    return worker.score_event(evt)
 
   async def _process_event_async(self, evt: events_pb2.EventEnvelope) -> Tuple[events_pb2.EventEnvelope, events_pb2.DetectionResponse]:
     """Process event asynchronously using a worker from the pool."""

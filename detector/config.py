@@ -33,7 +33,8 @@ class DetectorConfig:
 
 def load_config() -> DetectorConfig:
   port = int(os.environ.get("DETECTOR_PORT", "50051"))
-  recent_events_buffer_size = int(os.environ.get("DETECTOR_RECENT_EVENTS_BUFFER_SIZE", "10000"))
+  recent_events_buffer_size_str = os.environ.get("DETECTOR_RECENT_EVENTS_BUFFER_SIZE", "10000")
+  recent_events_buffer_size = int(recent_events_buffer_size_str) if recent_events_buffer_size_str else 10000
   events_http_port = int(os.environ.get("DETECTOR_EVENTS_PORT", "50052"))
   high_write_bytes = int(os.environ.get("DETECTOR_HIGH_WRITE_BYTES", str(10 * 1024 * 1024)))
   sensitive = os.environ.get("DETECTOR_SENSITIVE_PREFIXES", "/etc,/bin,/usr,/sbin,/boot")

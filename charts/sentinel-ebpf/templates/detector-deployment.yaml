@@ -65,8 +65,10 @@ spec:
               value: {{ .Values.detector.model.seed | quote }}
             - name: DETECTOR_WORKER_COUNT
               value: {{ .Values.detector.workerCount | quote }}
+            {{- if .Values.detector.recentEventsBufferSize }}
             - name: DETECTOR_RECENT_EVENTS_BUFFER_SIZE
               value: {{ .Values.detector.recentEventsBufferSize | quote }}
+            {{- end }}
             {{- if .Values.detector.anomalyLogPath }}
             - name: ANOMALY_LOG_PATH
               value: {{ .Values.detector.anomalyLogPath | quote }}
