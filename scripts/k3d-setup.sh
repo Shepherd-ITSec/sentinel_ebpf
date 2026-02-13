@@ -175,80 +175,60 @@ else
     }
   fi
   
-  # Pull probe image if not local
-  if ! docker image inspect "${PROBE_IMAGE}" >/dev/null 2>&1; then
-    info "Pulling probe image: ${PROBE_IMAGE}"
-    docker pull "${PROBE_IMAGE}" || {
+  # Always pull latest images from registry to ensure we have the newest version
+  # Docker will use cache if image hasn't changed, so this is efficient
+  info "Pulling latest images from registry..."
+  info "Pulling probe image: ${PROBE_IMAGE}"
+  docker pull "${PROBE_IMAGE}" || {
+    # If pull fails, check if we have a local copy to use as fallback
+    if docker image inspect "${PROBE_IMAGE}" >/dev/null 2>&1; then
+      warn "Failed to pull ${PROBE_IMAGE}, using existing local image"
+    else
       echo "Failed to pull ${PROBE_IMAGE}." >&2
       echo "For private images, set GITHUB_TOKEN env var or use --build flag." >&2
       exit 1
-    }
-  fi
+    fi
+  }
   
-  # Pull detector image if not local
-  if ! docker image inspect "${DETECTOR_IMAGE}" >/dev/null 2>&1; then
-    info "Pulling detector image: ${DETECTOR_IMAGE}"
-    docker pull "${DETECTOR_IMAGE}" || {
+  info "Pulling detector image: ${DETECTOR_IMAGE}"
+  docker pull "${DETECTOR_IMAGE}" || {
+    if docker image inspect "${DETECTOR_IMAGE}" >/dev/null 2>&1; then
+      warn "Failed to pull ${DETECTOR_IMAGE}, using existing local image"
+    else
       echo "Failed to pull ${DETECTOR_IMAGE}." >&2
       echo "For private images, set GITHUB_TOKEN env var or use --build flag." >&2
       exit 1
-    }
-  fi
+    fi
+  }
   
-  # Pull UI image if UI is enabled and not local
+  # Pull UI image if UI is enabled
   if [[ "${ENABLE_UI}" == "true" ]]; then
-    if ! docker image inspect "${UI_IMAGE}" >/dev/null 2>&1; then
-      info "Pulling UI image: ${UI_IMAGE}"
-      docker pull "${UI_IMAGE}" || {
+    info "Pulling UI image: ${UI_IMAGE}"
+    docker pull "${UI_IMAGE}" || {
+      if docker image inspect "${UI_IMAGE}" >/dev/null 2>&1; then
+        warn "Failed to pull ${UI_IMAGE}, using existing local image"
+      else
         echo "Failed to pull ${UI_IMAGE}." >&2
         echo "For private images, set GITHUB_TOKEN env var or use --build flag." >&2
         exit 1
-      }
-    fi
+      fi
+    }
   fi
   
-  # Check if images already exist in cluster before importing
-  info "Checking if images are already in cluster..."
-  IMAGES_TO_IMPORT=()
-  SERVER_NODE="k3d-${CLUSTER_NAME}-server-0"
+  # Always import images to ensure we have the latest version from registry
+  # k3d image import will overwrite existing images, so this ensures freshness
+  info "Importing images into cluster (ensures latest version from registry)..."
+  IMAGES_TO_IMPORT=("${PROBE_IMAGE}" "${DETECTOR_IMAGE}")
   
-  check_image_in_cluster() {
-    local img="$1"
-    # Try crictl first (containerd)
-    if docker exec "${SERVER_NODE}" crictl images --quiet "${img}" >/dev/null 2>&1; then
-      return 0
-    fi
-    # Fallback: check via ctr (containerd CLI)
-    if docker exec "${SERVER_NODE}" sh -c "ctr -n k8s.io images ls | grep -q '${img}'" 2>/dev/null; then
-      return 0
-    fi
-    return 1
-  }
-  
-  # Always check probe and detector images
-  for img in "${PROBE_IMAGE}" "${DETECTOR_IMAGE}"; do
-    if check_image_in_cluster "${img}"; then
-      info "  Image ${img} already in cluster, skipping"
-    else
-      IMAGES_TO_IMPORT+=("${img}")
-    fi
-  done
-  
-  # Check UI image if UI is enabled
+  # Add UI image if enabled
   if [[ "${ENABLE_UI}" == "true" ]]; then
-    if check_image_in_cluster "${UI_IMAGE}"; then
-      info "  Image ${UI_IMAGE} already in cluster, skipping"
-    else
-      IMAGES_TO_IMPORT+=("${UI_IMAGE}")
-    fi
+    IMAGES_TO_IMPORT+=("${UI_IMAGE}")
   fi
   
-  if [[ ${#IMAGES_TO_IMPORT[@]} -gt 0 ]]; then
-    info "Importing ${#IMAGES_TO_IMPORT[@]} image(s) into cluster: ${IMAGES_TO_IMPORT[*]}"
-    k3d image import -c "${CLUSTER_NAME}" "${IMAGES_TO_IMPORT[@]}" || true
-  else
-    info "All images already in cluster, skipping import"
-  fi
+  info "Importing ${#IMAGES_TO_IMPORT[@]} image(s) into cluster: ${IMAGES_TO_IMPORT[*]}"
+  k3d image import -c "${CLUSTER_NAME}" "${IMAGES_TO_IMPORT[@]}" || {
+    warn "Failed to import some images. Continuing anyway..."
+  }
 fi
 
 # Install/upgrade Helm chart
@@ -276,20 +256,34 @@ if [[ "${ENABLE_UI}" == "true" ]]; then
 fi
 
 # Prepare Helm set arguments
-HELM_SET_ARGS=(
-  --set probe.image.repository="$(cut -d: -f1 <<< "${PROBE_IMAGE}")"
-  --set probe.image.tag="$(cut -d: -f2 <<< "${PROBE_IMAGE}")"
-  --set probe.clusterName="${CLUSTER_NAME}"
-  --set detector.image.repository="$(cut -d: -f1 <<< "${DETECTOR_IMAGE}")"
-  --set detector.image.tag="$(cut -d: -f2 <<< "${DETECTOR_IMAGE}")"
-)
-
-# When building locally, set imagePullPolicy to Never for probe and detector
-# since images are imported into cluster via k3d (not from registry)
+# When building locally, use local image names and set pullPolicy to Never
 if [[ "${BUILD_IMAGES}" == "true" ]]; then
-  HELM_SET_ARGS+=(
+  HELM_SET_ARGS=(
+    --set probe.image.repository=sentinel-ebpf-probe
+    --set probe.image.tag=latest
     --set probe.image.pullPolicy=Never
+    --set probe.clusterName="${CLUSTER_NAME}"
+    --set detector.image.repository=sentinel-ebpf-detector
+    --set detector.image.tag=latest
     --set detector.image.pullPolicy=Never
+  )
+else
+  # When using registry images, we pull latest from Docker (which can authenticate)
+  # and import into k3d. Use IfNotPresent so Kubernetes uses the imported image.
+  # Since we always re-import before Helm deploy, we get the latest version.
+  PROBE_REPO="$(cut -d: -f1 <<< "${PROBE_IMAGE}")"
+  PROBE_TAG="$(cut -d: -f2 <<< "${PROBE_IMAGE}")"
+  DETECTOR_REPO="$(cut -d: -f1 <<< "${DETECTOR_IMAGE}")"
+  DETECTOR_TAG="$(cut -d: -f2 <<< "${DETECTOR_IMAGE}")"
+  
+  HELM_SET_ARGS=(
+    --set probe.image.repository="${PROBE_REPO}"
+    --set probe.image.tag="${PROBE_TAG}"
+    --set probe.image.pullPolicy=IfNotPresent
+    --set probe.clusterName="${CLUSTER_NAME}"
+    --set detector.image.repository="${DETECTOR_REPO}"
+    --set detector.image.tag="${DETECTOR_TAG}"
+    --set detector.image.pullPolicy=IfNotPresent
   )
 fi
 

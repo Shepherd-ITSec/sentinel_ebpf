@@ -16,7 +16,7 @@ probe:
   stream:
     mode: grpc # grpc | stdout | file
     batchSize: 64
-    queueLength: 1024
+    queueLength: 10000  # Increased from 1024 to handle high event rates
     ringBufferPages: 64
     file:
       path: /var/log/sentinel-ebpf/events.bin
