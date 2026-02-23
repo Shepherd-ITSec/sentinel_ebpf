@@ -4,7 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from probe.rules import Rule, RuleEngine, RuleMatch, _load_rules_yaml
+from probe.rules import (
+  Rule,
+  RuleEngine,
+  RuleMatch,
+  _load_path_exclude_prefixes,
+  _load_rules_yaml,
+)
 
 
 class TestRule:
@@ -55,6 +61,28 @@ class TestRule:
   def test_rule_no_filters_matches_all(self):
     rule = Rule(name="test", event="file_open", enabled=True)
     assert rule.matches("file_open", "/any/path", "anycomm")
+
+  def test_rule_requires_pid_when_pid_filter_present(self):
+    rule = Rule(
+      name="pid-filter",
+      event="file_open",
+      enabled=True,
+      match=RuleMatch(pids=[123]),
+    )
+    assert rule.matches("file_open", "/tmp/test", "bash", pid=123)
+    assert not rule.matches("file_open", "/tmp/test", "bash", pid=999)
+    assert not rule.matches("file_open", "/tmp/test", "bash", pid=None)
+
+  def test_rule_requires_tid_uid_when_filters_present(self):
+    rule = Rule(
+      name="tid-uid-filter",
+      event="file_open",
+      enabled=True,
+      match=RuleMatch(tids=[22], uids=[1000]),
+    )
+    assert rule.matches("file_open", "/tmp/test", "bash", tid=22, uid=1000)
+    assert not rule.matches("file_open", "/tmp/test", "bash", tid=None, uid=1000)
+    assert not rule.matches("file_open", "/tmp/test", "bash", tid=22, uid=None)
 
 
 class TestLoadRulesYaml:
@@ -143,3 +171,51 @@ class TestRuleEngine:
 """)
     engine.reload()
     assert len(engine.rules) == 2
+
+  def test_path_exclude_prefixes_loaded(self, temp_dir):
+    rules_file = temp_dir / "rules.yaml"
+    rules_file.write_text("""pathPrefixExcludes:
+  - "/proc"
+  - "/sys"
+rules:
+  - name: capture-all
+    event: file_open
+    enabled: true
+    match:
+      pathPrefixes: ["/"]
+""")
+    prefixes = _load_path_exclude_prefixes(str(rules_file))
+    assert prefixes == ["/proc", "/sys"]
+
+  def test_path_excluded(self, temp_dir):
+    rules_file = temp_dir / "rules.yaml"
+    rules_file.write_text("""pathPrefixExcludes:
+  - "/proc"
+rules:
+  - name: capture-all
+    event: file_open
+    enabled: true
+    match:
+      pathPrefixes: ["/"]
+""")
+    engine = RuleEngine(str(rules_file))
+    assert engine.path_excluded("/proc/123/fd") is True
+    assert engine.path_excluded("/proc/self/status") is True
+    assert engine.path_excluded("/tmp/foo") is False
+    assert engine.path_excluded("/etc/hosts") is False
+    assert engine.path_excluded("") is False
+
+  def test_allow_respects_path_excludes(self, temp_dir):
+    rules_file = temp_dir / "rules.yaml"
+    rules_file.write_text("""pathPrefixExcludes:
+  - "/proc"
+rules:
+  - name: capture-all
+    event: file_open
+    enabled: true
+    match:
+      pathPrefixes: ["/"]
+""")
+    engine = RuleEngine(str(rules_file))
+    assert engine.allow("file_open", "/proc/1/fd", "bash") is False
+    assert engine.allow("file_open", "/tmp/test", "bash") is True

@@ -38,14 +38,14 @@ class Rule:
     if self.match.comms:
       if comm not in self.match.comms:
         return False
-    if self.match.pids and pid is not None:
-      if pid not in self.match.pids:
+    if self.match.pids:
+      if pid is None or pid not in self.match.pids:
         return False
-    if self.match.tids and tid is not None:
-      if tid not in self.match.tids:
+    if self.match.tids:
+      if tid is None or tid not in self.match.tids:
         return False
-    if self.match.uids and uid is not None:
-      if uid not in self.match.uids:
+    if self.match.uids:
+      if uid is None or uid not in self.match.uids:
         return False
     return True
 
@@ -72,13 +72,29 @@ def _load_rules_yaml(path: str) -> List[Rule]:
   return rules
 
 
+def _load_path_exclude_prefixes(path: str) -> List[str]:
+  with open(path, "r", encoding="utf-8") as f:
+    data = yaml.safe_load(f) or {}
+  return list(data.get("pathPrefixExcludes", []))
+
+
 class RuleEngine:
   def __init__(self, path: str):
     self.path = path
     self.rules = _load_rules_yaml(path)
+    self._path_exclude_prefixes = _load_path_exclude_prefixes(path)
 
   def reload(self):
     self.rules = _load_rules_yaml(self.path)
+    self._path_exclude_prefixes = _load_path_exclude_prefixes(self.path)
+
+  def path_excluded(self, filename: str) -> bool:
+    """Return True if filename should be excluded (e.g. paths under /proc)."""
+    if not filename:
+      return False
+    return any(filename.startswith(p) for p in self._path_exclude_prefixes)
 
   def allow(self, event_type: str, filename: str, comm: str) -> bool:
+    if self.path_excluded(filename):
+      return False
     return any(rule.matches(event_type, filename, comm) for rule in self.rules)

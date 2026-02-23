@@ -1,12 +1,8 @@
 """Tests for probe/config.py and detector/config.py."""
 import os
-import tempfile
-from pathlib import Path
 
-import pytest
-
-from probe.config import AppConfig, ProbeConfig, StreamConfig, load_config as load_probe_config
-from detector.config import DetectorConfig, load_config as load_detector_config
+from probe.config import load_config as load_probe_config
+from detector.config import load_config as load_detector_config
 
 
 class TestProbeConfig:
@@ -96,21 +92,6 @@ grpc:
     finally:
       del os.environ["PROBE_CONFIG"]
 
-  def test_load_probes_config(self, temp_dir):
-    config_file = temp_dir / "probe-config.yaml"
-    config_file.write_text("""probes:
-  fileWrites:
-    enabled: false
-    pathPrefixes: ["/etc", "/bin"]
-""")
-    os.environ["PROBE_CONFIG"] = str(config_file)
-    try:
-      cfg = load_probe_config()
-      assert cfg.probes.enabled is False
-      assert cfg.probes.path_prefixes == ["/etc", "/bin"]
-    finally:
-      del os.environ["PROBE_CONFIG"]
-
   def test_default_values(self, temp_dir):
     config_file = temp_dir / "probe-config.yaml"
     config_file.write_text("{}")
@@ -134,19 +115,13 @@ class TestDetectorConfig:
 
   def test_load_default_config(self):
     # Clear env vars
-    for key in ["DETECTOR_PORT", "DETECTOR_HIGH_WRITE_BYTES", "DETECTOR_SENSITIVE_PREFIXES", "DETECTOR_ALLOWED_COMMS"]:
+    for key in ["DETECTOR_PORT"]:
       os.environ.pop(key, None)
     cfg = load_detector_config()
     assert cfg.port == 50051
-    assert cfg.high_write_bytes == 10 * 1024 * 1024
-    assert len(cfg.sensitive_prefixes) > 0
-    assert len(cfg.allowed_comms) == 0
 
   def test_load_from_env(self):
     os.environ["DETECTOR_PORT"] = "8080"
-    os.environ["DETECTOR_HIGH_WRITE_BYTES"] = "5242880"
-    os.environ["DETECTOR_SENSITIVE_PREFIXES"] = "/etc,/home"
-    os.environ["DETECTOR_ALLOWED_COMMS"] = "bash,python"
     os.environ["DETECTOR_MODEL_ALGORITHM"] = "halfspacetrees"
     os.environ["DETECTOR_THRESHOLD"] = "0.7"
     os.environ["DETECTOR_HST_N_TREES"] = "10"
@@ -165,9 +140,6 @@ class TestDetectorConfig:
     try:
       cfg = load_detector_config()
       assert cfg.port == 8080
-      assert cfg.high_write_bytes == 5242880
-      assert cfg.sensitive_prefixes == ["/etc", "/home"]
-      assert cfg.allowed_comms == ["bash", "python"]
       assert cfg.model_algorithm == "halfspacetrees"
       assert cfg.threshold == 0.7
       assert cfg.hst_n_trees == 10
@@ -186,9 +158,6 @@ class TestDetectorConfig:
     finally:
       for key in [
         "DETECTOR_PORT",
-        "DETECTOR_HIGH_WRITE_BYTES",
-        "DETECTOR_SENSITIVE_PREFIXES",
-        "DETECTOR_ALLOWED_COMMS",
         "DETECTOR_MODEL_ALGORITHM",
         "DETECTOR_THRESHOLD",
         "DETECTOR_HST_N_TREES",
@@ -207,18 +176,3 @@ class TestDetectorConfig:
       ]:
         os.environ.pop(key, None)
 
-  def test_empty_sensitive_prefixes(self):
-    os.environ["DETECTOR_SENSITIVE_PREFIXES"] = ""
-    try:
-      cfg = load_detector_config()
-      assert cfg.sensitive_prefixes == []
-    finally:
-      os.environ.pop("DETECTOR_SENSITIVE_PREFIXES", None)
-
-  def test_empty_allowed_comms(self):
-    os.environ["DETECTOR_ALLOWED_COMMS"] = ""
-    try:
-      cfg = load_detector_config()
-      assert cfg.allowed_comms == []
-    finally:
-      os.environ.pop("DETECTOR_ALLOWED_COMMS", None)

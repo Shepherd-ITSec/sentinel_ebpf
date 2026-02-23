@@ -8,7 +8,7 @@ from collections import deque
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 # Import Optional for type hints
 from urllib.parse import parse_qs, urlparse
@@ -122,11 +122,10 @@ def _now_timestamp() -> timestamp_pb2.Timestamp:
   return ts
 
 
-class ModelWorker:
-  """A worker with its own model instance for parallel processing."""
-  
-  def __init__(self, worker_id: int, cfg: DetectorConfig):
-    self.worker_id = worker_id
+class DeterministicScorer:
+  """Single-model scorer that preserves deterministic learning semantics."""
+
+  def __init__(self, cfg: DetectorConfig):
     self.cfg = cfg
     self.detector = OnlineAnomalyDetector(
       algorithm=cfg.model_algorithm,
@@ -142,34 +141,29 @@ class ModelWorker:
       mem_latent_dim=cfg.mem_latent_dim,
       mem_memory_size=cfg.mem_memory_size,
       mem_lr=cfg.mem_lr,
-      seed=cfg.model_seed + worker_id,  # Different seed per worker for diversity
+      seed=cfg.model_seed,
     )
-    self.processed_count = 0
+    self._lock = threading.Lock()
 
   def score_event(self, evt: events_pb2.EventEnvelope) -> events_pb2.DetectionResponse:
-    """
-    Score an event using this worker's model instance.
-    """
     anomaly = False
     reason = ""
     score = 0.0
-    
-    # Extract features
+
     try:
-      features = extract_feature_dict(evt)
-      score = self.detector.score_and_learn(features)
-      anomaly = score >= self.cfg.threshold
+      with self._lock:
+        features = extract_feature_dict(evt)
+        score = self.detector.score_and_learn(features)
+        anomaly = score >= self.cfg.threshold
 
       if anomaly:
         reason = f"{self.detector.algorithm} anomaly score {score:.3f} exceeds threshold {self.cfg.threshold}"
     except Exception as e:
-      logging.error(f"Error scoring event {evt.event_id} in worker {self.worker_id}: {e}", exc_info=True)
-      # On error, mark as normal
+      logging.error("Error scoring event %s: %s", evt.event_id, e, exc_info=True)
       anomaly = False
       score = 0.0
       reason = f"Scoring error: {str(e)}"
-    
-    self.processed_count += 1
+
     return events_pb2.DetectionResponse(  # type: ignore[attr-defined]
       event_id=evt.event_id,
       anomaly=anomaly,
@@ -182,102 +176,38 @@ class ModelWorker:
 class RuleBasedDetector(events_pb2_grpc.DetectorServiceServicer):
   def __init__(self, cfg: DetectorConfig):
     self.cfg = cfg
-    # Create pool of model workers for parallel processing
-    self.worker_count = max(1, cfg.worker_count)
-    self.workers = [ModelWorker(i, cfg) for i in range(self.worker_count)]
-    self._worker_index = 0
-    self._worker_lock = threading.Lock()
-    logging.info("Initialized detector with %d parallel workers", self.worker_count)
-
-  def _get_worker(self) -> ModelWorker:
-    """Get next worker using round-robin distribution."""
-    with self._worker_lock:
-      worker = self.workers[self._worker_index]
-      self._worker_index = (self._worker_index + 1) % self.worker_count
-      return worker
+    self.scorer = DeterministicScorer(cfg)
+    self.active_worker_count = 1
+    self.configured_worker_count = max(1, cfg.worker_count)
+    if self.configured_worker_count > 1:
+      logging.warning(
+        "DETECTOR_WORKER_COUNT=%d is configured but deterministic mode uses a single scoring model.",
+        self.configured_worker_count,
+      )
+    logging.info("Initialized detector in deterministic single-model mode")
   
   def _score_event(self, evt: events_pb2.EventEnvelope) -> events_pb2.DetectionResponse:
-    """
-    Score an event using a worker (for testing purposes).
-    This is a synchronous wrapper around the worker's score_event method.
-    """
-    worker = self._get_worker()
-    return worker.score_event(evt)
-
-  async def _process_event_async(self, evt: events_pb2.EventEnvelope) -> Tuple[events_pb2.EventEnvelope, events_pb2.DetectionResponse]:
-    """Process event asynchronously using a worker from the pool."""
-    # Run CPU-bound scoring in executor to avoid blocking event loop
-    worker = self._get_worker()
-    loop = asyncio.get_event_loop()
-    resp = await loop.run_in_executor(None, worker.score_event, evt)
-    return evt, resp
+    return self.scorer.score_event(evt)
 
   async def StreamEvents(self, request_iterator, context):  # noqa: N802
-    # Process events in parallel using asyncio tasks
-    # Use a semaphore to limit concurrent processing to worker_count
-    semaphore = asyncio.Semaphore(self.worker_count)
-    
-    async def process_with_semaphore(evt: events_pb2.EventEnvelope):
-      async with semaphore:
-        return await self._process_event_async(evt)
-    
-    # Process events as they arrive, maintaining parallelism
-    pending_tasks = {}
-    task_counter = 0
-    
-    async def process_and_yield(evt: events_pb2.EventEnvelope, task_id: int):
-      evt_result, resp_result = await process_with_semaphore(evt)
-      return task_id, evt_result, resp_result
-    
-    try:
-      while True:
-        # Collect events up to worker_count for parallel processing
-        batch = []
-        for _ in range(self.worker_count):
-          try:
-            evt = await request_iterator.__anext__()
-            batch.append(evt)
-          except StopAsyncIteration:
-            break
-        
-        if not batch:
-          # No more events, wait for pending tasks
-          break
-        
-        # Process batch in parallel
-        tasks = [process_and_yield(evt, task_counter + i) for i, evt in enumerate(batch)]
-        task_counter += len(batch)
-        
-        # Wait for all tasks in batch to complete
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Yield responses and update metrics/recent events
-        for result in results:
-          if isinstance(result, Exception):
-            logging.error(f"Error processing event: {result}", exc_info=True)
-            continue
-          
-          task_id, evt, resp = result
-          _recent_events_append(evt, resp)
-          
-          # Update metrics (thread-safe)
-          with _metrics_lock:
-            _metrics["events_total"] += 1
-            _metrics["last_event_timestamp"] = time.time()
-            if resp.anomaly:
-              _metrics["anomalies_total"] += 1
-            if resp.reason and "error" in resp.reason.lower():
-              _metrics["errors_total"] += 1
-          
-          if resp.anomaly:
-            logging.warning("anomaly id=%s reason=%s score=%.3f", resp.event_id, resp.reason, resp.score)
-          else:
-            logging.debug("event ok id=%s", resp.event_id)
-          
-          yield resp
-    
-    except StopAsyncIteration:
-      pass
+    async for evt in request_iterator:
+      resp = self._score_event(evt)
+      _recent_events_append(evt, resp)
+
+      with _metrics_lock:
+        _metrics["events_total"] += 1
+        _metrics["last_event_timestamp"] = time.time()
+        if resp.anomaly:
+          _metrics["anomalies_total"] += 1
+        if resp.reason and "error" in resp.reason.lower():
+          _metrics["errors_total"] += 1
+
+      if resp.anomaly:
+        logging.warning("anomaly id=%s reason=%s score=%.3f", resp.event_id, resp.reason, resp.score)
+      else:
+        logging.debug("event ok id=%s", resp.event_id)
+
+      yield resp
 
   async def ReportAnomaly(self, request, context):  # noqa: N802
     logging.warning("reported anomaly id=%s reason=%s score=%.3f labels=%s", request.event_id, request.reason, request.score, dict(request.labels))
@@ -356,7 +286,15 @@ async def serve():
             "",
             "# HELP sentinel_ebpf_detector_worker_count Number of parallel workers",
             "# TYPE sentinel_ebpf_detector_worker_count gauge",
-            f"sentinel_ebpf_detector_worker_count {cfg.worker_count}",
+            "sentinel_ebpf_detector_worker_count 1",
+            "",
+            "# HELP sentinel_ebpf_detector_worker_configured_count Configured worker count (for compatibility)",
+            "# TYPE sentinel_ebpf_detector_worker_configured_count gauge",
+            f"sentinel_ebpf_detector_worker_configured_count {cfg.worker_count}",
+            "",
+            "# HELP sentinel_ebpf_detector_info Detector metadata (algorithm name)",
+            "# TYPE sentinel_ebpf_detector_info gauge",
+            f'sentinel_ebpf_detector_info{{algorithm="{cfg.model_algorithm}"}} 1',
           ]
           body = "\n".join(lines).encode("utf-8")
           self.send_response(200)
