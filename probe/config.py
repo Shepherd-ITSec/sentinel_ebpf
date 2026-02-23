@@ -1,13 +1,6 @@
 import os
 import yaml
 from dataclasses import dataclass, field
-from typing import List
-
-
-@dataclass
-class ProbeConfig:
-  enabled: bool = True
-  path_prefixes: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -32,7 +25,6 @@ class AppConfig:
   metrics_enabled: bool = True
   metrics_port: int = 9102
   rules_file: str = "/etc/sentinel-ebpf/rules.yaml"
-  probes: ProbeConfig = field(default_factory=ProbeConfig)
   stream: StreamConfig = field(default_factory=StreamConfig)
 
 
@@ -41,7 +33,6 @@ def load_config() -> AppConfig:
   with open(path, "r", encoding="utf-8") as f:
     data = yaml.safe_load(f) or {}
 
-  probes_cfg = data.get("probes", {}).get("fileWrites", {})
   stream_cfg = data.get("stream", {})
   grpc_cfg = data.get("grpc", {})
   metrics_cfg = data.get("metrics", {})
@@ -61,17 +52,11 @@ def load_config() -> AppConfig:
     compress=bool(stream_cfg.get("file", {}).get("compress", False)),
   )
 
-  probes = ProbeConfig(
-    enabled=bool(probes_cfg.get("enabled", True)),
-    path_prefixes=list(probes_cfg.get("pathPrefixes", [])),
-  )
-
   return AppConfig(
     log_level=str(data.get("logLevel", "info")),
     health_port=int(health_cfg.get("port", 9101)),
     metrics_enabled=bool(metrics_cfg.get("enabled", True)),
     metrics_port=int(metrics_cfg.get("port", 9102)),
     rules_file=str(data.get("rulesFile", "/etc/sentinel-ebpf/rules.yaml")),
-    probes=probes,
     stream=stream,
   )

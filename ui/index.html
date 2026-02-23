@@ -7,6 +7,7 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js"></script>
     <style>
       :root {
+        --mono: "SF Mono", "Consolas", "Liberation Mono", Menlo, monospace;
         --bg: #0f1419;
         --bg-card: #1a2332;
         --border: #2d3a4f;
@@ -272,12 +273,22 @@
       const logLimit = parseInt("%LOG_LIMIT%", 10) || 50;
       const themeBtn = document.getElementById("theme-btn");
       const html = document.documentElement;
+      function formatTimestampNs(nsLike) {
+        if (nsLike == null) return "—";
+        const nsNum = Number(nsLike);
+        if (isNaN(nsNum) || nsNum <= 0) return "—";
+        const ms = nsNum < 1e12 ? nsNum * 1000 : nsNum / 1e6;
+        const date = new Date(ms);
+        if (isNaN(date.getTime())) return "—";
+        return date.toISOString().replace("T", " ").replace("Z", "");
+      }
       function applyTheme(theme) {
         html.setAttribute("data-theme", theme === "light" ? "light" : "");
         themeBtn.textContent = theme === "light" ? "Dark" : "Light";
         try { localStorage.setItem("sentinel-ui-theme", theme); } catch (e) {}
       }
-      const saved = localStorage.getItem("sentinel-ui-theme");
+      let saved = null;
+      try { saved = localStorage.getItem("sentinel-ui-theme"); } catch (e) {}
       if (saved === "light") applyTheme("light");
       else applyTheme("dark");
       themeBtn.addEventListener("click", function() {
@@ -306,6 +317,9 @@
           ["Probe health", data.probe_health || "—"],
           ["Detector health", data.detector_health || "—"],
         ];
+        if (data.detector_algorithm != null && data.detector_algorithm !== "") {
+          items.push(["Detector algorithm", data.detector_algorithm]);
+        }
         if (data.detector_worker_count != null) {
           items.push(["Detector workers", data.detector_worker_count]);
         }
@@ -427,38 +441,13 @@
         }
         const message = data.message || "";
         let entries = Array.isArray(data.entries) ? data.entries : [];
-        const keys = ["ts_unix_nano", "event_type", "hostname", "filename", "anomaly", "score", "reason"];
         function getCell(entry, key) {
           if (key === "filename") {
             const d = entry.data;
             return Array.isArray(d) && d.length > 0 ? d[0] : (entry.prefix || "—");
           }
           if (key === "ts_unix_nano") {
-            const ns = entry.ts_unix_nano;
-            if (ns == null) return "—";
-            let nsNum = Number(ns);
-            if (isNaN(nsNum) || nsNum <= 0) return "—";
-            
-            // Detect unit: if value is less than 1e12, it's likely seconds, not nanoseconds
-            // Current timestamps in nanoseconds are ~1.7e15 (year 2024)
-            // Current timestamps in seconds are ~1.7e9
-            let ms;
-            if (nsNum < 1e12) {
-              // Likely seconds, convert to milliseconds
-              ms = nsNum * 1000;
-            } else {
-              // Likely nanoseconds, convert to milliseconds
-              // 1 second = 1,000 milliseconds = 1,000,000,000 nanoseconds
-              // So: milliseconds = nanoseconds / 1,000,000
-              ms = nsNum / 1e6;
-            }
-            
-            const date = new Date(ms);
-            if (isNaN(date.getTime())) return "—";
-            
-            // Format as readable date/time: "YYYY-MM-DD HH:MM:SS.mmm"
-            const iso = date.toISOString();
-            return iso.replace("T", " ").replace("Z", "");
+            return formatTimestampNs(entry.ts_unix_nano);
           }
           const v = entry[key];
           if (v === true || v === false) return v ? "Yes" : "No";
@@ -725,13 +714,7 @@
         }
         let html = `<div style="max-height: 400px; overflow-y: auto;">`;
         entries.slice().reverse().forEach(entry => {
-          const ts = entry.ts_unix_nano ? (() => {
-            const ns = Number(entry.ts_unix_nano);
-            if (isNaN(ns) || ns <= 0) return "—";
-            const ms = ns < 1e12 ? ns * 1000 : ns / 1e6;
-            const date = new Date(ms);
-            return isNaN(date.getTime()) ? "—" : date.toISOString().replace("T", " ").replace("Z", "");
-          })() : "—";
+          const ts = formatTimestampNs(entry.ts_unix_nano);
           const filename = Array.isArray(entry.data) && entry.data.length > 0 ? entry.data[0] : "—";
           html += `<div class="anomaly-item">`;
           html += `<div><strong>${escapeHtml(ts)}</strong> <span class="anomaly-score">Score: ${escapeHtml(String(entry.score || 0))}</span></div>`;

@@ -1,3 +1,13 @@
+# Path prefixes to exclude from capture (reduces flood of low-value syscalls;
+# keeps stream focused so the model can learn structure and score anomalies higher)
+pathPrefixExcludes:
+  - "/proc"
+  - "/sys"
+  - "/dev"
+  - "/run"
+  - "/var/run"
+  - "/tmp"
+
 rules:
   - name: capture-all-opens
     enabled: true

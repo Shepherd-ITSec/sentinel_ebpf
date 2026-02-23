@@ -23,10 +23,6 @@ probe:
       rotateMaxBytes: 52428800
       rotateMaxFiles: 3
       compress: false
-  probes:
-    fileWrites:
-      enabled: true
-      pathPrefixes: []
   storage:
     pvc:
       enabled: false
@@ -62,7 +58,7 @@ detector:
     port: 50051
   eventsPort: 50052  # HTTP API for recent events (UI log tail in gRPC mode)
   anomalyLogPath: ""  # Path to log anomalies to file (empty to disable, e.g., /var/log/sentinel-ebpf/anomalies.jsonl)
-  workerCount: 4  # Number of parallel model workers for concurrent processing
+  workerCount: 4  # Compatibility knob; detector uses deterministic single-model scoring
   # Model configuration (River anomaly detection)
   model:
     algorithm: "memstream"  # halfspacetrees | loda | memstream

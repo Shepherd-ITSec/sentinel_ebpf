@@ -18,6 +18,13 @@ class TestDetector:
     cfg = DetectorConfig(port=50051)
     detector = RuleBasedDetector(cfg)
     assert detector.cfg == cfg
+    assert detector.active_worker_count == 1
+
+  def test_detector_forces_deterministic_single_worker(self):
+    cfg = DetectorConfig(worker_count=8)
+    detector = RuleBasedDetector(cfg)
+    assert detector.active_worker_count == 1
+    assert detector.configured_worker_count == 8
 
   @pytest.mark.asyncio
   async def test_score_event_online(self):

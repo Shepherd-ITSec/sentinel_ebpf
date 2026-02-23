@@ -2,6 +2,7 @@ import gzip
 import json
 import logging
 import os
+import re
 import threading
 import time
 from collections import deque
@@ -167,8 +168,9 @@ class Handler(BaseHTTPRequestHandler):
       detector_addr = os.environ.get("DETECTOR_GRPC_ADDR", "")
       detector_metrics_url = os.environ.get("DETECTOR_METRICS_URL", "")
       
-      # Get detector worker count from metrics
+      # Get detector worker count and algorithm from metrics
       worker_count = None
+      detector_algorithm = None
       if detector_metrics_url:
         try:
           metrics_text = _http_get(detector_metrics_url, timeout=2.0)
@@ -177,7 +179,11 @@ class Handler(BaseHTTPRequestHandler):
               parts = line.split()
               if len(parts) >= 2:
                 worker_count = int(float(parts[1]))
-                break
+            # Parse sentinel_ebpf_detector_info{algorithm="memstream"} 1
+            if "sentinel_ebpf_detector_info" in line and "algorithm=" in line:
+              match = re.search(r'algorithm="([^"]+)"', line)
+              if match:
+                detector_algorithm = match.group(1)
         except Exception:
           pass
       
@@ -186,6 +192,7 @@ class Handler(BaseHTTPRequestHandler):
         "probe_health": _http_get(probe_health),
         "detector_health": _grpc_health(detector_addr),
         "detector_worker_count": worker_count,
+        "detector_algorithm": detector_algorithm,
       }
       self._json(status)
       return
@@ -230,19 +237,16 @@ class Handler(BaseHTTPRequestHandler):
       return
 
     if self.path.startswith("/api/calls_chart"):
-      # Get recent events and count by event_type for current poll interval
-      # Use total events count from metrics to track new events since last poll
+      # Count event types per poll interval, handling detector restarts robustly.
       global _last_total_events
       detector_events_url = os.environ.get("DETECTOR_EVENTS_URL", "")
       detector_metrics_url = os.environ.get("DETECTOR_METRICS_URL", "")
       counts = {}
-      
       current_time = time.time()
-      
+
       if detector_events_url:
         try:
-          # Get current total events processed from metrics
-          current_total_events = 0
+          current_total_events = None
           if detector_metrics_url:
             try:
               metrics_text = _http_get(detector_metrics_url, timeout=2.0)
@@ -253,10 +257,10 @@ class Handler(BaseHTTPRequestHandler):
                     current_total_events = int(float(parts[1]))
                     break
             except Exception:
-              pass
-          
-          # DETECTOR_EVENTS_URL should already point to /recent_events endpoint
-          # Request up to 10000 events (matching detector buffer size)
+              current_total_events = None
+
+          # DETECTOR_EVENTS_URL should already point to /recent_events endpoint.
+          # Request up to 10000 events (matching detector buffer size).
           if "?" in detector_events_url:
             events_url = f"{detector_events_url}&limit=10000"
           else:
@@ -266,50 +270,44 @@ class Handler(BaseHTTPRequestHandler):
             try:
               data = json.loads(raw)
               entries = data.get("entries", [])
-              
-              # Get the last total events count
+
               with _last_poll_lock:
                 last_total_events = _last_total_events
-                is_first_poll = (last_total_events == 0)
-              
-              if is_first_poll:
-                # First poll: initialize counter and show recent events immediately
-                # Use a reasonable window (last 30 seconds) to show activity right away
-                # This provides immediate feedback while avoiding huge spikes of very old events
+
+              # Fall back to a short time window when metric counters are unavailable
+              # or after detector restarts/counter resets.
+              def count_recent_window() -> dict:
+                window_counts = {}
                 recent_window_seconds = 30
-                recent_threshold_ns = int(current_time * 1e9) - (recent_window_seconds * 1_000_000_000)
-                
+                threshold_ns = int(current_time * 1e9) - (recent_window_seconds * 1_000_000_000)
                 for entry in entries:
                   event_ts_ns = entry.get("ts_unix_nano", 0)
-                  # Count events from the last 30 seconds
-                  if event_ts_ns > recent_threshold_ns:
+                  if event_ts_ns > threshold_ns:
                     event_type = entry.get("event_type", "unknown")
-                    counts[event_type] = counts.get(event_type, 0) + 1
-                
-                # Always initialize the counter on first poll, even if no recent events
-                # This ensures subsequent polls can track new events immediately
-                with _last_poll_lock:
-                  _last_total_events = current_total_events if current_total_events > 0 else 0
+                    window_counts[event_type] = window_counts.get(event_type, 0) + 1
+                return window_counts
+
+              if current_total_events is None:
+                counts = count_recent_window()
+              elif last_total_events == 0:
+                counts = count_recent_window()
+              elif current_total_events < last_total_events:
+                # Detector restarted or metrics counter reset.
+                counts = count_recent_window()
               else:
-                # Subsequent polls: count events that arrived since last poll
-                # Calculate how many new events were processed
                 new_events_count = current_total_events - last_total_events
-                
                 if new_events_count > 0:
-                  # Count the newest events in the buffer (up to new_events_count)
-                  # Since entries are returned oldest-first (first N entries), 
-                  # the newest events are at the end
+                  # Entries are oldest-first, so the newest events are at the end.
                   new_entries = entries[-new_events_count:] if new_events_count <= len(entries) else entries
-                  
                   for entry in new_entries:
                     event_type = entry.get("event_type", "unknown")
                     counts[event_type] = counts.get(event_type, 0) + 1
-                
-                # Update the last total events count
+
+              # Update baseline counter after processing this poll.
+              if current_total_events is not None:
                 with _last_poll_lock:
                   _last_total_events = current_total_events
-              
-              # Store this poll's data in history
+
               poll_time = current_time
               with _poll_history_lock:
                 _poll_history.append({

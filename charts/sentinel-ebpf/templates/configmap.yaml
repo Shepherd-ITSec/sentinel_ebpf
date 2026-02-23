@@ -27,14 +27,5 @@ data:
         rotateMaxBytes: {{ .Values.probe.stream.file.rotateMaxBytes }}
         rotateMaxFiles: {{ .Values.probe.stream.file.rotateMaxFiles }}
         compress: {{ .Values.probe.stream.file.compress }}
-    probes:
-      fileWrites:
-        enabled: {{ .Values.probe.probes.fileWrites.enabled }}
-        pathPrefixes:
-        {{- range .Values.probe.probes.fileWrites.pathPrefixes }}
-          - {{ . | quote }}
-        {{- else }}
-          - "/"
-        {{- end }}
   rules.yaml: |
 {{ (.Files.Get "rules.yaml") | nindent 4 }}

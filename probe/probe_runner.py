@@ -23,6 +23,7 @@ from bcc import BPF
 import events_pb2
 import events_pb2_grpc
 from probe.config import AppConfig, load_config
+from probe.open_flags import decode_open_flags
 from probe.rules import RuleEngine
 
 # Fast UUID generation using counter + timestamp (much faster than uuid.uuid4())
@@ -95,30 +96,6 @@ def _event_attributes(meta: dict) -> dict:
   if node:
     attrs["node"] = node
   return attrs
-
-
-def _decode_open_flags(flags: int) -> str:
-  flag_names = []
-  if flags & os.O_RDONLY:
-    flag_names.append("O_RDONLY")
-  if flags & os.O_WRONLY:
-    flag_names.append("O_WRONLY")
-  if flags & os.O_RDWR:
-    flag_names.append("O_RDWR")
-  for name in [
-    "O_CREAT",
-    "O_TRUNC",
-    "O_APPEND",
-    "O_CLOEXEC",
-    "O_EXCL",
-    "O_DIRECTORY",
-    "O_NOFOLLOW",
-    "O_SYNC",
-    "O_DSYNC",
-  ]:
-    if hasattr(os, name) and (flags & getattr(os, name)):
-      flag_names.append(name)
-  return "|".join(flag_names) if flag_names else "0"
 
 
 class GrpcStreamer:
@@ -400,6 +377,8 @@ class HealthHandler(BaseHTTPRequestHandler):
         with streamer._events_sent_lock:
           events_sent = streamer._events_sent
         
+        rules_compiled = getattr(probe_runner, "_compiled_rule_count", 0)
+        rules_loaded = getattr(probe_runner, "_loaded_rule_count", 0)
         metrics_lines.extend([
           "# HELP sentinel_ebpf_probe_events_sent_total Total number of events sent to detector",
           "# TYPE sentinel_ebpf_probe_events_sent_total counter",
@@ -412,6 +391,18 @@ class HealthHandler(BaseHTTPRequestHandler):
           "# HELP sentinel_ebpf_probe_events_dropped_total Total number of events dropped (queue full)",
           "# TYPE sentinel_ebpf_probe_events_dropped_total counter",
           f"sentinel_ebpf_probe_events_dropped_total {drop_count}",
+          "",
+          "# HELP sentinel_ebpf_probe_rules_compiled Total number of compiled userspace rules",
+          "# TYPE sentinel_ebpf_probe_rules_compiled gauge",
+          f"sentinel_ebpf_probe_rules_compiled {rules_compiled}",
+          "",
+          "# HELP sentinel_ebpf_probe_rules_loaded Total number of rules loaded into BPF map",
+          "# TYPE sentinel_ebpf_probe_rules_loaded gauge",
+          f"sentinel_ebpf_probe_rules_loaded {rules_loaded}",
+          "",
+          "# HELP sentinel_ebpf_probe_rules_truncated_total Total number of compiled rules dropped due to MAX_RULES cap",
+          "# TYPE sentinel_ebpf_probe_rules_truncated_total gauge",
+          f"sentinel_ebpf_probe_rules_truncated_total {max(0, rules_compiled - rules_loaded)}",
           "",
         ])
       else:
@@ -428,6 +419,18 @@ class HealthHandler(BaseHTTPRequestHandler):
           "# HELP sentinel_ebpf_probe_events_dropped_total Total number of events dropped (queue full)",
           "# TYPE sentinel_ebpf_probe_events_dropped_total counter",
           "sentinel_ebpf_probe_events_dropped_total 0",
+          "",
+          "# HELP sentinel_ebpf_probe_rules_compiled Total number of compiled userspace rules",
+          "# TYPE sentinel_ebpf_probe_rules_compiled gauge",
+          "sentinel_ebpf_probe_rules_compiled 0",
+          "",
+          "# HELP sentinel_ebpf_probe_rules_loaded Total number of rules loaded into BPF map",
+          "# TYPE sentinel_ebpf_probe_rules_loaded gauge",
+          "sentinel_ebpf_probe_rules_loaded 0",
+          "",
+          "# HELP sentinel_ebpf_probe_rules_truncated_total Total number of compiled rules dropped due to MAX_RULES cap",
+          "# TYPE sentinel_ebpf_probe_rules_truncated_total gauge",
+          "sentinel_ebpf_probe_rules_truncated_total 0",
           "",
         ])
       
@@ -459,6 +462,8 @@ class ProbeRunner:
     self._stop = threading.Event()
     self._metadata = _hostname_metadata()
     self.rule_engine = RuleEngine(cfg.rules_file)
+    self._compiled_rule_count = 0
+    self._loaded_rule_count = 0
     self._load_rules_into_bpf()
     # Get boot time to convert boot-relative timestamps to Unix epoch nanoseconds
     # bpf_ktime_get_ns() returns nanoseconds since boot, we need Unix epoch
@@ -519,7 +524,18 @@ class ProbeRunner:
 
   def _load_rules_into_bpf(self):
     compiled = self._compile_rules()
+    self._compiled_rule_count = len(compiled)
     count = min(len(compiled), MAX_RULES)
+    self._loaded_rule_count = count
+    dropped = len(compiled) - count
+    if dropped > 0:
+      logging.warning(
+        "Compiled %d rules but only %d loaded into BPF (MAX_RULES=%d). %d rule(s) dropped.",
+        len(compiled),
+        count,
+        MAX_RULES,
+        dropped,
+      )
     rules_map = self.bpf["rules"]
     count_map = self.bpf["rule_count"]
     count_map[ctypes.c_int(0)] = ctypes.c_uint(count)
@@ -547,7 +563,11 @@ class ProbeRunner:
     filename_bytes = event.filename
     null_idx = filename_bytes.find(b'\x00')
     filename = filename_bytes[:null_idx].decode(errors="ignore") if null_idx >= 0 else filename_bytes.decode(errors="ignore")
-    
+
+    # Exclude paths configured in rules (e.g. /proc) before building the event
+    if self.rule_engine.path_excluded(filename):
+      return
+
     comm_bytes = event.comm
     null_idx = comm_bytes.find(b'\x00')
     comm = comm_bytes[:null_idx].decode(errors="ignore") if null_idx >= 0 else comm_bytes.decode(errors="ignore")
@@ -558,7 +578,7 @@ class ProbeRunner:
     # Reuse pre-computed attributes dict and update only open_flags
     # Use dict() constructor instead of copy() for slightly better performance
     attributes = dict(self._static_attrs)
-    attributes["open_flags"] = _decode_open_flags(int(event.flags))
+    attributes["open_flags"] = decode_open_flags(int(event.flags))
     
     # Use fast event ID generation (counter + timestamp instead of uuid.uuid4())
     # Pre-convert integers to strings once
