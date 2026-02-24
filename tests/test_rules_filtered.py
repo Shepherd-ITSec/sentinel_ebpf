@@ -16,17 +16,15 @@ class TestRuleEngineFiltered:
     rules_file.write_text("""rules:
   - name: capture-sensitive-opens
     enabled: true
-    event: file_open
-    match:
-      pathPrefixes: ["/etc", "/bin"]
+    condition: "event_name in (open, openat, openat2) and (path startswith /etc or path startswith /bin)"
 """)
     engine = RuleEngine(str(rules_file))
     # Should match sensitive paths
-    assert engine.allow("file_open", "/etc/hosts", "bash")
-    assert engine.allow("file_open", "/bin/ls", "bash")
+    assert engine.allow("openat", "/etc/hosts", "bash")
+    assert engine.allow("open", "/bin/ls", "bash")
     # Should NOT match other paths (no catch-all)
-    assert not engine.allow("file_open", "/tmp/test", "bash")
-    assert not engine.allow("file_open", "/home/user/file", "bash")
+    assert not engine.allow("openat", "/tmp/test", "bash")
+    assert not engine.allow("openat", "/home/user/file", "bash")
 
   def test_comm_filtering_without_catchall(self, temp_dir):
     """Test that comm filtering works when there's no catch-all rule."""
@@ -34,17 +32,15 @@ class TestRuleEngineFiltered:
     rules_file.write_text("""rules:
   - name: capture-specific-comm
     enabled: true
-    event: file_open
-    match:
-      comms: ["bash", "sh"]
+    condition: "event_name = execve and comm in (bash, sh)"
 """)
     engine = RuleEngine(str(rules_file))
     # Should match allowed comms
-    assert engine.allow("file_open", "/tmp/test", "bash")
-    assert engine.allow("file_open", "/tmp/test", "sh")
+    assert engine.allow("execve", "/tmp/test", "bash")
+    assert engine.allow("execve", "/tmp/test", "sh")
     # Should NOT match other comms (no catch-all)
-    assert not engine.allow("file_open", "/tmp/test", "python")
-    assert not engine.allow("file_open", "/tmp/test", "node")
+    assert not engine.allow("execve", "/tmp/test", "python")
+    assert not engine.allow("execve", "/tmp/test", "node")
 
   def test_combined_filters_without_catchall(self, temp_dir):
     """Test combined path and comm filters without catch-all."""
@@ -52,20 +48,17 @@ class TestRuleEngineFiltered:
     rules_file.write_text("""rules:
   - name: capture-sensitive-bash-opens
     enabled: true
-    event: file_open
-    match:
-      pathPrefixes: ["/etc"]
-      comms: ["bash"]
+    condition: "event_name = openat and path startswith /etc and comm = bash"
 """)
     engine = RuleEngine(str(rules_file))
     # Should match: both path and comm match
-    assert engine.allow("file_open", "/etc/hosts", "bash")
+    assert engine.allow("openat", "/etc/hosts", "bash")
     # Should NOT match: path matches but comm doesn't
-    assert not engine.allow("file_open", "/etc/hosts", "python")
+    assert not engine.allow("openat", "/etc/hosts", "python")
     # Should NOT match: comm matches but path doesn't
-    assert not engine.allow("file_open", "/tmp/test", "bash")
+    assert not engine.allow("openat", "/tmp/test", "bash")
     # Should NOT match: neither matches
-    assert not engine.allow("file_open", "/tmp/test", "python")
+    assert not engine.allow("openat", "/tmp/test", "python")
 
   def test_disabled_rule_truly_ignored(self, temp_dir):
     """Test that disabled rules are completely ignored."""
@@ -73,10 +66,8 @@ class TestRuleEngineFiltered:
     rules_file.write_text("""rules:
   - name: capture-tmp-opens
     enabled: false
-    event: file_open
-    match:
-      pathPrefixes: ["/tmp"]
+    condition: "event_name = openat and path startswith /tmp"
 """)
     engine = RuleEngine(str(rules_file))
     # Should NOT match because rule is disabled
-    assert not engine.allow("file_open", "/tmp/test", "bash")
+    assert not engine.allow("openat", "/tmp/test", "bash")

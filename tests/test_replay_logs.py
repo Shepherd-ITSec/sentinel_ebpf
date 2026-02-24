@@ -32,9 +32,9 @@ class TestReplayLogs:
     log_file = temp_dir / "events.bin"
     payload = json.dumps({
       "event_id": "test-1",
-      "event_type": "file_open",
+      "event_type": "openat",
       "ts_unix_nano": 1234567890000000000,
-      "data": ["/tmp/test", "2", "bash", "1", "2", "1000"],
+      "data": ["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
     }).encode("utf-8")
     record = MAGIC + struct.pack("<I", len(payload)) + payload
     log_file.write_bytes(record)
@@ -42,7 +42,7 @@ class TestReplayLogs:
     events = list(iter_events(log_file))
     assert len(events) == 1
     assert events[0]["event_id"] == "test-1"
-    assert events[0]["data"] == ["/tmp/test", "2", "bash", "1", "2", "1000"]
+    assert events[0]["data"] == ["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"]
 
   def test_iter_events_multiple(self, temp_dir):
     log_file = temp_dir / "events.bin"
@@ -50,9 +50,9 @@ class TestReplayLogs:
     for i in range(3):
       payload = json.dumps({
         "event_id": f"test-{i}",
-        "event_type": "file_open",
+        "event_type": "openat",
         "ts_unix_nano": 1234567890000000000 + i * 1000000,
-        "data": ["/tmp/test", "2", "bash", "1", "2", "1000"],
+        "data": ["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
       }).encode("utf-8")
       records.append(MAGIC + struct.pack("<I", len(payload)) + payload)
     log_file.write_bytes(b"".join(records))
@@ -69,9 +69,9 @@ class TestReplayLogs:
     for i in range(5):
       payload = json.dumps({
         "event_id": f"test-{i}",
-        "event_type": "file_open",
+        "event_type": "openat",
         "ts_unix_nano": (base_ts + i * 1000) * 1_000_000,  # Convert to ns
-        "data": ["/tmp/test", "2", "bash", "1", "2", "1000"],
+        "data": ["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
       }).encode("utf-8")
       records.append(MAGIC + struct.pack("<I", len(payload)) + payload)
     log_file.write_bytes(b"".join(records))
@@ -87,9 +87,9 @@ class TestReplayLogs:
     for i in range(5):
       payload = json.dumps({
         "event_id": f"test-{i}",
-        "event_type": "file_open",
+        "event_type": "openat",
         "ts_unix_nano": (base_ts + i * 1000) * 1_000_000,
-        "data": ["/tmp/test", "2", "bash", "1", "2", "1000"],
+        "data": ["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
       }).encode("utf-8")
       records.append(MAGIC + struct.pack("<I", len(payload)) + payload)
     log_file.write_bytes(b"".join(records))
@@ -105,9 +105,9 @@ class TestReplayLogs:
     for i in range(5):
       payload = json.dumps({
         "event_id": f"test-{i}",
-        "event_type": "file_open",
+        "event_type": "openat",
         "ts_unix_nano": (base_ts + i * 1000) * 1_000_000,
-        "data": ["/tmp/test", "2", "bash", "1", "2", "1000"],
+        "data": ["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
       }).encode("utf-8")
       records.append(MAGIC + struct.pack("<I", len(payload)) + payload)
     log_file.write_bytes(b"".join(records))
@@ -116,20 +116,23 @@ class TestReplayLogs:
     events = list(iter_events(log_file, start_ms=base_ts + 1000, end_ms=base_ts + 3500))
     assert len(events) == 3  # Events 1, 2, 3
 
-  def test_iter_events_backward_compat_map_format(self, temp_dir):
-    """Test backward compatibility with old map format."""
+  def test_iter_events_non_list_data_rejected_by_replay(self, temp_dir):
+    """Replay should reject non-canonical non-list data vectors."""
     log_file = temp_dir / "events.bin"
-    # Old format: data as map
     payload = json.dumps({
       "event_id": "test-1",
-      "event_type": "file_open",
+      "event_type": "openat",
       "ts_unix_nano": 1234567890000000000,
       "data": {"filename": "/tmp/test", "bytes": "1024", "comm": "bash", "pid": "1", "tid": "2"},
     }).encode("utf-8")
     record = MAGIC + struct.pack("<I", len(payload)) + payload
     log_file.write_bytes(record)
 
-    events = list(iter_events(log_file))
-    assert len(events) == 1
-    assert isinstance(events[0]["data"], dict)
-    assert events[0]["data"]["filename"] == "/tmp/test"
+    with patch("scripts.replay_logs.grpc.insecure_channel") as mock_channel:
+      mock_stub = MagicMock()
+      mock_channel.return_value = MagicMock()
+      with patch("scripts.replay_logs.events_pb2_grpc.DetectorServiceStub", return_value=mock_stub):
+        mock_stub.StreamEvents.side_effect = ValueError("invalid event record: 'data' must be an ordered list")
+        with pytest.raises(ValueError, match="invalid event record"):
+          from scripts.replay_logs import replay
+          replay(str(log_file), "localhost:50051", "fast", None, None)

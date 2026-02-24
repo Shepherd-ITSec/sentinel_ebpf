@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>sentinel-ebpf debug</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.3/Sortable.min.js"></script>
     <style>
       :root {
         --mono: "SF Mono", "Consolas", "Liberation Mono", Menlo, monospace;
@@ -95,6 +96,21 @@
         color: var(--accent);
         background: var(--accent-dim);
         border-bottom: 1px solid var(--border);
+        cursor: grab;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .section h3:active { cursor: grabbing; }
+      .section-title { pointer-events: none; }
+      .section-toggle-indicator {
+        font-family: var(--mono);
+        font-size: 0.75rem;
+        color: var(--text-muted);
+        pointer-events: none;
+      }
+      .section.section-collapsed .section-inner {
+        display: none;
       }
       .section-inner {
         padding: 16px;
@@ -195,6 +211,15 @@
         flex-direction: column;
         gap: 16px;
       }
+      .dashboard-full-width {
+        grid-column: 1 / -1;
+      }
+      .drag-ghost {
+        opacity: 0.35;
+      }
+      .drag-chosen {
+        outline: 2px dashed var(--accent);
+      }
       .chart-container {
         min-height: 200px;
         position: relative;
@@ -202,6 +227,47 @@
       .chart-wrapper {
         position: relative;
         height: 200px;
+      }
+      .cpu-chart-container {
+        min-height: 160px;
+        margin-top: 8px;
+        position: relative;
+      }
+      .cpu-chart-wrapper {
+        position: relative;
+        height: 160px;
+      }
+      .map-wrapper {
+        position: relative;
+        height: 280px;
+      }
+      .capacity-summary {
+        font-size: 0.875rem;
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 8px 12px;
+      }
+      .capacity-summary dt {
+        color: var(--text-muted);
+        margin: 0;
+      }
+      .capacity-summary dd {
+        margin: 0;
+      }
+      .status-badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-size: 0.75rem;
+        font-weight: 600;
+      }
+      .status-ok-badge { background: var(--success); color: var(--bg); }
+      .status-near-badge { background: #d29922; color: var(--bg); }
+      .status-sat-badge { background: var(--error); color: #fff; }
+      .map-note {
+        color: var(--text-muted);
+        font-size: 0.75rem;
+        margin-top: 8px;
       }
       .anomaly-item {
         padding: 8px;
@@ -236,19 +302,32 @@
         <button type="button" class="toggle-btn" id="theme-btn" aria-label="Toggle theme">Light</button>
       </div>
     </div>
-    <div class="main-layout">
-      <div class="left-column">
-        <div class="section">
+    <div class="main-layout" id="dashboard-layout">
+      <div class="left-column dashboard-column" id="left-column">
+        <div class="section" data-widget-id="status">
           <h3>Status</h3>
           <div class="section-inner" id="status"></div>
         </div>
-        <div class="section">
+        <div class="section" data-widget-id="capacity">
+          <h3>Capacity Guidance</h3>
+          <div class="section-inner" id="capacity"></div>
+        </div>
+        <div class="section" data-widget-id="metrics">
           <h3>Metrics</h3>
           <div class="section-inner" id="metrics"></div>
         </div>
       </div>
-      <div class="right-column">
-        <div class="section">
+      <div class="right-column dashboard-column" id="right-column">
+        <div class="section" data-widget-id="score-map">
+          <h3>Anomaly Score Map</h3>
+          <div class="section-inner">
+            <div class="map-wrapper">
+              <canvas id="scoreMapChart"></canvas>
+            </div>
+            <div class="map-note">Feature-space map: X=path signature, Y=command signature, color/size by anomaly score.</div>
+          </div>
+        </div>
+        <div class="section" data-widget-id="event-types">
           <h3>Event Types (per poll)</h3>
           <div class="section-inner">
             <div class="chart-container">
@@ -258,21 +337,148 @@
             </div>
           </div>
         </div>
-        <div class="section">
+        <div class="section" data-widget-id="anomalies">
           <h3>Anomalies</h3>
           <div class="section-inner" id="anomalies"></div>
         </div>
       </div>
-    </div>
-    <div class="section logs-full-width">
-      <h3>Logs (tail)</h3>
-      <div class="section-inner" id="logs"></div>
+      <div class="dashboard-column dashboard-full-width" id="bottom-column">
+        <div class="section logs-full-width" data-widget-id="logs">
+          <h3>Logs (tail)</h3>
+          <div class="section-inner" id="logs"></div>
+        </div>
+      </div>
     </div>
     <script>
       const pollSeconds = parseInt("%POLL_SECONDS%", 10) || 10;
       const logLimit = parseInt("%LOG_LIMIT%", 10) || 50;
       const themeBtn = document.getElementById("theme-btn");
       const html = document.documentElement;
+      const layoutStorageKey = "sentinel-ui-layout-v1";
+      const collapsedStorageKey = "sentinel-ui-collapsed-v1";
+      let suppressToggleUntil = 0;
+
+      function getDashboardColumns() {
+        return [
+          document.getElementById("left-column"),
+          document.getElementById("right-column"),
+          document.getElementById("bottom-column"),
+        ].filter(Boolean);
+      }
+
+      function saveLayout() {
+        const columns = getDashboardColumns();
+        const payload = {};
+        columns.forEach((col) => {
+          payload[col.id] = Array.from(col.querySelectorAll(":scope > .section"))
+            .map((sec) => sec.getAttribute("data-widget-id"))
+            .filter(Boolean);
+        });
+        try { localStorage.setItem(layoutStorageKey, JSON.stringify(payload)); } catch (e) {}
+      }
+
+      function applySavedLayout() {
+        let raw = null;
+        try { raw = localStorage.getItem(layoutStorageKey); } catch (e) {}
+        if (!raw) return;
+        let layout = null;
+        try { layout = JSON.parse(raw); } catch (e) { return; }
+        if (!layout || typeof layout !== "object") return;
+
+        const columns = getDashboardColumns();
+        const widgetsById = {};
+        columns.forEach((col) => {
+          col.querySelectorAll(":scope > .section").forEach((sec) => {
+            const id = sec.getAttribute("data-widget-id");
+            if (id) widgetsById[id] = sec;
+          });
+        });
+
+        columns.forEach((col) => {
+          const ids = Array.isArray(layout[col.id]) ? layout[col.id] : [];
+          ids.forEach((id) => {
+            const sec = widgetsById[id];
+            if (sec) col.appendChild(sec);
+          });
+        });
+      }
+
+      function initDragAndDropLayout() {
+        if (typeof Sortable === "undefined") return;
+        applySavedLayout();
+        getDashboardColumns().forEach((col) => {
+          Sortable.create(col, {
+            group: "sentinel-dashboard",
+            draggable: ".section",
+            handle: ".section > h3",
+            animation: 180,
+            ghostClass: "drag-ghost",
+            chosenClass: "drag-chosen",
+            onEnd: function() {
+              saveLayout();
+              suppressToggleUntil = Date.now() + 250;
+            },
+          });
+        });
+      }
+      function getCollapsedWidgets() {
+        let raw = null;
+        try { raw = localStorage.getItem(collapsedStorageKey); } catch (e) {}
+        if (!raw) return new Set();
+        try {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) return new Set(parsed.filter(Boolean));
+        } catch (e) {}
+        return new Set();
+      }
+      function saveCollapsedWidgets(collapsedSet) {
+        try { localStorage.setItem(collapsedStorageKey, JSON.stringify(Array.from(collapsedSet))); } catch (e) {}
+      }
+      function setSectionCollapsed(section, collapsed) {
+        section.classList.toggle("section-collapsed", !!collapsed);
+        const header = section.querySelector(":scope > h3");
+        const indicator = header ? header.querySelector(".section-toggle-indicator") : null;
+        if (header) header.setAttribute("aria-expanded", collapsed ? "false" : "true");
+        if (indicator) indicator.textContent = collapsed ? "[+]" : "[-]";
+      }
+      function initSectionToggles() {
+        const collapsedWidgets = getCollapsedWidgets();
+        document.querySelectorAll(".section").forEach((section) => {
+          const header = section.querySelector(":scope > h3");
+          if (!header) return;
+          if (!header.querySelector(".section-toggle-indicator")) {
+            const title = header.textContent.trim();
+            header.textContent = "";
+            const titleSpan = document.createElement("span");
+            titleSpan.className = "section-title";
+            titleSpan.textContent = title;
+            const indicator = document.createElement("span");
+            indicator.className = "section-toggle-indicator";
+            header.appendChild(titleSpan);
+            header.appendChild(indicator);
+          }
+          header.setAttribute("role", "button");
+          header.setAttribute("tabindex", "0");
+          const widgetId = section.getAttribute("data-widget-id") || "";
+          setSectionCollapsed(section, collapsedWidgets.has(widgetId));
+          function toggleSection() {
+            if (Date.now() < suppressToggleUntil) return;
+            const isCollapsed = section.classList.contains("section-collapsed");
+            setSectionCollapsed(section, !isCollapsed);
+            if (!widgetId) return;
+            if (isCollapsed) collapsedWidgets.delete(widgetId);
+            else collapsedWidgets.add(widgetId);
+            saveCollapsedWidgets(collapsedWidgets);
+          }
+          header.addEventListener("click", toggleSection);
+          header.addEventListener("keydown", function(evt) {
+            if (evt.key === "Enter" || evt.key === " ") {
+              evt.preventDefault();
+              toggleSection();
+            }
+          });
+        });
+      }
       function formatTimestampNs(nsLike) {
         if (nsLike == null) return "—";
         const nsNum = Number(nsLike);
@@ -294,6 +500,8 @@
       themeBtn.addEventListener("click", function() {
         applyTheme(html.getAttribute("data-theme") === "light" ? "dark" : "light");
       });
+      initDragAndDropLayout();
+      initSectionToggles();
       async function fetchJson(url) {
         try {
           const r = await fetch(url);
@@ -320,24 +528,24 @@
         if (data.detector_algorithm != null && data.detector_algorithm !== "") {
           items.push(["Detector algorithm", data.detector_algorithm]);
         }
-        if (data.detector_worker_count != null) {
-          items.push(["Detector workers", data.detector_worker_count]);
-        }
         el.innerHTML = "<dl class=\"status-grid\">" +
           items.map(([k, v]) => "<dt>" + escapeHtml(k) + "</dt><dd class=\"" + (v === "ok" || v === "SERVING" ? "status-ok" : "") + "\">" + escapeHtml(String(v)) + "</dd>").join("") +
           "</dl>";
       }
       // Human-readable metric name mappings
       const metricNameMap = {
-        "sentinel_ebpf_detector_events_total": "Events Processed",
-        "sentinel_ebpf_detector_anomalies_total": "Anomalies Detected",
+        "sentinel_ebpf_detector_events_total": "Events",
+        "sentinel_ebpf_detector_anomalies_total": "Anomalies",
         "sentinel_ebpf_detector_errors_total": "Errors",
-        "sentinel_ebpf_detector_last_event_timestamp_seconds": "Last Event Time",
-        "sentinel_ebpf_detector_recent_events_count": "Recent Events Buffer",
-        "sentinel_ebpf_detector_worker_count": "Worker Threads",
-        "sentinel_ebpf_probe_events_sent_total": "Events Sent",
+        "sentinel_ebpf_detector_last_event_timestamp_seconds": "Last Event",
+        "sentinel_ebpf_detector_recent_events_count": "Recent Buffer",
+        "sentinel_ebpf_probe_events_sent_total": "Sent",
         "sentinel_ebpf_probe_queue_size": "Queue Size",
-        "sentinel_ebpf_probe_events_dropped_total": "Events Dropped"
+        "sentinel_ebpf_probe_queue_capacity": "Queue Cap",
+        "sentinel_ebpf_probe_events_dropped_total": "Dropped",
+        "sentinel_ebpf_probe_host_cpu_usage_percent": "CPU %",
+        "sentinel_ebpf_probe_host_memory_usage_percent": "Memory %",
+        "sentinel_ebpf_probe_host_load1": "Load 1m"
       };
       
       // Track previous metrics for throughput calculation
@@ -398,7 +606,7 @@
         
         function renderMetricsTable(metrics, title, extraRows = []) {
           if (metrics.length === 0 && extraRows.length === 0) {
-            return `<div class="metrics-block"><h4>${title}</h4><div class="metrics-empty">No metrics available</div></div>`;
+            return `<div class="metrics-block"><h4>${title}</h4><div class="metrics-empty">No data</div></div>`;
           }
           const allRows = [
             ...metrics.map(m => 
@@ -421,13 +629,141 @@
         
         const probeHtml = probeMetrics.length > 0 
           ? renderMetricsTable(probeMetrics, "Probe")
-          : `<div class="metrics-block"><h4>Probe</h4><div class="metrics-empty">No metrics available</div></div>`;
+          : `<div class="metrics-block"><h4>Probe</h4><div class="metrics-empty">No data</div></div>`;
         
         const detectorHtml = detectorMetrics.length > 0 || detectorExtraRows.length > 0
           ? renderMetricsTable(detectorMetrics, "Detector", detectorExtraRows)
-          : `<div class="metrics-block"><h4>Detector</h4><div class="metrics-empty">No metrics endpoint configured (detector uses gRPC only)</div></div>`;
+          : `<div class="metrics-block"><h4>Detector</h4><div class="metrics-empty">No detector metrics (gRPC only)</div></div>`;
         
         el.innerHTML = `<div class="metrics-blocks">${probeHtml}${detectorHtml}</div>`;
+      }
+      function renderCapacity(data) {
+        const el = document.getElementById("capacity");
+        if (typeof data !== "object" || data === null) {
+          el.innerHTML = "<div class=\"metrics-empty\">Capacity data unavailable</div>";
+          return;
+        }
+        const host = data.host || {};
+        const pipe = data.pipeline || {};
+        let badgeClass = "status-ok-badge";
+        if (data.status === "Near Limit") badgeClass = "status-near-badge";
+        if (data.status === "Saturated") badgeClass = "status-sat-badge";
+        const queueRatio = (pipe.queue_fill_ratio == null) ? "n/a" : String(pipe.queue_fill_ratio);
+        const hostMetricsNote = host.has_host_metrics
+          ? ""
+          : "<div class=\"map-note\" style=\"margin-top:6px;\">Host metrics not available yet. Restart probe pod to expose new host CPU/memory/load metrics.</div>";
+        el.innerHTML =
+          `<div style="margin-bottom:8px;"><span class="status-badge ${badgeClass}">${escapeHtml(String(data.status || "Unknown"))}</span></div>` +
+          `<dl class="capacity-summary">` +
+          `<dt>CPU</dt><dd>${escapeHtml(String(host.cpu_usage_percent ?? 0))}%</dd>` +
+          `<dt>Memory</dt><dd>${escapeHtml(String(host.memory_usage_percent ?? 0))}%</dd>` +
+          `<dt>Load (1m)</dt><dd>${escapeHtml(String(host.load1 ?? 0))} / ${escapeHtml(String(host.cpu_count ?? 1))} cores</dd>` +
+          `<dt>Queue</dt><dd>${escapeHtml(String(pipe.queue_size ?? 0))}/${escapeHtml(String(pipe.queue_capacity ?? 0))} (${escapeHtml(queueRatio)})</dd>` +
+          `<dt>Drops</dt><dd>${escapeHtml(String(pipe.drops_total ?? 0))}</dd>` +
+          `<dt>New Drops</dt><dd>${escapeHtml(String(pipe.drops_delta ?? 0))}</dd>` +
+          `<dt>Detector EPS</dt><dd>${escapeHtml(String(pipe.detector_events_per_sec ?? 0))}</dd>` +
+          `</dl>` +
+          `<div class="map-note" style="margin-top:10px;">${escapeHtml(String(data.replica_hint || ""))}</div>` +
+          `<div class="map-note" style="margin-top:10px;">CPU usage over time (per poll)</div>` +
+          `<div class="cpu-chart-container"><div class="cpu-chart-wrapper"><canvas id="cpuChart"></canvas></div></div>` +
+          hostMetricsNote;
+        renderCpuUsageChart(data);
+      }
+      const cpuHistory = [];
+      const cpuHistoryMaxPoints = 20;
+      let cpuChartInstance = null;
+      let cpuChartLastSignature = "";
+      function renderCpuUsageChart(capacityData) {
+        const canvas = document.getElementById("cpuChart");
+        if (!canvas || typeof Chart === "undefined") return;
+        if (cpuChartInstance && cpuChartInstance.canvas !== canvas) {
+          cpuChartInstance.destroy();
+          cpuChartInstance = null;
+          cpuChartLastSignature = "";
+        }
+        const host = capacityData && typeof capacityData === "object" ? (capacityData.host || {}) : {};
+        if (!host.has_host_metrics) return;
+        const cpuPercent = Number(host.cpu_usage_percent);
+        const tsSeconds = Number(capacityData.ts);
+        if (!Number.isFinite(cpuPercent)) return;
+        const pointTs = Number.isFinite(tsSeconds) && tsSeconds > 0 ? tsSeconds : Math.floor(Date.now() / 1000);
+        const lastPoint = cpuHistory[cpuHistory.length - 1];
+        if (!lastPoint || lastPoint.ts !== pointTs) {
+          cpuHistory.push({ ts: pointTs, cpu: cpuPercent });
+          while (cpuHistory.length > cpuHistoryMaxPoints) cpuHistory.shift();
+        } else {
+          lastPoint.cpu = cpuPercent;
+        }
+        const labels = cpuHistory.map((p) =>
+          new Date(p.ts * 1000).toISOString().split("T")[1].split(".")[0]
+        );
+        const values = cpuHistory.map((p) => p.cpu);
+        const chartSignature = JSON.stringify({ labels, values });
+        if (cpuChartInstance && cpuChartLastSignature === chartSignature) return;
+        const isDark = document.documentElement.getAttribute("data-theme") !== "light";
+        const textColor = isDark ? "#e6edf3" : "#1f2328";
+        const gridColor = isDark ? "#2d3a4f" : "#d0d7de";
+        const lineColor = isDark ? "#79c0ff" : "#0969da";
+        if (cpuChartInstance) {
+          cpuChartInstance.data.labels = labels;
+          cpuChartInstance.data.datasets[0].data = values;
+          cpuChartInstance.data.datasets[0].borderColor = lineColor;
+          cpuChartInstance.data.datasets[0].backgroundColor = lineColor + "33";
+          cpuChartInstance.options.scales.x.ticks.color = textColor;
+          cpuChartInstance.options.scales.x.grid.color = gridColor;
+          cpuChartInstance.options.scales.y.ticks.color = textColor;
+          cpuChartInstance.options.scales.y.grid.color = gridColor;
+          cpuChartInstance.update("none");
+        } else {
+          cpuChartInstance = new Chart(canvas, {
+            type: "line",
+            data: {
+              labels: labels,
+              datasets: [{
+                label: "CPU %",
+                data: values,
+                borderColor: lineColor,
+                backgroundColor: lineColor + "33",
+                borderWidth: 2,
+                tension: 0.25,
+                fill: true,
+                pointRadius: 3,
+                pointHoverRadius: 5
+              }]
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              animation: { duration: 250 },
+              plugins: {
+                legend: {
+                  display: true,
+                  position: "top",
+                  labels: { color: textColor, usePointStyle: true }
+                },
+                tooltip: {
+                  enabled: true,
+                  mode: "index",
+                  intersect: false
+                }
+              },
+              scales: {
+                y: {
+                  beginAtZero: true,
+                  min: 0,
+                  max: 100,
+                  ticks: { color: textColor },
+                  grid: { color: gridColor }
+                },
+                x: {
+                  ticks: { color: textColor },
+                  grid: { color: gridColor }
+                }
+              }
+            }
+          });
+        }
+        cpuChartLastSignature = chartSignature;
       }
       let logsSortKey = "ts_unix_nano";
       let logsSortDir = "desc";
@@ -441,14 +777,24 @@
         }
         const message = data.message || "";
         let entries = Array.isArray(data.entries) ? data.entries : [];
+        function extractEventFields(entry) {
+          const d = Array.isArray(entry?.data) ? entry.data : [];
+          return {
+            comm: (d.length > 2 && d[2] !== "") ? d[2] : (entry.comm || "—"),
+            pid: (d.length > 3 && d[3] !== "") ? d[3] : (entry.pid || "—"),
+            tid: (d.length > 4 && d[4] !== "") ? d[4] : (entry.tid || "—"),
+            uid: (d.length > 5 && d[5] !== "") ? d[5] : (entry.uid || "—"),
+            path: (d.length > 8 && d[8] !== "") ? d[8] : (d.length > 0 ? d[0] : (entry.path || entry.prefix || "—")),
+          };
+        }
         function getCell(entry, key) {
-          if (key === "filename") {
-            const d = entry.data;
-            return Array.isArray(d) && d.length > 0 ? d[0] : (entry.prefix || "—");
-          }
+          const fields = extractEventFields(entry);
           if (key === "ts_unix_nano") {
             return formatTimestampNs(entry.ts_unix_nano);
           }
+          if (key === "comm") return fields.comm;
+          if (key === "path") return fields.path;
+          if (key === "pid_tid_uid") return `${fields.pid}/${fields.tid}/${fields.uid}`;
           const v = entry[key];
           if (v === true || v === false) return v ? "Yes" : "No";
           return v != null ? String(v) : "—";
@@ -474,7 +820,9 @@
           { key: "ts_unix_nano", label: "Time" },
           { key: "event_type", label: "Type" },
           { key: "hostname", label: "Host" },
-          { key: "filename", label: "Path" },
+          { key: "comm", label: "Comm" },
+          { key: "path", label: "Path" },
+          { key: "pid_tid_uid", label: "PID/TID/UID" },
           { key: "anomaly", label: "Anomaly" },
           { key: "score", label: "Score" },
           { key: "reason", label: "Reason" },
@@ -525,7 +873,130 @@
         div.textContent = s;
         return div.innerHTML;
       }
+      let scoreMapInstance = null;
+      let scoreMapLastSignature = "";
+      let scoreMapHasRendered = false;
+      function renderScoreMap(data) {
+        const canvas = document.getElementById("scoreMapChart");
+        if (!canvas) return;
+        const points = Array.isArray(data?.points) ? data.points : [];
+        if (typeof Chart === "undefined") return;
+        if (points.length === 0) {
+          if (scoreMapInstance) {
+            scoreMapInstance.destroy();
+            scoreMapInstance = null;
+          }
+          return;
+        }
+        const isDark = document.documentElement.getAttribute("data-theme") !== "light";
+        const textColor = isDark ? "#e6edf3" : "#1f2328";
+        const gridColor = isDark ? "#2d3a4f" : "#d0d7de";
+
+        function pointColor(score, anomaly) {
+          const clamped = Math.max(0, Math.min(1, Number(score) || 0));
+          const r = Math.round(255 * clamped);
+          const g = Math.round(255 * (1 - clamped));
+          const alpha = anomaly ? 0.9 : 0.6;
+          return `rgba(${r},${g},80,${alpha})`;
+        }
+        const datasetPoints = points.map(p => ({
+          x: Number(p.x) || 0,
+          y: Number(p.y) || 0,
+          score: Number(p.score) || 0,
+          anomaly: !!p.anomaly,
+          reason: p.reason || "",
+          path: p.path || "",
+          comm: p.comm || "",
+          pid: p.pid || "",
+          tid: p.tid || "",
+          uid: p.uid || "",
+          hostname: p.hostname || "",
+          event_type: p.event_type || "",
+          ts_unix_nano: p.ts_unix_nano || 0
+        }));
+        const scoreMapSignature = JSON.stringify(datasetPoints.map(p => [
+          p.x, p.y, p.score, p.anomaly ? 1 : 0, p.ts_unix_nano
+        ]));
+        if (scoreMapInstance && scoreMapLastSignature === scoreMapSignature) {
+          return;
+        }
+        const config = {
+          type: "scatter",
+          data: {
+            datasets: [{
+              label: "Events",
+              data: datasetPoints,
+              pointBackgroundColor: (ctx) => {
+                const raw = ctx.raw || {};
+                return pointColor(raw.score, raw.anomaly);
+              },
+              pointRadius: (ctx) => {
+                const raw = ctx.raw || {};
+                const base = raw.anomaly ? 4 : 2;
+                return base + Math.round((raw.score || 0) * 4);
+              },
+              pointHoverRadius: 8
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: { duration: 350 },
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                callbacks: {
+                  title: (items) => {
+                    if (!items || !items.length) return "";
+                    const raw = items[0].raw || {};
+                    return `${raw.event_type || "event"} @ ${formatTimestampNs(raw.ts_unix_nano)}`;
+                  },
+                  label: (item) => {
+                    const raw = item.raw || {};
+                    return `score=${Number(raw.score || 0).toFixed(3)} anomaly=${raw.anomaly ? "yes" : "no"}`;
+                  },
+                  afterLabel: (item) => {
+                    const raw = item.raw || {};
+                    return [
+                      `host=${raw.hostname || "-"}`,
+                      `comm=${raw.comm || "-"}`,
+                      `path=${raw.path || "-"}`,
+                      `pid/tid/uid=${raw.pid || "-"}/${raw.tid || "-"}/${raw.uid || "-"}`,
+                      `reason=${raw.reason || "-"}`
+                    ];
+                  }
+                }
+              }
+            },
+            scales: {
+              x: {
+                min: 0, max: 1,
+                title: { display: true, text: "Path Signature", color: textColor },
+                ticks: { color: textColor },
+                grid: { color: gridColor }
+              },
+              y: {
+                min: 0, max: 1,
+                title: { display: true, text: "Command Signature", color: textColor },
+                ticks: { color: textColor },
+                grid: { color: gridColor }
+              }
+            }
+          }
+        };
+        if (scoreMapInstance) {
+          scoreMapInstance.data = config.data;
+          scoreMapInstance.options = config.options;
+          scoreMapInstance.update(scoreMapHasRendered ? "none" : undefined);
+        } else {
+          scoreMapInstance = new Chart(canvas, config);
+          scoreMapHasRendered = true;
+        }
+        scoreMapLastSignature = scoreMapSignature;
+      }
       let chartInstance = null;
+      let chartLastSignature = "";
+      let chartHasRendered = false;
       function renderChart(data) {
         const container = document.querySelector(".chart-container");
         if (!container) {
@@ -634,12 +1105,19 @@
             borderWidth: 1
           };
         });
+        const chartSignature = JSON.stringify({
+          labels: timeLabels,
+          datasets: datasets.map(d => ({ label: d.label, data: d.data }))
+        });
+        if (chartInstance && chartLastSignature === chartSignature) {
+          return;
+        }
         
         try {
           if (chartInstance) {
             chartInstance.data.labels = timeLabels;
             chartInstance.data.datasets = datasets;
-            chartInstance.update();
+            chartInstance.update(chartHasRendered ? "none" : undefined);
           } else {
             if (!canvas || !canvas.parentElement) {
               console.error("Canvas not found or not in DOM");
@@ -654,6 +1132,7 @@
               options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                animation: { duration: 350 },
                 plugins: {
                   legend: {
                     display: true,
@@ -694,7 +1173,9 @@
               }
             });
             console.log("Chart created successfully");
+            chartHasRendered = true;
           }
+          chartLastSignature = chartSignature;
         } catch (e) {
           console.error("Error rendering chart:", e);
           container.innerHTML = "<div class=\"metrics-empty\">Error rendering chart: " + escapeHtml(String(e)) + "</div>";
@@ -715,10 +1196,12 @@
         let html = `<div style="max-height: 400px; overflow-y: auto;">`;
         entries.slice().reverse().forEach(entry => {
           const ts = formatTimestampNs(entry.ts_unix_nano);
-          const filename = Array.isArray(entry.data) && entry.data.length > 0 ? entry.data[0] : "—";
+          const path = Array.isArray(entry.data) && entry.data.length > 8
+            ? (entry.data[8] || "—")
+            : (Array.isArray(entry.data) && entry.data.length > 0 ? entry.data[0] : "—");
           html += `<div class="anomaly-item">`;
           html += `<div><strong>${escapeHtml(ts)}</strong> <span class="anomaly-score">Score: ${escapeHtml(String(entry.score || 0))}</span></div>`;
-          html += `<div style="color: var(--text-muted); font-size: 0.75rem; margin-top: 4px;">${escapeHtml(filename)}</div>`;
+          html += `<div style="color: var(--text-muted); font-size: 0.75rem; margin-top: 4px;">${escapeHtml(path)}</div>`;
           html += `<div style="color: var(--text-muted); font-size: 0.75rem; margin-top: 2px;">${escapeHtml(entry.reason || "")}</div>`;
           html += `</div>`;
         });
@@ -744,6 +1227,21 @@
           if (metricsEl) {
             metricsEl.innerHTML = "<div class=\"metrics-empty\">Error loading metrics: " + escapeHtml(String(e)) + "</div>";
           }
+        }
+        try {
+          const capacity = await fetchJson("/api/capacity");
+          renderCapacity(capacity);
+        } catch (e) {
+          const capEl = document.getElementById("capacity");
+          if (capEl) {
+            capEl.innerHTML = "<div class=\"metrics-empty\">Error loading capacity: " + escapeHtml(String(e)) + "</div>";
+          }
+        }
+        try {
+          const scoreMap = await fetchJson("/api/score_map?limit=800");
+          renderScoreMap(scoreMap);
+        } catch (e) {
+          console.error("Error loading score map:", e);
         }
         try {
           const chart = await fetchJson("/api/calls_chart");

@@ -1,16 +1,30 @@
-# Path prefixes to exclude from capture (reduces flood of low-value syscalls;
-# keeps stream focused so the model can learn structure and score anomalies higher)
-pathPrefixExcludes:
-  - "/proc"
-  - "/sys"
-  - "/dev"
-  - "/run"
-  - "/var/run"
-  - "/tmp"
+# Falco-like building blocks (phase-1 subset):
+# - lists: reusable value sets
+# - macros: reusable condition fragments
+# - rules: condition expressions with and/or/not, in, startswith, contains, =
+lists:
+  file_events: [open, openat, openat2, unlink, unlinkat, rename, renameat, chmod, chown]
+  process_events: [execve]
+  net_events: [socket, connect]
+  shell_comms: [bash, sh, zsh]
+
+macros:
+  file_evt: "event_name in (file_events)"
+  process_evt: "event_name in (process_events)"
+  net_evt: "event_name in (net_events)"
+  sensitive_path: "path startswith /etc or path startswith /root"
+  noisy_path: "path startswith /proc or path startswith /sys or path startswith /dev or path startswith /run or path startswith /var/run or path startswith /tmp"
+  shell_proc: "comm in (shell_comms)"
 
 rules:
-  - name: capture-all-opens
+  - name: capture-sensitive-file-events
     enabled: true
-    event: file_open
-    match:
-      pathPrefixes: ["/"]
+    condition: "file_evt and sensitive_path and not noisy_path"
+
+  - name: capture-shell-execve
+    enabled: true
+    condition: "process_evt and shell_proc"
+
+  - name: capture-network-connectivity
+    enabled: true
+    condition: "net_evt"

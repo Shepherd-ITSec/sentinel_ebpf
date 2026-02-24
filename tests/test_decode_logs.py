@@ -30,7 +30,7 @@ class TestDecodeLogs:
 
   def test_decode_single_event(self, temp_dir):
     log_file = temp_dir / "events.bin"
-    payload = json.dumps({"event_id": "test-1", "event_type": "file_open", "data": ["/tmp/test", "2", "bash", "1", "2", "1000"]}).encode("utf-8")
+    payload = json.dumps({"event_id": "test-1", "event_type": "openat", "data": ["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"]}).encode("utf-8")
     record = MAGIC + struct.pack("<I", len(payload)) + payload
     log_file.write_bytes(record)
 
@@ -39,14 +39,14 @@ class TestDecodeLogs:
     result = json.loads(out.getvalue().strip())
 
     assert result["event_id"] == "test-1"
-    assert result["event_type"] == "file_open"
-    assert result["data"] == ["/tmp/test", "2", "bash", "1", "2", "1000"]
+    assert result["event_type"] == "openat"
+    assert result["data"] == ["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"]
 
   def test_decode_multiple_events(self, temp_dir):
     log_file = temp_dir / "events.bin"
     records = []
     for i in range(3):
-      payload = json.dumps({"event_id": f"test-{i}", "event_type": "file_open", "data": ["/tmp/test", "2", "bash", "1", "2", "1000"]}).encode("utf-8")
+      payload = json.dumps({"event_id": f"test-{i}", "event_type": "openat", "data": ["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"]}).encode("utf-8")
       records.append(MAGIC + struct.pack("<I", len(payload)) + payload)
     log_file.write_bytes(b"".join(records))
 
@@ -61,7 +61,7 @@ class TestDecodeLogs:
 
   def test_decode_gzipped_file(self, temp_dir):
     log_file = temp_dir / "events.bin.gz"
-    payload = json.dumps({"event_id": "test-1", "event_type": "file_open", "data": ["/tmp/test", "2", "bash", "1", "2", "1000"]}).encode("utf-8")
+    payload = json.dumps({"event_id": "test-1", "event_type": "openat", "data": ["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"]}).encode("utf-8")
     record = MAGIC + struct.pack("<I", len(payload)) + payload
 
     with gzip.open(log_file, "wb") as f:

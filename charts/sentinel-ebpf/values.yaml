@@ -58,11 +58,10 @@ detector:
     port: 50051
   eventsPort: 50052  # HTTP API for recent events (UI log tail in gRPC mode)
   anomalyLogPath: ""  # Path to log anomalies to file (empty to disable, e.g., /var/log/sentinel-ebpf/anomalies.jsonl)
-  workerCount: 4  # Compatibility knob; detector uses deterministic single-model scoring
   # Model configuration (River anomaly detection)
   model:
     algorithm: "memstream"  # halfspacetrees | loda | memstream
-    threshold: 0.5  # Anomaly score threshold (0-1)
+    threshold: 0.9  # Anomaly score threshold (0-1)
     # Half-Space Trees parameters
     hst_n_trees: 25
     hst_height: 15
@@ -85,6 +84,7 @@ detector:
   affinity: {}
   podAnnotations: {}
   autoscaling:
+    # Primary scaling knob for detector throughput/capacity.
     enabled: false
     minReplicas: 1
     maxReplicas: 3
@@ -101,7 +101,7 @@ ui:
     type: ClusterIP
     port: 8080
   logPath: /var/log/sentinel-ebpf/events.bin
-  pollSeconds: 3
+  pollSeconds: 3  # Lower values increase UI/API polling load
   logLimit: 50
   # Defaults use chart fullname. Override if needed.
   detectorGrpcAddr: ""
@@ -124,11 +124,3 @@ config:
     port: 9102
   health:
     port: 9101
-  rules:
-    # Default capture-all opens
-    rules:
-      - name: capture-all-opens
-        enabled: true
-        event: file_open
-        match:
-          pathPrefixes: ["/"]

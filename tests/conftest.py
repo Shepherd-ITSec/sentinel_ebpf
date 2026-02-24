@@ -16,27 +16,23 @@ def temp_dir():
 def sample_rules_yaml(temp_dir):
   """Create a sample rules.yaml file."""
   rules_file = temp_dir / "rules.yaml"
-  rules_file.write_text("""rules:
-  - name: capture-all-opens
+  rules_file.write_text("""lists:
+  shell_comms: ["bash", "sh"]
+macros:
+  file_evt: "event_name in (open, openat, openat2)"
+rules:
+  - name: capture-all-file-events
     enabled: true
-    event: file_open
-    match:
-      pathPrefixes: ["/"]
-  - name: capture-sensitive-opens
+    condition: "file_evt and path startswith /"
+  - name: capture-sensitive-file-events
     enabled: true
-    event: file_open
-    match:
-      pathPrefixes: ["/etc", "/bin"]
+    condition: "file_evt and (path startswith /etc or path startswith /bin)"
   - name: capture-specific-comm
     enabled: true
-    event: file_open
-    match:
-      comms: ["bash", "sh"]
+    condition: "event_name = execve and comm in (shell_comms)"
   - name: disabled-rule
     enabled: false
-    event: file_open
-    match:
-      pathPrefixes: ["/tmp"]
+    condition: "event_name = connect and path startswith /tmp"
 """)
   return rules_file
 

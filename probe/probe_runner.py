@@ -4,13 +4,11 @@ import gzip
 import json
 import logging
 import os
-import queue
 import signal
 import socket
 import struct
 import threading
 import time
-import uuid
 from collections import deque
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -23,6 +21,7 @@ from bcc import BPF
 import events_pb2
 import events_pb2_grpc
 from probe.config import AppConfig, load_config
+from probe.events import EVENT_ID_TO_NAME
 from probe.open_flags import decode_open_flags
 from probe.rules import RuleEngine
 
@@ -50,7 +49,7 @@ COMM_LEN = 16
 class BpfRule(ctypes.Structure):
   _fields_ = [
     ("enabled", ctypes.c_uint32),
-    ("event_type", ctypes.c_uint32),  # 0 read, 1 write
+    ("event_id", ctypes.c_uint32),  # 0 wildcard, otherwise curated event id
     ("prefix_len", ctypes.c_uint32),
     ("comm_len", ctypes.c_uint32),
     ("pid", ctypes.c_uint32),
@@ -96,6 +95,83 @@ def _event_attributes(meta: dict) -> dict:
   if node:
     attrs["node"] = node
   return attrs
+
+
+class HostMetricsSampler:
+  """Lightweight host metrics sampler using /proc files."""
+
+  def __init__(self):
+    self._lock = threading.Lock()
+    self._prev_total = None
+    self._prev_idle = None
+
+  def _cpu_usage_percent(self) -> float:
+    try:
+      with open("/proc/stat", "r", encoding="utf-8") as f:
+        first = f.readline().strip()
+      parts = first.split()
+      if len(parts) < 5 or parts[0] != "cpu":
+        return 0.0
+      values = [int(v) for v in parts[1:8]]
+      user, nice, system, idle, iowait, irq, softirq = values
+      total = user + nice + system + idle + iowait + irq + softirq
+      idle_all = idle + iowait
+      with self._lock:
+        if self._prev_total is None or self._prev_idle is None:
+          self._prev_total = total
+          self._prev_idle = idle_all
+          return 0.0
+        total_delta = total - self._prev_total
+        idle_delta = idle_all - self._prev_idle
+        self._prev_total = total
+        self._prev_idle = idle_all
+      if total_delta <= 0:
+        return 0.0
+      busy = max(0.0, 1.0 - (idle_delta / total_delta))
+      return max(0.0, min(100.0, busy * 100.0))
+    except Exception:
+      return 0.0
+
+  def _memory_metrics(self) -> tuple[int, int, float]:
+    try:
+      total = 0
+      available = 0
+      with open("/proc/meminfo", "r", encoding="utf-8") as f:
+        for line in f:
+          if line.startswith("MemTotal:"):
+            total = int(line.split()[1]) * 1024
+          elif line.startswith("MemAvailable:"):
+            available = int(line.split()[1]) * 1024
+          if total and available:
+            break
+      if total <= 0:
+        return 0, 0, 0.0
+      used = max(0, total - available)
+      pct = (used / total) * 100.0
+      return used, total, max(0.0, min(100.0, pct))
+    except Exception:
+      return 0, 0, 0.0
+
+  def _loadavg(self) -> tuple[float, float, float]:
+    try:
+      return os.getloadavg()
+    except Exception:
+      return 0.0, 0.0, 0.0
+
+  def collect(self) -> dict:
+    cpu = self._cpu_usage_percent()
+    mem_used, mem_total, mem_pct = self._memory_metrics()
+    load1, load5, load15 = self._loadavg()
+    return {
+      "cpu_usage_percent": cpu,
+      "memory_used_bytes": mem_used,
+      "memory_total_bytes": mem_total,
+      "memory_usage_percent": mem_pct,
+      "load1": load1,
+      "load5": load5,
+      "load15": load15,
+      "cpu_count": os.cpu_count() or 1,
+    }
 
 
 class GrpcStreamer:
@@ -379,6 +455,12 @@ class HealthHandler(BaseHTTPRequestHandler):
         
         rules_compiled = getattr(probe_runner, "_compiled_rule_count", 0)
         rules_loaded = getattr(probe_runner, "_loaded_rule_count", 0)
+        kernel_compiled_predicates = getattr(probe_runner, "_kernel_compiled_predicates", 0)
+        kernel_fallback_predicates = getattr(probe_runner, "_kernel_fallback_predicates", 0)
+        kernel_branches_total = getattr(probe_runner, "_kernel_branches_total", 0)
+        kernel_branches_compiled = getattr(probe_runner, "_kernel_branches_compiled", 0)
+        kernel_branches_impossible = getattr(probe_runner, "_kernel_branches_impossible", 0)
+        host = probe_runner.host_metrics.collect() if getattr(probe_runner, "host_metrics", None) else {}
         metrics_lines.extend([
           "# HELP sentinel_ebpf_probe_events_sent_total Total number of events sent to detector",
           "# TYPE sentinel_ebpf_probe_events_sent_total counter",
@@ -387,6 +469,10 @@ class HealthHandler(BaseHTTPRequestHandler):
           "# HELP sentinel_ebpf_probe_queue_size Current number of events in queue",
           "# TYPE sentinel_ebpf_probe_queue_size gauge",
           f"sentinel_ebpf_probe_queue_size {queue_size}",
+          "",
+          "# HELP sentinel_ebpf_probe_queue_capacity Configured max queue capacity",
+          "# TYPE sentinel_ebpf_probe_queue_capacity gauge",
+          f"sentinel_ebpf_probe_queue_capacity {streamer._queue.maxlen}",
           "",
           "# HELP sentinel_ebpf_probe_events_dropped_total Total number of events dropped (queue full)",
           "# TYPE sentinel_ebpf_probe_events_dropped_total counter",
@@ -404,6 +490,58 @@ class HealthHandler(BaseHTTPRequestHandler):
           "# TYPE sentinel_ebpf_probe_rules_truncated_total gauge",
           f"sentinel_ebpf_probe_rules_truncated_total {max(0, rules_compiled - rules_loaded)}",
           "",
+          "# HELP sentinel_ebpf_probe_kernel_compiled_predicates Total predicates compiled to kernel prefilter",
+          "# TYPE sentinel_ebpf_probe_kernel_compiled_predicates gauge",
+          f"sentinel_ebpf_probe_kernel_compiled_predicates {kernel_compiled_predicates}",
+          "",
+          "# HELP sentinel_ebpf_probe_kernel_fallback_predicates Total predicates evaluated in userspace fallback",
+          "# TYPE sentinel_ebpf_probe_kernel_fallback_predicates gauge",
+          f"sentinel_ebpf_probe_kernel_fallback_predicates {kernel_fallback_predicates}",
+          "",
+          "# HELP sentinel_ebpf_probe_kernel_branches_total Total DNF branches from condition rules",
+          "# TYPE sentinel_ebpf_probe_kernel_branches_total gauge",
+          f"sentinel_ebpf_probe_kernel_branches_total {kernel_branches_total}",
+          "",
+          "# HELP sentinel_ebpf_probe_kernel_branches_compiled Total DNF branches partially/fully compiled to kernel",
+          "# TYPE sentinel_ebpf_probe_kernel_branches_compiled gauge",
+          f"sentinel_ebpf_probe_kernel_branches_compiled {kernel_branches_compiled}",
+          "",
+          "# HELP sentinel_ebpf_probe_kernel_branches_impossible Total DNF branches eliminated as impossible",
+          "# TYPE sentinel_ebpf_probe_kernel_branches_impossible gauge",
+          f"sentinel_ebpf_probe_kernel_branches_impossible {kernel_branches_impossible}",
+          "",
+          "# HELP sentinel_ebpf_probe_host_cpu_usage_percent Host CPU usage percent",
+          "# TYPE sentinel_ebpf_probe_host_cpu_usage_percent gauge",
+          f"sentinel_ebpf_probe_host_cpu_usage_percent {host.get('cpu_usage_percent', 0.0):.2f}",
+          "",
+          "# HELP sentinel_ebpf_probe_host_memory_used_bytes Host used memory in bytes",
+          "# TYPE sentinel_ebpf_probe_host_memory_used_bytes gauge",
+          f"sentinel_ebpf_probe_host_memory_used_bytes {host.get('memory_used_bytes', 0)}",
+          "",
+          "# HELP sentinel_ebpf_probe_host_memory_total_bytes Host total memory in bytes",
+          "# TYPE sentinel_ebpf_probe_host_memory_total_bytes gauge",
+          f"sentinel_ebpf_probe_host_memory_total_bytes {host.get('memory_total_bytes', 0)}",
+          "",
+          "# HELP sentinel_ebpf_probe_host_memory_usage_percent Host memory usage percent",
+          "# TYPE sentinel_ebpf_probe_host_memory_usage_percent gauge",
+          f"sentinel_ebpf_probe_host_memory_usage_percent {host.get('memory_usage_percent', 0.0):.2f}",
+          "",
+          "# HELP sentinel_ebpf_probe_host_load1 Host load average (1m)",
+          "# TYPE sentinel_ebpf_probe_host_load1 gauge",
+          f"sentinel_ebpf_probe_host_load1 {host.get('load1', 0.0):.3f}",
+          "",
+          "# HELP sentinel_ebpf_probe_host_load5 Host load average (5m)",
+          "# TYPE sentinel_ebpf_probe_host_load5 gauge",
+          f"sentinel_ebpf_probe_host_load5 {host.get('load5', 0.0):.3f}",
+          "",
+          "# HELP sentinel_ebpf_probe_host_load15 Host load average (15m)",
+          "# TYPE sentinel_ebpf_probe_host_load15 gauge",
+          f"sentinel_ebpf_probe_host_load15 {host.get('load15', 0.0):.3f}",
+          "",
+          "# HELP sentinel_ebpf_probe_host_cpu_count Host CPU core count",
+          "# TYPE sentinel_ebpf_probe_host_cpu_count gauge",
+          f"sentinel_ebpf_probe_host_cpu_count {host.get('cpu_count', 1)}",
+          "",
         ])
       else:
         # Fallback: at least return something if probe runner not available
@@ -415,6 +553,10 @@ class HealthHandler(BaseHTTPRequestHandler):
           "# HELP sentinel_ebpf_probe_queue_size Current number of events in queue",
           "# TYPE sentinel_ebpf_probe_queue_size gauge",
           "sentinel_ebpf_probe_queue_size 0",
+          "",
+          "# HELP sentinel_ebpf_probe_queue_capacity Configured max queue capacity",
+          "# TYPE sentinel_ebpf_probe_queue_capacity gauge",
+          "sentinel_ebpf_probe_queue_capacity 0",
           "",
           "# HELP sentinel_ebpf_probe_events_dropped_total Total number of events dropped (queue full)",
           "# TYPE sentinel_ebpf_probe_events_dropped_total counter",
@@ -431,6 +573,58 @@ class HealthHandler(BaseHTTPRequestHandler):
           "# HELP sentinel_ebpf_probe_rules_truncated_total Total number of compiled rules dropped due to MAX_RULES cap",
           "# TYPE sentinel_ebpf_probe_rules_truncated_total gauge",
           "sentinel_ebpf_probe_rules_truncated_total 0",
+          "",
+          "# HELP sentinel_ebpf_probe_kernel_compiled_predicates Total predicates compiled to kernel prefilter",
+          "# TYPE sentinel_ebpf_probe_kernel_compiled_predicates gauge",
+          "sentinel_ebpf_probe_kernel_compiled_predicates 0",
+          "",
+          "# HELP sentinel_ebpf_probe_kernel_fallback_predicates Total predicates evaluated in userspace fallback",
+          "# TYPE sentinel_ebpf_probe_kernel_fallback_predicates gauge",
+          "sentinel_ebpf_probe_kernel_fallback_predicates 0",
+          "",
+          "# HELP sentinel_ebpf_probe_kernel_branches_total Total DNF branches from condition rules",
+          "# TYPE sentinel_ebpf_probe_kernel_branches_total gauge",
+          "sentinel_ebpf_probe_kernel_branches_total 0",
+          "",
+          "# HELP sentinel_ebpf_probe_kernel_branches_compiled Total DNF branches partially/fully compiled to kernel",
+          "# TYPE sentinel_ebpf_probe_kernel_branches_compiled gauge",
+          "sentinel_ebpf_probe_kernel_branches_compiled 0",
+          "",
+          "# HELP sentinel_ebpf_probe_kernel_branches_impossible Total DNF branches eliminated as impossible",
+          "# TYPE sentinel_ebpf_probe_kernel_branches_impossible gauge",
+          "sentinel_ebpf_probe_kernel_branches_impossible 0",
+          "",
+          "# HELP sentinel_ebpf_probe_host_cpu_usage_percent Host CPU usage percent",
+          "# TYPE sentinel_ebpf_probe_host_cpu_usage_percent gauge",
+          "sentinel_ebpf_probe_host_cpu_usage_percent 0",
+          "",
+          "# HELP sentinel_ebpf_probe_host_memory_used_bytes Host used memory in bytes",
+          "# TYPE sentinel_ebpf_probe_host_memory_used_bytes gauge",
+          "sentinel_ebpf_probe_host_memory_used_bytes 0",
+          "",
+          "# HELP sentinel_ebpf_probe_host_memory_total_bytes Host total memory in bytes",
+          "# TYPE sentinel_ebpf_probe_host_memory_total_bytes gauge",
+          "sentinel_ebpf_probe_host_memory_total_bytes 0",
+          "",
+          "# HELP sentinel_ebpf_probe_host_memory_usage_percent Host memory usage percent",
+          "# TYPE sentinel_ebpf_probe_host_memory_usage_percent gauge",
+          "sentinel_ebpf_probe_host_memory_usage_percent 0",
+          "",
+          "# HELP sentinel_ebpf_probe_host_load1 Host load average (1m)",
+          "# TYPE sentinel_ebpf_probe_host_load1 gauge",
+          "sentinel_ebpf_probe_host_load1 0",
+          "",
+          "# HELP sentinel_ebpf_probe_host_load5 Host load average (5m)",
+          "# TYPE sentinel_ebpf_probe_host_load5 gauge",
+          "sentinel_ebpf_probe_host_load5 0",
+          "",
+          "# HELP sentinel_ebpf_probe_host_load15 Host load average (15m)",
+          "# TYPE sentinel_ebpf_probe_host_load15 gauge",
+          "sentinel_ebpf_probe_host_load15 0",
+          "",
+          "# HELP sentinel_ebpf_probe_host_cpu_count Host CPU core count",
+          "# TYPE sentinel_ebpf_probe_host_cpu_count gauge",
+          "sentinel_ebpf_probe_host_cpu_count 1",
           "",
         ])
       
@@ -461,9 +655,15 @@ class ProbeRunner:
     self.filesink: Optional[FileSink] = None
     self._stop = threading.Event()
     self._metadata = _hostname_metadata()
+    self.host_metrics = HostMetricsSampler()
     self.rule_engine = RuleEngine(cfg.rules_file)
     self._compiled_rule_count = 0
     self._loaded_rule_count = 0
+    self._kernel_compiled_predicates = 0
+    self._kernel_fallback_predicates = 0
+    self._kernel_branches_total = 0
+    self._kernel_branches_compiled = 0
+    self._kernel_branches_impossible = 0
     self._load_rules_into_bpf()
     # Get boot time to convert boot-relative timestamps to Unix epoch nanoseconds
     # bpf_ktime_get_ns() returns nanoseconds since boot, we need Unix epoch
@@ -481,9 +681,6 @@ class ProbeRunner:
     # Pre-compute static attributes to avoid repeated dict creation
     self._static_attrs = _event_attributes(self._metadata)
     
-    # Pre-compute string conversions for common values
-    self._event_type = "file_open"
-    
     if self.cfg.stream.mode == "file":
       self.filesink = FileSink(
         path=self.cfg.stream.file_path,
@@ -493,33 +690,12 @@ class ProbeRunner:
       )
 
   def _compile_rules(self):
-    compiled = []
-    for rule in self.rule_engine.rules:
-      if not rule.enabled:
-        continue
-      if rule.event != "file_open":
-        continue
-      event_type = 0
-      prefixes = rule.match.path_prefixes or [""]
-      comms = rule.match.comms or [""]
-      pids = rule.match.pids or [0]
-      tids = rule.match.tids or [0]
-      uids = rule.match.uids or [0]
-      for prefix in prefixes:
-        for comm in comms:
-          for pid in pids:
-            for tid in tids:
-              for uid in uids:
-                compiled.append(
-                  {
-                    "event_type": event_type,
-                    "prefix": prefix,
-                    "comm": comm,
-                    "pid": pid,
-                    "tid": tid,
-                    "uid": uid,
-                  }
-                )
+    compiled, stats = self.rule_engine.compile_kernel_rules()
+    self._kernel_compiled_predicates = stats.compiled_predicates
+    self._kernel_fallback_predicates = stats.fallback_predicates
+    self._kernel_branches_total = stats.branches_total
+    self._kernel_branches_compiled = stats.branches_compiled
+    self._kernel_branches_impossible = stats.branches_impossible
     return compiled
 
   def _load_rules_into_bpf(self):
@@ -545,7 +721,7 @@ class ProbeRunner:
       comm_bytes = item["comm"].encode("utf-8")[:COMM_LEN]
       entry = BpfRule(
         enabled=1,
-        event_type=item["event_type"],
+        event_id=item["event_id"],
         prefix_len=len(prefix_bytes),
         comm_len=len(comm_bytes),
         pid=item["pid"],
@@ -564,28 +740,55 @@ class ProbeRunner:
     null_idx = filename_bytes.find(b'\x00')
     filename = filename_bytes[:null_idx].decode(errors="ignore") if null_idx >= 0 else filename_bytes.decode(errors="ignore")
 
-    # Exclude paths configured in rules (e.g. /proc) before building the event
-    if self.rule_engine.path_excluded(filename):
-      return
-
     comm_bytes = event.comm
     null_idx = comm_bytes.find(b'\x00')
     comm = comm_bytes[:null_idx].decode(errors="ignore") if null_idx >= 0 else comm_bytes.decode(errors="ignore")
+    event_id = int(event.event_id)
+    event_name = EVENT_ID_TO_NAME.get(event_id, f"event_{event_id}")
 
     # Convert boot-relative timestamp to Unix epoch nanoseconds
     ts_unix_nano = event.ts + self._boot_time_ns
 
-    # Reuse pre-computed attributes dict and update only open_flags
-    # Use dict() constructor instead of copy() for slightly better performance
+    # Build dynamic attributes per event.
     attributes = dict(self._static_attrs)
-    attributes["open_flags"] = decode_open_flags(int(event.flags))
+    attributes["event_id"] = str(event_id)
+    attributes["arg0"] = str(int(event.arg0))
+    attributes["arg1"] = str(int(event.arg1))
+
+    flags_str = ""
+    if event_id in (2, 257, 437):
+      flags_str = str(int(event.flags))
+      attributes["open_flags"] = decode_open_flags(int(event.flags))
+
+    if not self.rule_engine.allow_event(
+      {
+        "event_type": event_name,
+        "event_name": event_name,
+        "event_id": event_id,
+        "path": filename,
+        "filename": filename,
+        "comm": comm,
+        "pid": int(event.pid),
+        "tid": int(event.tid),
+        "uid": int(event.uid),
+        "open_flags": attributes.get("open_flags", ""),
+        "arg0": int(event.arg0),
+        "arg1": int(event.arg1),
+        "arg_flags": attributes.get("open_flags", ""),
+        "return_value": None,
+        "hostname": self._metadata["hostname"],
+        "namespace": self._metadata["namespace"],
+      }
+    ):
+      return
     
-    # Use fast event ID generation (counter + timestamp instead of uuid.uuid4())
-    # Pre-convert integers to strings once
-    flags_str = str(event.flags)
+    # Use fast event ID generation (counter + timestamp instead of uuid.uuid4()).
     pid_str = str(event.pid)
     tid_str = str(event.tid)
     uid_str = str(event.uid)
+    arg0_str = str(int(event.arg0))
+    arg1_str = str(int(event.arg1))
+    event_id_str = str(event_id)
     
     env = events_pb2.EventEnvelope(
       event_id=_fast_event_id(),
@@ -594,15 +797,16 @@ class ProbeRunner:
       namespace=self._metadata["namespace"],
       container_id=self._metadata["container_id"],
       ts_unix_nano=ts_unix_nano,
-      event_type=self._event_type,
-      # Pre-converted strings to avoid repeated conversions
-      data=[filename, flags_str, comm, pid_str, tid_str, uid_str],
+      event_type=event_name,
+      # Canonical generic vector:
+      # [event_name, event_id, comm, pid, tid, uid, arg0, arg1, path, flags]
+      data=[event_name, event_id_str, comm, pid_str, tid_str, uid_str, arg0_str, arg1_str, filename, flags_str],
       attributes=attributes,
     )
 
     if self.cfg.stream.mode == "stdout":
       payload = {
-        "event_type": self._event_type,
+        "event_type": event_name,
         "event_id": env.event_id,
         "ts_unix_nano": env.ts_unix_nano,
         "hostname": env.hostname,
