@@ -2,11 +2,15 @@
 import argparse
 import gzip
 import json
+import logging
 import struct
 import time
 from pathlib import Path
 
 import grpc
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger(__name__)
 
 import events_pb2
 import events_pb2_grpc
@@ -47,6 +51,7 @@ def iter_events(path: Path, start_ms=None, end_ms=None):
 
 
 def replay(path, target, pace, start_ms, end_ms):
+  log.info("replay: %s -> %s (pace=%s)", path, target, pace)
   channel = grpc.insecure_channel(target)
   stub = events_pb2_grpc.DetectorServiceStub(channel)
 
@@ -54,17 +59,9 @@ def replay(path, target, pace, start_ms, end_ms):
     first_ts = None
     start_wall = None
     for obj in iter_events(Path(path), start_ms, end_ms):
-      # Handle both old map format and new array format for backward compatibility
       data_field = obj.get("data", [])
-      if isinstance(data_field, dict):
-        # Old format: convert map to ordered array [filename, bytes, comm, pid, tid]
-        data_field = [
-          data_field.get("filename", ""),
-          data_field.get("bytes", ""),
-          data_field.get("comm", ""),
-          data_field.get("pid", ""),
-          data_field.get("tid", ""),
-        ]
+      if not isinstance(data_field, list):
+        raise ValueError("invalid event record: 'data' must be an ordered list")
       env = events_pb2.EventEnvelope(
         event_id=obj.get("event_id", ""),
         hostname=obj.get("hostname", ""),
@@ -89,9 +86,12 @@ def replay(path, target, pace, start_ms, end_ms):
             time.sleep(target_wall - now)
       yield env
 
+  n = 0
   for resp in stub.StreamEvents(gen()):
-    # We ignore responses; detector may emit anomalies but replay keeps streaming.
-    pass
+    n += 1
+    if (n % 10000) == 0:
+      log.info("replay: %d events sent", n)
+  log.info("replay done: %d events sent", n)
 
 
 def main():

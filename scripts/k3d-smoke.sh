@@ -159,10 +159,10 @@ if [[ "${BUILD_IMAGES}" == "true" ]]; then
     info "Building images with BuildKit (buildx available)"
     export DOCKER_BUILDKIT=1
   else
-    info "Buildx missing or broken; forcing legacy builder (DOCKER_BUILDKIT=0)"
+    info "Buildx missing or broken; using classic docker builder (DOCKER_BUILDKIT=0)"
     export DOCKER_BUILDKIT=0
   fi
-  log_debug "H1" "build_start" "{\"builder\":\"$(if [[ ${DOCKER_BUILDKIT:-0} -eq 1 ]]; then echo buildkit; else echo legacy; fi)\",\"probe_image\":\"${LOCAL_PROBE_IMAGE}\",\"detector_image\":\"${LOCAL_DETECTOR_IMAGE}\"}"
+  log_debug "H1" "build_start" "{\"builder\":\"$(if [[ ${DOCKER_BUILDKIT:-0} -eq 1 ]]; then echo buildkit; else echo classic; fi)\",\"probe_image\":\"${LOCAL_PROBE_IMAGE}\",\"detector_image\":\"${LOCAL_DETECTOR_IMAGE}\"}"
   docker build -f probe/Dockerfile -t "${LOCAL_PROBE_IMAGE}" .
   docker build -f detector/Dockerfile -t "${LOCAL_DETECTOR_IMAGE}" .
   docker build -f ui/Dockerfile -t sentinel-ebpf-ui:latest .

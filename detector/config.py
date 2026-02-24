@@ -7,11 +7,9 @@ class DetectorConfig:
   port: int = 50051
   events_http_port: int = 50052  # 0 to disable; serves GET /recent_events for UI log tail in gRPC mode
   recent_events_buffer_size: int = 10000  # Size of recent events ring buffer for UI (default: 10000)
-  # Compatibility knob (deterministic mode currently uses a single model instance)
-  worker_count: int = 4
   # River model configuration
-  model_algorithm: str = "halfspacetrees"  # halfspacetrees | loda | memstream
-  threshold: float = 0.5  # Anomaly score threshold (0-1). Lower (e.g. 0.3) to flag more events when scores are mostly low.
+  model_algorithm: str = "memstream"  # halfspacetrees | loda | memstream
+  threshold: float = 0.9  # Anomaly score threshold (0-1). Lower (e.g. 0.3) to flag more events when scores are mostly low.
   hst_n_trees: int = 25
   hst_height: int = 15
   hst_window_size: int = 250
@@ -33,9 +31,6 @@ def load_config() -> DetectorConfig:
   recent_events_buffer_size = int(recent_events_buffer_size_str) if recent_events_buffer_size_str else 10000
   events_http_port = int(os.environ.get("DETECTOR_EVENTS_PORT", "50052"))
   
-  # Compatibility knob preserved for chart/UI compatibility.
-  worker_count = int(os.environ.get("DETECTOR_WORKER_COUNT", "4"))
-  
   model_algorithm = os.environ.get("DETECTOR_MODEL_ALGORITHM", "halfspacetrees")
   threshold = float(os.environ.get("DETECTOR_THRESHOLD", "0.5"))
   hst_n_trees = int(os.environ.get("DETECTOR_HST_N_TREES", "25"))
@@ -56,7 +51,6 @@ def load_config() -> DetectorConfig:
     port=port,
     events_http_port=events_http_port,
     recent_events_buffer_size=recent_events_buffer_size,
-    worker_count=worker_count,
     model_algorithm=model_algorithm,
     threshold=threshold,
     hst_n_trees=hst_n_trees,

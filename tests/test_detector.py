@@ -18,13 +18,6 @@ class TestDetector:
     cfg = DetectorConfig(port=50051)
     detector = RuleBasedDetector(cfg)
     assert detector.cfg == cfg
-    assert detector.active_worker_count == 1
-
-  def test_detector_forces_deterministic_single_worker(self):
-    cfg = DetectorConfig(worker_count=8)
-    detector = RuleBasedDetector(cfg)
-    assert detector.active_worker_count == 1
-    assert detector.configured_worker_count == 8
 
   @pytest.mark.asyncio
   async def test_score_event_online(self):
@@ -34,9 +27,9 @@ class TestDetector:
 
     evt = events_pb2.EventEnvelope(
       event_id="test-123",
-      event_type="file_open",
+      event_type="openat",
       ts_unix_nano=1234567890000000000,
-      data=["/tmp/test", "2", "bash", "1", "2", "1000"],
+      data=["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
     )
 
     resp = detector._score_event(evt)
@@ -53,9 +46,9 @@ class TestDetector:
       for i in range(3):
         yield events_pb2.EventEnvelope(
           event_id=f"test-{i}",
-          event_type="file_open",
+          event_type="openat",
           ts_unix_nano=1234567890000000000 + i,
-          data=["/tmp/test", "2", "bash", "1", "2", "1000"],
+          data=["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
         )
 
     responses = []
@@ -82,9 +75,9 @@ class TestDetector:
 
     evt = events_pb2.EventEnvelope(
       event_id="test-456",
-      event_type="file_open",
+      event_type="socket",
       ts_unix_nano=1234567890000000000,
-      data=["/tmp/test", "2", "bash", "1", "2", "1000"],
+      data=["socket", "5", "bash", "1", "2", "1000", "1", "2", "", "2"],
     )
 
     resp = detector._score_event(evt)
@@ -105,9 +98,9 @@ class TestDetector:
 
     evt = events_pb2.EventEnvelope(
       event_id="test-789",
-      event_type="file_open",
+      event_type="execve",
       ts_unix_nano=1234567890000000000,
-      data=["/tmp/test", "2", "bash", "1", "2", "1000"],
+      data=["execve", "4", "bash", "1", "2", "1000", "0", "0", "/bin/bash", ""],
     )
 
     resp = detector._score_event(evt)

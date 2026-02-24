@@ -177,13 +177,6 @@ class RuleBasedDetector(events_pb2_grpc.DetectorServiceServicer):
   def __init__(self, cfg: DetectorConfig):
     self.cfg = cfg
     self.scorer = DeterministicScorer(cfg)
-    self.active_worker_count = 1
-    self.configured_worker_count = max(1, cfg.worker_count)
-    if self.configured_worker_count > 1:
-      logging.warning(
-        "DETECTOR_WORKER_COUNT=%d is configured but deterministic mode uses a single scoring model.",
-        self.configured_worker_count,
-      )
     logging.info("Initialized detector in deterministic single-model mode")
   
   def _score_event(self, evt: events_pb2.EventEnvelope) -> events_pb2.DetectionResponse:
@@ -201,7 +194,11 @@ class RuleBasedDetector(events_pb2_grpc.DetectorServiceServicer):
           _metrics["anomalies_total"] += 1
         if resp.reason and "error" in resp.reason.lower():
           _metrics["errors_total"] += 1
+        n = _metrics["events_total"]
+        anomalies = _metrics["anomalies_total"]
 
+      if (n % 10000) == 0 and n > 0:
+        logging.info("processed %d events (%d anomalies so far)", n, anomalies)
       if resp.anomaly:
         logging.warning("anomaly id=%s reason=%s score=%.3f", resp.event_id, resp.reason, resp.score)
       else:
@@ -216,12 +213,11 @@ class RuleBasedDetector(events_pb2_grpc.DetectorServiceServicer):
 
 async def serve():
   global RECENT_EVENTS
-  cfg = load_config()
-  
-  # Initialize recent events buffer with configured size
-  RECENT_EVENTS = deque(maxlen=cfg.recent_events_buffer_size)
-  logging.info("Initialized recent events buffer with size %d", cfg.recent_events_buffer_size)
   logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+  cfg = load_config()
+  logging.info("detector starting (algorithm=%s threshold=%.2f)", cfg.model_algorithm, cfg.threshold)
+  RECENT_EVENTS = deque(maxlen=cfg.recent_events_buffer_size)
+  logging.info("recent events buffer size %d", cfg.recent_events_buffer_size)
   _init_anomaly_log()
   server = grpc.aio.server()
   events_pb2_grpc.add_DetectorServiceServicer_to_server(RuleBasedDetector(cfg), server)
@@ -283,14 +279,6 @@ async def serve():
             "# HELP sentinel_ebpf_detector_recent_events_count Current number of events in recent buffer",
             "# TYPE sentinel_ebpf_detector_recent_events_count gauge",
             f"sentinel_ebpf_detector_recent_events_count {len(RECENT_EVENTS) if RECENT_EVENTS is not None else 0}",
-            "",
-            "# HELP sentinel_ebpf_detector_worker_count Number of parallel workers",
-            "# TYPE sentinel_ebpf_detector_worker_count gauge",
-            "sentinel_ebpf_detector_worker_count 1",
-            "",
-            "# HELP sentinel_ebpf_detector_worker_configured_count Configured worker count (for compatibility)",
-            "# TYPE sentinel_ebpf_detector_worker_configured_count gauge",
-            f"sentinel_ebpf_detector_worker_configured_count {cfg.worker_count}",
             "",
             "# HELP sentinel_ebpf_detector_info Detector metadata (algorithm name)",
             "# TYPE sentinel_ebpf_detector_info gauge",

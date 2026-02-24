@@ -1,6 +1,8 @@
 import os
+from functools import lru_cache
 
 
+@lru_cache(maxsize=256)
 def decode_open_flags(flags: int) -> str:
   """Decode Linux open(2) flags into a compact string."""
   flag_names = []

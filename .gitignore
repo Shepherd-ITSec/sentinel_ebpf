@@ -20,3 +20,6 @@ events_pb2_grpc.py
 
 # Misc
 kubeconfig
+
+# Big data
+/test_data

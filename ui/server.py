@@ -1,4 +1,5 @@
 import gzip
+import hashlib
 import json
 import logging
 import os
@@ -27,6 +28,10 @@ _poll_history = deque(maxlen=20)  # Keep last 20 poll intervals
 _poll_history_lock = threading.Lock()
 
 MAGIC = b"EVT1"
+_capacity_lock = threading.Lock()
+_capacity_prev_events_total = None
+_capacity_prev_ts = None
+_capacity_prev_drops_total = None
 
 
 def _http_get(url: str, timeout: float = 2.0) -> str:
@@ -109,6 +114,110 @@ def _fetch_recent_events_from_detector(events_url: str, limit: int):
     return None
 
 
+def _hash01(value: str) -> float:
+  digest = hashlib.md5(value.encode("utf-8")).hexdigest()[:8]
+  return (int(digest, 16) % 10000) / 10000.0
+
+
+def _parse_prometheus_metrics(text: str) -> dict:
+  metrics = {}
+  if not text or text.startswith("error:"):
+    return metrics
+  for line in text.splitlines():
+    line = line.strip()
+    if not line or line.startswith("#"):
+      continue
+    m = re.match(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{[^}]*\})?\s+([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)$", line)
+    if not m:
+      continue
+    name, value = m.groups()
+    try:
+      metrics[name] = float(value)
+    except ValueError:
+      continue
+  return metrics
+
+
+def _to_int(value, default=0) -> int:
+  try:
+    return int(float(value))
+  except (ValueError, TypeError):
+    return default
+
+
+def _compute_capacity_summary(probe_metrics: dict, detector_metrics: dict) -> dict:
+  global _capacity_prev_events_total, _capacity_prev_ts, _capacity_prev_drops_total
+
+  has_host_metrics = "sentinel_ebpf_probe_host_cpu_usage_percent" in probe_metrics
+  cpu_pct = float(probe_metrics.get("sentinel_ebpf_probe_host_cpu_usage_percent", 0.0))
+  mem_pct = float(probe_metrics.get("sentinel_ebpf_probe_host_memory_usage_percent", 0.0))
+  load1 = float(probe_metrics.get("sentinel_ebpf_probe_host_load1", 0.0))
+  cpu_count = max(1.0, float(probe_metrics.get("sentinel_ebpf_probe_host_cpu_count", 1.0)))
+  queue_size = _to_int(probe_metrics.get("sentinel_ebpf_probe_queue_size", 0))
+  raw_queue_capacity = _to_int(probe_metrics.get("sentinel_ebpf_probe_queue_capacity", 0), 0)
+  queue_capacity = raw_queue_capacity if raw_queue_capacity > 0 else 0
+  drops_total = _to_int(probe_metrics.get("sentinel_ebpf_probe_events_dropped_total", 0))
+  queue_ratio = min(1.0, queue_size / queue_capacity) if queue_capacity > 0 else None
+
+  now = time.time()
+  events_total = detector_metrics.get("sentinel_ebpf_detector_events_total")
+  detector_eps = 0.0
+  drops_delta = 0
+  with _capacity_lock:
+    if events_total is not None and _capacity_prev_events_total is not None and _capacity_prev_ts is not None:
+      dt = now - _capacity_prev_ts
+      de = float(events_total) - float(_capacity_prev_events_total)
+      if dt > 0 and de >= 0:
+        detector_eps = de / dt
+    if _capacity_prev_drops_total is not None:
+      drops_delta = max(0, drops_total - int(_capacity_prev_drops_total))
+    _capacity_prev_events_total = events_total
+    _capacity_prev_ts = now
+    _capacity_prev_drops_total = drops_total
+
+  load_per_cpu = load1 / cpu_count
+  queue_high = queue_ratio is not None and queue_ratio >= 0.9
+  queue_mid = queue_ratio is not None and queue_ratio >= 0.6
+  if cpu_pct >= 90 or mem_pct >= 92 or queue_high or drops_delta > 0:
+    status = "Saturated"
+    action = "increase_detector_replicas_and_reduce_pressure"
+    hint = "Node is under pressure. Add detector replicas and reduce ingest/rule scope before increasing load."
+    safe_to_scale = False
+  elif cpu_pct >= 75 or mem_pct >= 82 or queue_mid or load_per_cpu >= 0.9:
+    status = "Near Limit"
+    action = "careful_increment"
+    hint = "Close to capacity. Increase detector replicas by +1 only and monitor queue/drops closely."
+    safe_to_scale = True
+  else:
+    status = "OK"
+    action = "can_scale_gradually"
+    hint = "Capacity looks healthy. You can increase detector replicas gradually while monitoring queue and drops."
+    safe_to_scale = True
+
+  return {
+    "status": status,
+    "safe_to_scale": safe_to_scale,
+    "recommended_action": action,
+    "replica_hint": hint,
+    "host": {
+      "cpu_usage_percent": round(cpu_pct, 2),
+      "memory_usage_percent": round(mem_pct, 2),
+      "load1": round(load1, 3),
+      "cpu_count": int(cpu_count),
+      "load_per_cpu": round(load_per_cpu, 3),
+      "has_host_metrics": has_host_metrics,
+    },
+    "pipeline": {
+      "queue_size": queue_size,
+      "queue_capacity": queue_capacity,
+      "queue_fill_ratio": round(queue_ratio, 3) if queue_ratio is not None else None,
+      "drops_total": drops_total,
+      "drops_delta": drops_delta,
+      "detector_events_per_sec": round(detector_eps, 2),
+    },
+  }
+
+
 def _read_logs(path_str: str, limit: int):
   if not path_str:
     return {"message": "LOG_PATH not set", "entries": []}
@@ -168,17 +277,12 @@ class Handler(BaseHTTPRequestHandler):
       detector_addr = os.environ.get("DETECTOR_GRPC_ADDR", "")
       detector_metrics_url = os.environ.get("DETECTOR_METRICS_URL", "")
       
-      # Get detector worker count and algorithm from metrics
-      worker_count = None
+      # Get detector algorithm from metrics
       detector_algorithm = None
       if detector_metrics_url:
         try:
           metrics_text = _http_get(detector_metrics_url, timeout=2.0)
           for line in metrics_text.split("\n"):
-            if line.startswith("sentinel_ebpf_detector_worker_count"):
-              parts = line.split()
-              if len(parts) >= 2:
-                worker_count = int(float(parts[1]))
             # Parse sentinel_ebpf_detector_info{algorithm="memstream"} 1
             if "sentinel_ebpf_detector_info" in line and "algorithm=" in line:
               match = re.search(r'algorithm="([^"]+)"', line)
@@ -191,7 +295,6 @@ class Handler(BaseHTTPRequestHandler):
         "ts": int(time.time()),
         "probe_health": _http_get(probe_health),
         "detector_health": _grpc_health(detector_addr),
-        "detector_worker_count": worker_count,
         "detector_algorithm": detector_algorithm,
       }
       self._json(status)
@@ -214,6 +317,70 @@ class Handler(BaseHTTPRequestHandler):
       limit = max(1, min(limit, 500))
       log_path = os.environ.get("LOG_PATH", "")
       self._json(_read_logs(log_path, limit))
+      return
+
+    if self.path.startswith("/api/score_map"):
+      query = parse_qs(urlparse(self.path).query)
+      limit = int(query.get("limit", ["500"])[0])
+      limit = max(10, min(limit, 2000))
+      log_path = os.environ.get("LOG_PATH", "")
+      logs = _read_logs(log_path, limit)
+      entries = logs.get("entries", []) if isinstance(logs, dict) else []
+      points = []
+      for entry in entries:
+        data = entry.get("data", []) if isinstance(entry, dict) else []
+        path = ""
+        comm = ""
+        pid = ""
+        tid = ""
+        uid = ""
+        if isinstance(data, list):
+          # Canonical vector: [event_name, event_id, comm, pid, tid, uid, arg0, arg1, path, flags]
+          path = data[8] if len(data) > 8 else (data[0] if len(data) > 0 else "")
+          comm = data[2] if len(data) > 2 else ""
+          pid = data[3] if len(data) > 3 else ""
+          tid = data[4] if len(data) > 4 else ""
+          uid = data[5] if len(data) > 5 else ""
+        elif isinstance(entry, dict):
+          # Fallback for non-canonical legacy JSON payloads.
+          path = str(entry.get("path", ""))
+          comm = str(entry.get("comm", ""))
+          pid = str(entry.get("pid", ""))
+          tid = str(entry.get("tid", ""))
+          uid = str(entry.get("uid", ""))
+        score = float(entry.get("score", 0.0) or 0.0)
+        points.append({
+          "x": _hash01(path),
+          "y": _hash01(comm),
+          "score": max(0.0, min(1.0, score)),
+          "anomaly": bool(entry.get("anomaly", False)),
+          "reason": entry.get("reason", ""),
+          "event_type": entry.get("event_type", ""),
+          "hostname": entry.get("hostname", ""),
+          "path": path,
+          "comm": comm,
+          "pid": pid,
+          "tid": tid,
+          "uid": uid,
+          "ts_unix_nano": entry.get("ts_unix_nano", 0),
+        })
+      self._json({
+        "points": points,
+        "total": len(points),
+        "message": logs.get("message", "") if isinstance(logs, dict) else "",
+      })
+      return
+
+    if self.path.startswith("/api/capacity"):
+      probe_metrics_url = os.environ.get("PROBE_METRICS_URL", "")
+      detector_metrics_url = os.environ.get("DETECTOR_METRICS_URL", "")
+      probe_text = _http_get(probe_metrics_url) if probe_metrics_url else ""
+      detector_text = _http_get(detector_metrics_url) if detector_metrics_url else ""
+      probe_metrics = _parse_prometheus_metrics(probe_text)
+      detector_metrics = _parse_prometheus_metrics(detector_text)
+      summary = _compute_capacity_summary(probe_metrics, detector_metrics)
+      summary["ts"] = int(time.time())
+      self._json(summary)
       return
 
     if self.path.startswith("/api/anomalies"):

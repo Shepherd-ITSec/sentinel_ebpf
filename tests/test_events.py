@@ -12,23 +12,23 @@ class TestEventEnvelope:
   def test_create_minimal_event(self):
     evt = events_pb2.EventEnvelope(
       event_id="test-123",
-      event_type="file_open",
+      event_type="openat",
       ts_unix_nano=1234567890000000000,
     )
     assert evt.event_id == "test-123"
-    assert evt.event_type == "file_open"
+    assert evt.event_type == "openat"
     assert evt.ts_unix_nano == 1234567890000000000
     assert len(evt.data) == 0
 
   def test_create_event_with_data_vector(self):
     evt = events_pb2.EventEnvelope(
       event_id="test-123",
-      event_type="file_open",
+      event_type="openat",
       ts_unix_nano=1234567890000000000,
-      data=["/tmp/test.txt", "2", "bash", "1234", "5678", "1000"],
+      data=["openat", "2", "bash", "1234", "5678", "1000", "-100", "2", "/tmp/test.txt", "2"],
     )
-    assert len(evt.data) == 6
-    assert evt.data[0] == "/tmp/test.txt"
+    assert len(evt.data) == 10
+    assert evt.data[0] == "openat"
     assert evt.data[1] == "2"
     assert evt.data[2] == "bash"
     assert evt.data[3] == "1234"
@@ -42,22 +42,22 @@ class TestEventEnvelope:
       pod_name="test-pod",
       namespace="default",
       container_id="container-123",
-      event_type="file_open",
+      event_type="openat",
       ts_unix_nano=1234567890000000000,
-      data=["/etc/hosts", "2", "cat", "5678", "5678", "0"],
+      data=["openat", "2", "cat", "5678", "5678", "0", "-100", "2", "/etc/hosts", "2"],
     )
     assert evt.hostname == "node-1"
     assert evt.pod_name == "test-pod"
     assert evt.namespace == "default"
     assert evt.container_id == "container-123"
-    assert evt.event_type == "file_open"
+    assert evt.event_type == "openat"
 
   def test_create_event_with_attributes(self):
     evt = events_pb2.EventEnvelope(
       event_id="test-123",
-      event_type="file_open",
+      event_type="openat",
       ts_unix_nano=1234567890000000000,
-      data=["/tmp/test", "2", "bash", "1", "2", "1000"],
+      data=["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
       attributes={"env": "prod", "team": "security"},
     )
     assert evt.attributes["env"] == "prod"
@@ -71,9 +71,9 @@ class TestEventEnvelope:
       pod_name="test-pod",
       namespace="default",
       container_id="container-123",
-      event_type="file_open",
+      event_type="openat",
       ts_unix_nano=1234567890000000000,
-      data=["/tmp/test.txt", "2", "bash", "1234", "5678", "1000"],
+      data=["openat", "2", "bash", "1234", "5678", "1000", "-100", "2", "/tmp/test.txt", "2"],
     )
 
     # Simulate FileSink serialization
@@ -93,21 +93,21 @@ class TestEventEnvelope:
     parsed = json.loads(json_str)
 
     assert parsed["event_id"] == "test-123"
-    assert parsed["event_type"] == "file_open"
-    assert parsed["data"] == ["/tmp/test.txt", "2", "bash", "1234", "5678", "1000"]
+    assert parsed["event_type"] == "openat"
+    assert parsed["data"] == ["openat", "2", "bash", "1234", "5678", "1000", "-100", "2", "/tmp/test.txt", "2"]
 
-  def test_file_open_event_format(self):
-    """Test file_open event format (ordered vector)."""
+  def test_generic_event_format(self):
+    """Test generic syscall event format (ordered vector)."""
     evt = events_pb2.EventEnvelope(
       event_id="open-123",
-      event_type="file_open",
+      event_type="openat",
       ts_unix_nano=1234567890000000000,
-      data=["/etc/passwd", "2", "cat", "9999", "9999", "1000"],
+      data=["openat", "2", "cat", "9999", "9999", "1000", "-100", "2", "/etc/passwd", "2"],
     )
 
-    # Verify order: [filename, flags, comm, pid, tid, uid]
-    assert evt.data[0] == "/etc/passwd"  # filename
-    assert evt.data[1] == "2"  # flags
+    # Verify order: [event_name, event_id, comm, pid, tid, uid, arg0, arg1, path, flags]
+    assert evt.data[0] == "openat"
+    assert evt.data[1] == "2"
     assert evt.data[2] == "cat"  # comm
     assert evt.data[3] == "9999"  # pid
     assert evt.data[4] == "9999"  # tid

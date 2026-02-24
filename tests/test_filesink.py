@@ -21,9 +21,9 @@ def sample_event():
     pod_name="test-pod",
     namespace="default",
     container_id="container-123",
-    event_type="file_open",
+    event_type="openat",
     ts_unix_nano=1234567890000000000,
-    data=["/tmp/test.txt", "2", "bash", "1234", "5678", "1000"],
+    data=["openat", "2", "bash", "1234", "5678", "1000", "-100", "2", "/tmp/test.txt", "2"],
   )
 
 
@@ -50,8 +50,8 @@ class TestFileSink:
         payload = json.loads(f.read(length).decode("utf-8"))
 
       assert payload["event_id"] == "test-event-123"
-      assert payload["event_type"] == "file_open"
-      assert payload["data"] == ["/tmp/test.txt", "2", "bash", "1234", "5678", "1000"]
+      assert payload["event_type"] == "openat"
+      assert payload["data"] == ["openat", "2", "bash", "1234", "5678", "1000", "-100", "2", "/tmp/test.txt", "2"]
     finally:
       sink.close()
 
@@ -89,9 +89,9 @@ class TestFileSink:
       for i in range(5):
         evt = events_pb2.EventEnvelope(
           event_id=f"event-{i}",
-          event_type="file_open",
+          event_type="openat",
           ts_unix_nano=1234567890000000000 + i,
-          data=["/tmp/test.txt", "2", "bash", "1234", "5678", "1000"],
+          data=["openat", "2", "bash", "1234", "5678", "1000", "-100", "2", "/tmp/test.txt", "2"],
         )
         sink.publish(evt)
       sink.close()
@@ -125,9 +125,9 @@ class TestFileSink:
       for i in range(10):
         evt = events_pb2.EventEnvelope(
           event_id=f"event-{i}",
-          event_type="file_open",
+          event_type="openat",
           ts_unix_nano=1234567890000000000 + i,
-          data=["/tmp/test.txt", "2", "bash", "1234", "5678", "1000"],
+          data=["openat", "2", "bash", "1234", "5678", "1000", "-100", "2", "/tmp/test.txt", "2"],
         )
         sink.publish(evt)
       sink.close()
@@ -152,9 +152,9 @@ class TestFileSink:
       for i in range(100):
         evt = events_pb2.EventEnvelope(
           event_id=f"event-{i}",
-          event_type="file_open",
+          event_type="openat",
           ts_unix_nano=1234567890000000000 + i,
-          data=["/tmp/test.txt", "2", "bash", "1234", "5678", "1000"],
+          data=["openat", "2", "bash", "1234", "5678", "1000", "-100", "2", "/tmp/test.txt", "2"],
         )
         sink.publish(evt)
       sink.close()
