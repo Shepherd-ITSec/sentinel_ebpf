@@ -4,10 +4,12 @@ import gzip
 import json
 import logging
 import struct
+import sys
 import time
 from pathlib import Path
 
 import grpc
+from tqdm import tqdm
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -50,7 +52,7 @@ def iter_events(path: Path, start_ms=None, end_ms=None):
       yield obj
 
 
-def replay(path, target, pace, start_ms, end_ms):
+def replay(path, target, pace, start_ms, end_ms, total=None, label="Replay"):
   log.info("replay: %s -> %s (pace=%s)", path, target, pace)
   channel = grpc.insecure_channel(target)
   stub = events_pb2_grpc.DetectorServiceStub(channel)
@@ -86,11 +88,22 @@ def replay(path, target, pace, start_ms, end_ms):
             time.sleep(target_wall - now)
       yield env
 
+  total = total or 0
+  show_progress = total > 0
+  pbar = (
+    tqdm(total=total, desc=label, unit=" evt", file=sys.stderr, leave=True)
+    if show_progress
+    else None
+  )
   n = 0
   for resp in stub.StreamEvents(gen()):
     n += 1
-    if (n % 10000) == 0:
+    if pbar:
+      pbar.update(1)
+    elif (n % 10000) == 0:
       log.info("replay: %d events sent", n)
+  if pbar:
+    pbar.close()
   log.info("replay done: %d events sent", n)
 
 
