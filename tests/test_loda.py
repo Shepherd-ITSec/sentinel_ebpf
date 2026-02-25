@@ -1,6 +1,8 @@
 """Focused tests for LODA-style online detector."""
 
 import numpy as np
+import pytest
+import torch
 
 from detector.model import OnlineAnomalyDetector
 
@@ -24,6 +26,7 @@ def test_loda_scores_in_unit_interval():
     mem_latent_dim=4,
     mem_memory_size=32,
     mem_lr=0.005,
+    model_device="auto",
     seed=3,
   )
   rng = np.random.default_rng(3)
@@ -47,6 +50,7 @@ def test_loda_anomaly_shift_scores_higher():
     mem_latent_dim=4,
     mem_memory_size=32,
     mem_lr=0.005,
+    model_device="auto",
     seed=5,
   )
   rng = np.random.default_rng(5)
@@ -62,3 +66,27 @@ def test_loda_anomaly_shift_scores_higher():
     for _ in range(25)
   ]
   assert np.mean(anomaly_scores) > np.mean(normal_scores)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available in test runtime")
+def test_loda_can_run_on_cuda_device():
+  detector = OnlineAnomalyDetector(
+    algorithm="loda",
+    hst_n_trees=5,
+    hst_height=5,
+    hst_window_size=32,
+    loda_n_projections=8,
+    loda_bins=16,
+    loda_range=3.0,
+    loda_ema_alpha=0.05,
+    loda_hist_decay=1.0,
+    mem_hidden_dim=16,
+    mem_latent_dim=4,
+    mem_memory_size=16,
+    mem_lr=0.005,
+    model_device="cuda",
+    seed=17,
+  )
+  detector.score_and_learn(_make_features(np.zeros(9)))
+  assert detector.impl.algorithm == "loda"
+  assert detector.impl._device.type == "cuda"

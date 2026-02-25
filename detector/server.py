@@ -141,6 +141,7 @@ class DeterministicScorer:
       mem_latent_dim=cfg.mem_latent_dim,
       mem_memory_size=cfg.mem_memory_size,
       mem_lr=cfg.mem_lr,
+      model_device=cfg.model_device,
       seed=cfg.model_seed,
     )
     self._lock = threading.Lock()

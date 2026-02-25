@@ -136,6 +136,7 @@ class TestDetectorConfig:
     os.environ["DETECTOR_MEMSTREAM_LATENT_DIM"] = "6"
     os.environ["DETECTOR_MEMSTREAM_MEMORY_SIZE"] = "64"
     os.environ["DETECTOR_MEMSTREAM_LR"] = "0.005"
+    os.environ["DETECTOR_MODEL_DEVICE"] = "cpu"
     os.environ["DETECTOR_MODEL_SEED"] = "7"
     try:
       cfg = load_detector_config()
@@ -154,6 +155,7 @@ class TestDetectorConfig:
       assert cfg.mem_latent_dim == 6
       assert cfg.mem_memory_size == 64
       assert cfg.mem_lr == 0.005
+      assert cfg.model_device == "cpu"
       assert cfg.model_seed == 7
     finally:
       for key in [
@@ -172,7 +174,7 @@ class TestDetectorConfig:
         "DETECTOR_MEMSTREAM_LATENT_DIM",
         "DETECTOR_MEMSTREAM_MEMORY_SIZE",
         "DETECTOR_MEMSTREAM_LR",
+        "DETECTOR_MODEL_DEVICE",
         "DETECTOR_MODEL_SEED",
       ]:
         os.environ.pop(key, None)
-

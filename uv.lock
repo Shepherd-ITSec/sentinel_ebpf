@@ -973,6 +973,11 @@ detector = [
     { name = "torch", version = "2.10.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "python_full_version >= '3.10' and sys_platform == 'darwin'" },
     { name = "torch", version = "2.10.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "python_full_version >= '3.10' and sys_platform != 'darwin'" },
 ]
+detector-cuda = [
+    { name = "numpy" },
+    { name = "river", version = "0.21.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
+    { name = "river", version = "0.23.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
+]
 dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -989,6 +994,7 @@ requires-dist = [
     { name = "grpcio-health-checking", specifier = "==1.76.0" },
     { name = "grpcio-tools", specifier = "==1.76.0" },
     { name = "numpy", marker = "extra == 'detector'", specifier = ">=1.24.0,<2.0.0" },
+    { name = "numpy", marker = "extra == 'detector-cuda'", specifier = ">=1.24.0,<2.0.0" },
     { name = "protobuf", specifier = ">=4.21.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.21.0" },
@@ -996,10 +1002,13 @@ requires-dist = [
     { name = "pyyaml", specifier = "==6.0.2" },
     { name = "requests", marker = "extra == 'dev'", specifier = ">=2.31.0" },
     { name = "river", marker = "extra == 'detector'", specifier = ">=0.21.0" },
+    { name = "river", marker = "extra == 'detector-cuda'", specifier = ">=0.21.0" },
     { name = "torch", marker = "extra == 'detector'", specifier = ">=2.2.0", index = "https://download.pytorch.org/whl/cpu" },
+    { name = "torch", marker = "extra != 'detector' and extra == 'detector-cuda'", specifier = ">=2.2.0", index = "https://download.pytorch.org/whl/cu128" },
+    { name = "torch", marker = "extra == 'detector' and extra == 'detector-cuda'", specifier = ">=2.2.0", index = "https://download.pytorch.org/whl/cpu" },
     { name = "tqdm", marker = "extra == 'local'", specifier = ">=4.66.0" },
 ]
-provides-extras = ["dev", "local", "detector"]
+provides-extras = ["dev", "local", "detector", "detector-cuda"]
 
 [[package]]
 name = "setuptools"

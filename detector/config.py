@@ -22,6 +22,9 @@ class DetectorConfig:
   mem_latent_dim: int = 8
   mem_memory_size: int = 128
   mem_lr: float = 0.001
+  # auto: use CUDA when available, else CPU for torch-backed models (LODA, MemStream)
+  # cpu/cuda: force explicit device choice
+  model_device: str = "auto"
   model_seed: int = 42
 
 
@@ -46,6 +49,7 @@ def load_config() -> DetectorConfig:
   mem_latent_dim = int(os.environ.get("DETECTOR_MEMSTREAM_LATENT_DIM", str(defaults.mem_latent_dim)))
   mem_memory_size = int(os.environ.get("DETECTOR_MEMSTREAM_MEMORY_SIZE", str(defaults.mem_memory_size)))
   mem_lr = float(os.environ.get("DETECTOR_MEMSTREAM_LR", str(defaults.mem_lr)))
+  model_device = os.environ.get("DETECTOR_MODEL_DEVICE", defaults.model_device).strip().lower()
   model_seed = int(os.environ.get("DETECTOR_MODEL_SEED", str(defaults.model_seed)))
 
   return DetectorConfig(
@@ -66,5 +70,6 @@ def load_config() -> DetectorConfig:
     mem_latent_dim=mem_latent_dim,
     mem_memory_size=mem_memory_size,
     mem_lr=mem_lr,
+    model_device=model_device,
     model_seed=model_seed,
   )

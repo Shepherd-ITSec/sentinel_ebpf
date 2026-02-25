@@ -31,6 +31,7 @@ def test_loda_detects_anomaly_shift():
     mem_latent_dim=4,
     mem_memory_size=32,
     mem_lr=0.01,
+    model_device="auto",
     seed=42,
   )
 
@@ -72,6 +73,7 @@ def test_memstream_detects_anomaly_shift():
     mem_latent_dim=4,
     mem_memory_size=64,
     mem_lr=0.005,
+    model_device="auto",
     seed=7,
   )
 

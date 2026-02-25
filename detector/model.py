@@ -10,8 +10,15 @@ from river import anomaly
 class OnlineHalfSpaceTrees:
   """Online anomaly detector using River Half-Space Trees."""
 
-  def __init__(self, n_trees: int, height: int, window_size: int, seed: int):
+  def __init__(self, n_trees: int, height: int, window_size: int, model_device: str, seed: int):
     self.algorithm = "halfspacetrees"
+    requested_device = _resolve_torch_device(model_device)
+    self.device = "cpu"
+    if requested_device.type == "cuda":
+      logging.warning(
+        "algorithm=%s requested on CUDA, but River HalfSpaceTrees is CPU-only; using CPU",
+        self.algorithm,
+      )
     self.model: Any = anomaly.HalfSpaceTrees(
       n_trees=n_trees,
       height=height,
@@ -51,6 +58,7 @@ class OnlineLODA:
     proj_range: float,
     ema_alpha: float,
     hist_decay: float,
+    model_device: str,
     seed: int,
   ):
     self.algorithm = "loda"
@@ -60,19 +68,21 @@ class OnlineLODA:
     self.ema_alpha = ema_alpha
     self.hist_decay = hist_decay
     self.seed = seed
+    self._device = _resolve_torch_device(model_device)
     self._feature_keys: Optional[List[str]] = None
-    self._weights: Optional[np.ndarray] = None
-    self._mean: Optional[np.ndarray] = None
-    self._var: Optional[np.ndarray] = None
-    self._counts: Optional[np.ndarray] = None
+    self._weights: Optional[torch.Tensor] = None
+    self._mean: Optional[torch.Tensor] = None
+    self._var: Optional[torch.Tensor] = None
+    self._counts: Optional[torch.Tensor] = None
     logging.info(
-      "Initialized %s (projections=%d, bins=%d, range=%.2f, ema_alpha=%.3f, hist_decay=%.3f)",
+      "Initialized %s (projections=%d, bins=%d, range=%.2f, ema_alpha=%.3f, hist_decay=%.3f, device=%s)",
       self.algorithm,
       n_projections,
       bins,
       proj_range,
       ema_alpha,
       hist_decay,
+      self._device.type,
     )
 
   def _init_from_features(self, features: Dict[str, float]) -> None:
@@ -89,17 +99,18 @@ class OnlineLODA:
       if norm > 1e-12:
         w = w / norm
       weights[i, idx] = w
-    self._weights = weights
-    self._mean = np.zeros(self.n_projections, dtype=np.float32)
-    self._var = np.ones(self.n_projections, dtype=np.float32)
-    self._counts = np.zeros((self.n_projections, self.bins), dtype=np.float32)
+    self._weights = torch.from_numpy(weights).to(self._device)
+    self._mean = torch.zeros(self.n_projections, dtype=torch.float32, device=self._device)
+    self._var = torch.ones(self.n_projections, dtype=torch.float32, device=self._device)
+    self._counts = torch.zeros((self.n_projections, self.bins), dtype=torch.float32, device=self._device)
 
-  def _vectorize(self, features: Dict[str, float]) -> np.ndarray:
+  def _vectorize(self, features: Dict[str, float]) -> torch.Tensor:
     if self._feature_keys is None:
       self._init_from_features(features)
     if self._feature_keys is None:
       raise RuntimeError("LODA feature keys not initialized")
-    return np.array([float(features[k]) for k in self._feature_keys], dtype=np.float32)
+    vec = np.array([float(features[k]) for k in self._feature_keys], dtype=np.float32)
+    return torch.from_numpy(vec).to(self._device)
 
   def score_and_learn(self, features: Dict[str, float]) -> float:
     if self._weights is None:
@@ -117,17 +128,17 @@ class OnlineLODA:
 
     projections = weights @ x
 
-    std = np.sqrt(var + 1e-6)
+    std = torch.sqrt(var + 1e-6)
     normalized = (projections - mean) / std
-    normalized = np.clip(normalized, -self.proj_range, self.proj_range)
-    bin_idx = ((normalized + self.proj_range) / (2.0 * self.proj_range) * self.bins).astype(int)
-    bin_idx = np.clip(bin_idx, 0, self.bins - 1)
+    normalized = torch.clamp(normalized, -self.proj_range, self.proj_range)
+    bin_idx = ((normalized + self.proj_range) / (2.0 * self.proj_range) * self.bins).to(torch.long)
+    bin_idx = torch.clamp(bin_idx, 0, self.bins - 1)
 
-    row_idx = np.arange(self.n_projections)
+    row_idx = torch.arange(self.n_projections, device=self._device)
     smoothing = 1.0
-    totals = counts.sum(axis=1) + smoothing * self.bins
+    totals = counts.sum(dim=1) + smoothing * self.bins
     probs = (counts[row_idx, bin_idx] + smoothing) / totals
-    score = float(np.mean(-np.log(probs)))
+    score = float(torch.mean(-torch.log(probs)).item())
 
     # Learn after scoring so the current event doesn't lower its own anomaly score.
     counts[row_idx, bin_idx] += 1.0
@@ -158,6 +169,26 @@ class _AutoEncoder(torch.nn.Module):
     return z, recon
 
 
+def _resolve_torch_device(preference: str) -> torch.device:
+  pref = preference.strip().lower()
+  if pref not in ("auto", "cpu", "cuda"):
+    raise ValueError("Invalid model_device value: %s. Choose from: auto, cpu, cuda" % preference)
+
+  if pref == "cpu":
+    return torch.device("cpu")
+
+  cuda_available = torch.cuda.is_available()
+  if pref == "cuda":
+    if not cuda_available:
+      raise RuntimeError("DETECTOR_MODEL_DEVICE=cuda requested but CUDA is not available in this torch runtime")
+    return torch.device("cuda")
+
+  # auto
+  if cuda_available:
+    return torch.device("cuda")
+  return torch.device("cpu")
+
+
 class OnlineMemStream:
   """
   Online MemStream-style detector using an autoencoder + latent memory.
@@ -177,6 +208,7 @@ class OnlineMemStream:
     latent_dim: int,
     memory_size: int,
     lr: float,
+    model_device: str,
     seed: int,
   ):
     self.algorithm = "memstream"
@@ -185,6 +217,8 @@ class OnlineMemStream:
     self.memory_size = memory_size
     self.lr = lr
     self.seed = seed
+    self.model_device = model_device
+    self._device = _resolve_torch_device(model_device)
     self._feature_keys: Optional[List[str]] = None
     self._model: Optional[_AutoEncoder] = None
     self._optimizer: Optional[torch.optim.Optimizer] = None
@@ -202,24 +236,27 @@ class OnlineMemStream:
     self._warmup_accept = max(8, min(32, self.memory_size // 4))
     self._noise_std = 1e-3
     logging.info(
-      "Initialized %s (hidden=%d, latent=%d, memory=%d, lr=%.5f)",
+      "Initialized %s (hidden=%d, latent=%d, memory=%d, lr=%.5f, device=%s)",
       self.algorithm,
       hidden_dim,
       latent_dim,
       memory_size,
       lr,
+      self._device.type,
     )
 
   def _init_from_features(self, features: Dict[str, float]) -> None:
     self._feature_keys = sorted(features.keys())
     input_dim = len(self._feature_keys)
     torch.manual_seed(self.seed)
-    self._model = _AutoEncoder(input_dim=input_dim, hidden_dim=self.hidden_dim, latent_dim=self.latent_dim)
+    if self._device.type == "cuda":
+      torch.cuda.manual_seed_all(self.seed)
+    self._model = _AutoEncoder(input_dim=input_dim, hidden_dim=self.hidden_dim, latent_dim=self.latent_dim).to(self._device)
     self._optimizer = torch.optim.Adam(self._model.parameters(), lr=self.lr)
-    self._memory_latent = torch.zeros(self.memory_size, self.latent_dim, dtype=torch.float32)
-    self._memory_input = torch.zeros(self.memory_size, input_dim, dtype=torch.float32)
-    self._norm_mean = torch.zeros(input_dim, dtype=torch.float32)
-    self._norm_std = torch.ones(input_dim, dtype=torch.float32)
+    self._memory_latent = torch.zeros(self.memory_size, self.latent_dim, dtype=torch.float32, device=self._device)
+    self._memory_input = torch.zeros(self.memory_size, input_dim, dtype=torch.float32, device=self._device)
+    self._norm_mean = torch.zeros(input_dim, dtype=torch.float32, device=self._device)
+    self._norm_std = torch.ones(input_dim, dtype=torch.float32, device=self._device)
 
   def _vectorize(self, features: Dict[str, float]) -> torch.Tensor:
     if self._feature_keys is None:
@@ -227,7 +264,7 @@ class OnlineMemStream:
     if self._feature_keys is None:
       raise RuntimeError("MemStream feature keys not initialized")
     vec = np.array([float(features[k]) for k in self._feature_keys], dtype=np.float32)
-    return torch.from_numpy(vec)
+    return torch.from_numpy(vec).to(self._device)
 
   def _normalize(self, x: torch.Tensor) -> torch.Tensor:
     if self._norm_mean is None or self._norm_std is None:
@@ -283,8 +320,8 @@ class OnlineMemStream:
     else:
       idx = self._mem_index
       self._mem_index = (self._mem_index + 1) % self.memory_size
-    self._memory_latent[idx] = z.detach().cpu()
-    self._memory_input[idx] = x.detach().cpu()
+    self._memory_latent[idx] = z.detach()
+    self._memory_input[idx] = x.detach()
     self._refresh_norm_from_memory()
 
   def score_and_learn(self, features: Dict[str, float]) -> float:
@@ -339,6 +376,7 @@ class OnlineAnomalyDetector:
     mem_latent_dim: int,
     mem_memory_size: int,
     mem_lr: float,
+    model_device: str,
     seed: int,
   ):
     algo = algorithm.lower()
@@ -347,6 +385,7 @@ class OnlineAnomalyDetector:
         n_trees=hst_n_trees,
         height=hst_height,
         window_size=hst_window_size,
+        model_device=model_device,
         seed=seed,
       )
     elif algo == "loda":
@@ -356,6 +395,7 @@ class OnlineAnomalyDetector:
         proj_range=loda_range,
         ema_alpha=loda_ema_alpha,
         hist_decay=loda_hist_decay,
+        model_device=model_device,
         seed=seed,
       )
     elif algo == "memstream":
@@ -364,6 +404,7 @@ class OnlineAnomalyDetector:
         latent_dim=mem_latent_dim,
         memory_size=mem_memory_size,
         lr=mem_lr,
+        model_device=model_device,
         seed=seed,
       )
     else:
