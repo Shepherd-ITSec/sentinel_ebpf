@@ -1,10 +1,16 @@
 """Online anomaly detection models."""
+import contextlib
+import io
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 from river import anomaly
+try:
+  from pysad.models import KitNet as PySADKitNet
+except ImportError:
+  PySADKitNet = None
 
 
 class OnlineHalfSpaceTrees:
@@ -147,6 +153,79 @@ class OnlineLODA:
     mean[:] = mean + alpha * delta
     var[:] = (1.0 - alpha) * var + alpha * (delta * delta)
     return 1.0 - float(np.exp(-score))
+
+
+class OnlineKitNet:
+  """Online anomaly detector using PySAD KitNet."""
+
+  def __init__(
+    self,
+    max_size_ae: int,
+    grace_feature_mapping: int,
+    grace_anomaly_detector: int,
+    learning_rate: float,
+    hidden_ratio: float,
+    model_device: str,
+    seed: int,
+  ):
+    self.algorithm = "kitnet"
+    requested_device = _resolve_torch_device(model_device)
+    self.device = "cpu"
+    if requested_device.type == "cuda":
+      logging.warning(
+        "algorithm=%s requested on CUDA, but PySAD KitNet is CPU-only; using CPU",
+        self.algorithm,
+      )
+    self.seed = seed
+    self.max_size_ae = max_size_ae
+    self.grace_feature_mapping = grace_feature_mapping
+    self.grace_anomaly_detector = grace_anomaly_detector
+    self.learning_rate = learning_rate
+    self.hidden_ratio = hidden_ratio
+    self._feature_keys: Optional[List[str]] = None
+    self._model = None
+    logging.info(
+      "Initialized %s (max_size_ae=%d, grace_fm=%d, grace_ad=%d, lr=%.4f, hidden_ratio=%.3f)",
+      self.algorithm,
+      max_size_ae,
+      grace_feature_mapping,
+      grace_anomaly_detector,
+      learning_rate,
+      hidden_ratio,
+    )
+
+  def _init_from_features(self, features: Dict[str, float]) -> None:
+    if PySADKitNet is None:
+      raise RuntimeError("PySAD KitNet not available. Install detector deps: `uv sync --extra detector`.")
+    self._feature_keys = sorted(features.keys())
+    self._model = PySADKitNet(
+      max_size_ae=self.max_size_ae,
+      grace_feature_mapping=self.grace_feature_mapping,
+      grace_anomaly_detector=self.grace_anomaly_detector,
+      learning_rate=self.learning_rate,
+      hidden_ratio=self.hidden_ratio,
+    )
+
+  def _vectorize(self, features: Dict[str, float]) -> np.ndarray:
+    if self._feature_keys is None:
+      self._init_from_features(features)
+    if self._feature_keys is None:
+      raise RuntimeError("KitNet feature keys not initialized")
+    return np.array([float(features[k]) for k in self._feature_keys], dtype=np.float64)
+
+  def score_and_learn(self, features: Dict[str, float]) -> float:
+    x = self._vectorize(features)
+    if self._model is None:
+      raise RuntimeError("KitNet not initialized")
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+      if hasattr(self._model, "fit_score_partial"):
+        raw = float(self._model.fit_score_partial(x))
+      else:
+        raw = float(self._model.score_partial(x))
+        self._model.fit_partial(x)
+    if not np.isfinite(raw):
+      raw = 0.0
+    return 1.0 - float(np.exp(-max(0.0, raw)))
 
 
 class _AutoEncoder(torch.nn.Module):
@@ -372,6 +451,11 @@ class OnlineAnomalyDetector:
     loda_range: float,
     loda_ema_alpha: float,
     loda_hist_decay: float,
+    kitnet_max_size_ae: int,
+    kitnet_grace_feature_mapping: int,
+    kitnet_grace_anomaly_detector: int,
+    kitnet_learning_rate: float,
+    kitnet_hidden_ratio: float,
     mem_hidden_dim: int,
     mem_latent_dim: int,
     mem_memory_size: int,
@@ -398,6 +482,16 @@ class OnlineAnomalyDetector:
         model_device=model_device,
         seed=seed,
       )
+    elif algo == "kitnet":
+      self.impl = OnlineKitNet(
+        max_size_ae=kitnet_max_size_ae,
+        grace_feature_mapping=kitnet_grace_feature_mapping,
+        grace_anomaly_detector=kitnet_grace_anomaly_detector,
+        learning_rate=kitnet_learning_rate,
+        hidden_ratio=kitnet_hidden_ratio,
+        model_device=model_device,
+        seed=seed,
+      )
     elif algo == "memstream":
       self.impl = OnlineMemStream(
         hidden_dim=mem_hidden_dim,
@@ -408,7 +502,7 @@ class OnlineAnomalyDetector:
         seed=seed,
       )
     else:
-      raise ValueError("Unknown algorithm: %s. Choose from: halfspacetrees, loda, memstream" % algorithm)
+      raise ValueError("Unknown algorithm: %s. Choose from: halfspacetrees, loda, kitnet, memstream" % algorithm)
     self.algorithm = self.impl.algorithm
 
   def score_and_learn(self, features: Dict[str, float]) -> float:
