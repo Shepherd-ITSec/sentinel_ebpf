@@ -22,19 +22,32 @@ local = [
   "tqdm>=4.66.0",
 ]
 # Detector (ML) only; probe image stays small by not installing these
-# CPU-only torch keeps detector image small for k3d/CI; use detector-cuda extra for GPU if needed
+# Use detector for CPU-only environments and detector-cuda on GPU hosts.
 detector = [
+  "numpy>=1.24.0,<2.0.0",
+  "river>=0.21.0",
+  "torch>=2.2.0",
+]
+detector-cuda = [
   "numpy>=1.24.0,<2.0.0",
   "river>=0.21.0",
   "torch>=2.2.0",
 ]
 
 [tool.uv.sources]
-torch = [{ index = "pytorch-cpu" }]
+torch = [
+  { index = "pytorch-cpu", marker = "extra == 'detector'" },
+  { index = "pytorch-cu128", marker = "extra != 'detector' and extra == 'detector-cuda'" },
+]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [build-system]

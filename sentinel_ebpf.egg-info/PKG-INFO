@@ -20,4 +20,8 @@ Provides-Extra: detector
 Requires-Dist: numpy<2.0.0,>=1.24.0; extra == "detector"
 Requires-Dist: river>=0.21.0; extra == "detector"
 Requires-Dist: torch>=2.2.0; extra == "detector"
+Provides-Extra: detector-cuda
+Requires-Dist: numpy<2.0.0,>=1.24.0; extra == "detector-cuda"
+Requires-Dist: river>=0.21.0; extra == "detector-cuda"
+Requires-Dist: torch>=2.2.0; extra == "detector-cuda"
 Dynamic: license-file

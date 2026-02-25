@@ -99,6 +99,13 @@ uv sync --extra dev --extra detector
 uv run make proto
 ```
 
+On CUDA-capable hosts (for MemStream GPU experiments), sync with CUDA wheels instead:
+
+```bash
+uv sync --extra dev --extra detector-cuda
+uv run make proto
+```
+
 ### Run tests
 
 ```bash
@@ -179,6 +186,8 @@ Set via `detector.model.*` in Helm values:
 - `algorithm`: `halfspacetrees`, `loda`, or `memstream`
 - `threshold`: anomaly threshold
 - per-algorithm params: `hst_*`, `loda_*`, `mem_*`, plus `seed`
+- Model device selection via env var `DETECTOR_MODEL_DEVICE`: `auto` (default), `cpu`, or `cuda`
+- `loda` and `memstream` support CUDA; `halfspacetrees` is River-based and runs on CPU
 
 
 The detector scores events online (streaming), no separate batch training phase required.
