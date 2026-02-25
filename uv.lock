@@ -961,7 +961,6 @@ dependencies = [
     { name = "grpcio-tools" },
     { name = "protobuf" },
     { name = "pyyaml" },
-    { name = "tqdm" },
 ]
 
 [package.optional-dependencies]
@@ -980,6 +979,9 @@ dev = [
     { name = "pytest-mock" },
     { name = "requests" },
 ]
+local = [
+    { name = "tqdm" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -995,9 +997,9 @@ requires-dist = [
     { name = "requests", marker = "extra == 'dev'", specifier = ">=2.31.0" },
     { name = "river", marker = "extra == 'detector'", specifier = ">=0.21.0" },
     { name = "torch", marker = "extra == 'detector'", specifier = ">=2.2.0", index = "https://download.pytorch.org/whl/cpu" },
-    { name = "tqdm", specifier = ">=4.66.0" },
+    { name = "tqdm", marker = "extra == 'local'", specifier = ">=4.66.0" },
 ]
-provides-extras = ["dev", "detector"]
+provides-extras = ["dev", "local", "detector"]
 
 [[package]]
 name = "setuptools"

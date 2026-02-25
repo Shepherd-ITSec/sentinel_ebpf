@@ -9,7 +9,10 @@ import time
 from pathlib import Path
 
 import grpc
-from tqdm import tqdm
+try:
+  from tqdm import tqdm  # type: ignore[import-not-found]
+except ImportError:
+  tqdm = None
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -89,7 +92,9 @@ def replay(path, target, pace, start_ms, end_ms, total=None, label="Replay"):
       yield env
 
   total = total or 0
-  show_progress = total > 0
+  show_progress = total > 0 and tqdm is not None
+  if total > 0 and tqdm is None:
+    log.info("tqdm not installed; replaying without progress bar")
   pbar = (
     tqdm(total=total, desc=label, unit=" evt", file=sys.stderr, leave=True)
     if show_progress
