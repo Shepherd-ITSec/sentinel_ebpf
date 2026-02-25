@@ -4,10 +4,13 @@
 import argparse
 import json
 from pathlib import Path
-from typing import Dict, Set
+from typing import Dict, Literal, Set
+
+LabelMode = Literal["evil_only", "sus_or_evil"]
 
 
-def _load_labels(path: Path) -> Dict[str, int]:
+def _load_labels(path: Path, label_mode: LabelMode = "sus_or_evil") -> Dict[str, int]:
+  """Load labels ndjson; positive = 1 by label_mode: evil_only (evil>0) or sus_or_evil (sus>0 or evil>0)."""
   labels: Dict[str, int] = {}
   with path.open("r", encoding="utf-8") as f:
     for line in f:
@@ -17,7 +20,11 @@ def _load_labels(path: Path) -> Dict[str, int]:
       eid = str(row.get("event_id", ""))
       sus = int(row.get("sus", 0))
       evil = int(row.get("evil", 0))
-      labels[eid] = 1 if (sus > 0 or evil > 0) else 0
+      if label_mode == "evil_only":
+        positive = 1 if evil > 0 else 0
+      else:
+        positive = 1 if (sus > 0 or evil > 0) else 0
+      labels[eid] = positive
   return labels
 
 
@@ -36,8 +43,8 @@ def _load_flagged(path: Path) -> Set[str]:
   return flagged
 
 
-def evaluate(labels_path: Path, anomalies_path: Path) -> Dict[str, float]:
-  labels = _load_labels(labels_path)
+def evaluate(labels_path: Path, anomalies_path: Path, label_mode: LabelMode = "sus_or_evil") -> Dict[str, float]:
+  labels = _load_labels(labels_path, label_mode=label_mode)
   flagged = _load_flagged(anomalies_path)
   ids = set(labels.keys())
 
@@ -72,6 +79,7 @@ def evaluate(labels_path: Path, anomalies_path: Path) -> Dict[str, float]:
     "f1": f1,
     "accuracy": accuracy,
     "flagged_rate": flagged_rate,
+    "label_mode": label_mode,
   }
 
 
@@ -79,9 +87,15 @@ def main() -> None:
   ap = argparse.ArgumentParser(description="Evaluate replay anomalies against BETH labels")
   ap.add_argument("--labels", required=True, help="Path to labels ndjson from convert_beth_to_evt1.py")
   ap.add_argument("--anomalies", required=True, help="Path to detector anomaly log jsonl")
+  ap.add_argument(
+    "--label-mode",
+    choices=["evil_only", "sus_or_evil"],
+    default="sus_or_evil",
+    help="Positive = evil>0 only (evil_only) or sus>0 or evil>0 (sus_or_evil, default)",
+  )
   args = ap.parse_args()
 
-  result = evaluate(Path(args.labels), Path(args.anomalies))
+  result = evaluate(Path(args.labels), Path(args.anomalies), label_mode=args.label_mode)
   print(json.dumps(result, indent=2))
 
 

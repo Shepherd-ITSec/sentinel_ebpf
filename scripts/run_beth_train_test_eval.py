@@ -72,6 +72,12 @@ def main() -> None:
   ap.add_argument("--startup-timeout", type=float, default=30.0, help="Seconds to wait for detector readiness")
   ap.add_argument("--train-limit", type=int, default=0, help="Optional row cap for train conversion (0=all)")
   ap.add_argument("--test-limit", type=int, default=0, help="Optional row cap for test conversion (0=all)")
+  ap.add_argument(
+    "--label-mode",
+    choices=["evil_only", "sus_or_evil"],
+    default="sus_or_evil",
+    help="Eval positive = evil>0 only (evil_only) or sus>0 or evil>0 (sus_or_evil, default)",
+  )
   args = ap.parse_args()
 
   out_dir = Path(args.out_dir)
@@ -114,7 +120,7 @@ def main() -> None:
   finally:
     _stop_detector(detector)
 
-  result = evaluate(test_labels, anomalies)
+  result = evaluate(test_labels, anomalies, label_mode=args.label_mode)
   result["train_samples"] = train_count
   result["test_samples_converted"] = test_count
   result["anomalies_path"] = str(anomalies)
