@@ -197,12 +197,13 @@ class RuleBasedDetector(events_pb2_grpc.DetectorServiceServicer):
         n = _metrics["events_total"]
         anomalies = _metrics["anomalies_total"]
 
-      if (n % 10000) == 0 and n > 0:
-        logging.info("processed %d events (%d anomalies so far)", n, anomalies)
-      if resp.anomaly:
-        logging.warning("anomaly id=%s reason=%s score=%.3f", resp.event_id, resp.reason, resp.score)
-      else:
-        logging.debug("event ok id=%s", resp.event_id)
+      if not os.environ.get("DETECTOR_QUIET"):
+        if (n % 10000) == 0 and n > 0:
+          logging.info("processed %d events (%d anomalies so far)", n, anomalies)
+        if resp.anomaly:
+          logging.warning("anomaly id=%s reason=%s score=%.3f", resp.event_id, resp.reason, resp.score)
+        else:
+          logging.debug("event ok id=%s", resp.event_id)
 
       yield resp
 
@@ -214,19 +215,26 @@ class RuleBasedDetector(events_pb2_grpc.DetectorServiceServicer):
 async def serve():
   global RECENT_EVENTS
   logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-  cfg = load_config()
-  logging.info("detector starting (algorithm=%s threshold=%.2f)", cfg.model_algorithm, cfg.threshold)
-  RECENT_EVENTS = deque(maxlen=cfg.recent_events_buffer_size)
-  logging.info("recent events buffer size %d", cfg.recent_events_buffer_size)
-  _init_anomaly_log()
-  server = grpc.aio.server()
-  events_pb2_grpc.add_DetectorServiceServicer_to_server(RuleBasedDetector(cfg), server)
 
+  logging.info("loading config...")
+  cfg = load_config()
+  logging.info("config loaded: algorithm=%s threshold=%.2f gRPC_port=%d HTTP_port=%d", cfg.model_algorithm, cfg.threshold, cfg.port, cfg.events_http_port)
+
+  logging.info("initializing anomaly model (%s)...", cfg.model_algorithm)
+  RECENT_EVENTS = deque(maxlen=cfg.recent_events_buffer_size)
+  _init_anomaly_log()
+  servicer = RuleBasedDetector(cfg)
+  logging.info("model initialized (recent_events buffer size=%d)", cfg.recent_events_buffer_size)
+
+  logging.info("starting gRPC server...")
+  server = grpc.aio.server()
+  events_pb2_grpc.add_DetectorServiceServicer_to_server(servicer, server)
   health_svc = health.HealthServicer()
   health_pb2_grpc.add_HealthServicer_to_server(health_svc, server)
   health_svc.set("", health_pb2.HealthCheckResponse.SERVING)
 
   listen_addr = f"[::]:{cfg.port}"
+  logging.info("binding gRPC port %s...", listen_addr)
   server.add_insecure_port(listen_addr)
   await server.start()
   logging.info("detector listening on %s", listen_addr)
@@ -317,6 +325,7 @@ async def serve():
     thread.start()
     logging.info("detector HTTP API on port %s (/recent_events, /metrics)", cfg.events_http_port)
 
+  logging.info("ready; accepting events.")
   try:
     await server.wait_for_termination()
   except KeyboardInterrupt:
@@ -329,6 +338,9 @@ async def serve():
 def main():
   import argparse
 
+  logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+  logging.info("detector process starting (imports and setup may take a moment)...")
+
   parser = argparse.ArgumentParser(description="Detector service with optional replay test mode")
   parser.add_argument("--replay-log", help="Path to EVT1 log to replay to the detector")
   parser.add_argument("--replay-pace", default="fast", choices=["fast", "realtime"], help="Replay pacing")
@@ -339,18 +351,22 @@ def main():
   if args.replay_log:
     # Start server in background loop and replay into it.
     async def run_with_replay():
-      cfg = load_config()
       logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+      logging.info("loading config (replay mode)...")
+      cfg = load_config()
+      logging.info("config loaded: algorithm=%s threshold=%.2f", cfg.model_algorithm, cfg.threshold)
+      logging.info("initializing anomaly model (%s)...", cfg.model_algorithm)
+      servicer = RuleBasedDetector(cfg)
+      logging.info("model initialized; starting gRPC server...")
       server = grpc.aio.server()
-      events_pb2_grpc.add_DetectorServiceServicer_to_server(RuleBasedDetector(cfg), server)
+      events_pb2_grpc.add_DetectorServiceServicer_to_server(servicer, server)
       health_svc = health.HealthServicer()
       health_pb2_grpc.add_HealthServicer_to_server(health_svc, server)
       health_svc.set("", health_pb2.HealthCheckResponse.SERVING)
       listen_addr = f"[::]:{cfg.port}"
       server.add_insecure_port(listen_addr)
       await server.start()
-      logging.info("detector listening on %s", listen_addr)
-      # Replay from log into this server.
+      logging.info("detector listening on %s; replaying %s...", listen_addr, args.replay_log)
       replay(args.replay_log, f"localhost:{cfg.port}", args.replay_pace, args.replay_start_ms, args.replay_end_ms)
       await server.wait_for_termination()
 

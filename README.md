@@ -66,6 +66,20 @@ Or run detector with embedded replay:
 uv run python -m detector.server --replay-log events.bin --replay-pace realtime
 ```
 
+### 3b) BETH train-test evaluation (warmup then test-only metrics)
+
+Use this to benchmark ranking with a realistic online workflow:
+train split first (model warmup), then test split, then metrics on test labels only.
+
+```bash
+uv run python scripts/run_beth_train_test_eval.py \
+  --train-csv test_data/beth/labelled_training_data.csv \
+  --test-csv test_data/beth/labelled_testing_data.csv \
+  --pace fast
+```
+
+This command writes converted EVT1 files, anomaly logs, and test-only metrics into `test_data/beth/eval/`.
+
 ### 4) Quick smoke test
 
 Use this for a clean one-shot cluster test.

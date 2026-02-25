@@ -52,7 +52,7 @@ def _extract_path_and_flags(args: List[Dict[str, object]]) -> Tuple[str, str]:
   return path, flags
 
 
-def _build_evt(row: Dict[str, str], row_idx: int, base_ts_ns: int) -> Tuple[Dict[str, object], Dict[str, object]]:
+def _build_evt(row: Dict[str, str], row_idx: int, base_ts_ns: int, event_id_prefix: str) -> Tuple[Dict[str, object], Dict[str, object]]:
   ts_rel_s = _parse_float(row.get("timestamp", "0"))
   ts_ns = base_ts_ns + int(ts_rel_s * 1_000_000_000)
   event_name = (row.get("eventName") or "").strip() or "unknown"
@@ -68,7 +68,7 @@ def _build_evt(row: Dict[str, str], row_idx: int, base_ts_ns: int) -> Tuple[Dict
   path, flags = _extract_path_and_flags(args)
   arg0 = str(args[0].get("value", "")) if len(args) > 0 else ""
   arg1 = str(args[1].get("value", "")) if len(args) > 1 else ""
-  out_event_id = f"beth-{row_idx}-{pid}-{tid}"
+  out_event_id = f"{event_id_prefix}-{row_idx}-{pid}-{tid}"
 
   payload = {
     "event_id": out_event_id,
@@ -107,7 +107,7 @@ def _build_evt(row: Dict[str, str], row_idx: int, base_ts_ns: int) -> Tuple[Dict
   return payload, label_row
 
 
-def convert(csv_file: Path, evt1_out: Path, labels_out: Path, limit: int = 0) -> int:
+def convert(csv_file: Path, evt1_out: Path, labels_out: Path, limit: int = 0, event_id_prefix: str = "beth") -> int:
   base_ts_ns = int(time.time() * 1_000_000_000)
   written = 0
   evt1_out.parent.mkdir(parents=True, exist_ok=True)
@@ -118,7 +118,7 @@ def convert(csv_file: Path, evt1_out: Path, labels_out: Path, limit: int = 0) ->
     for idx, row in enumerate(reader):
       if limit > 0 and written >= limit:
         break
-      payload, label_row = _build_evt(row, idx, base_ts_ns)
+      payload, label_row = _build_evt(row, idx, base_ts_ns, event_id_prefix=event_id_prefix)
       blob = json.dumps(payload, separators=(",", ":")).encode("utf-8")
       evtf.write(MAGIC + struct.pack("<I", len(blob)) + blob)
       labf.write(json.dumps(label_row) + "\n")
@@ -132,9 +132,16 @@ def main() -> None:
   ap.add_argument("--evt1-out", default="test_data/beth/events_from_beth.bin", help="Output EVT1 path")
   ap.add_argument("--labels-out", default="test_data/beth/events_from_beth.labels.ndjson", help="Output labels path")
   ap.add_argument("--limit", type=int, default=0, help="Optional row limit (0 = all rows)")
+  ap.add_argument("--event-id-prefix", default="beth", help="Prefix for event_id values (use different prefixes for train/test)")
   args = ap.parse_args()
 
-  count = convert(Path(args.csv_file), Path(args.evt1_out), Path(args.labels_out), limit=args.limit)
+  count = convert(
+    Path(args.csv_file),
+    Path(args.evt1_out),
+    Path(args.labels_out),
+    limit=args.limit,
+    event_id_prefix=args.event_id_prefix,
+  )
   print(f"converted_rows={count}")
   print(f"evt1={args.evt1_out}")
   print(f"labels={args.labels_out}")

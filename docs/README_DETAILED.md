@@ -295,6 +295,7 @@ Representative test areas:
 - `scripts/replay_logs.py`: replay EVT1 to detector gRPC endpoint with `fast`/`realtime` pacing and optional time-window filters.
 - `scripts/convert_beth_to_evt1.py`: convert BETH CSV rows into EVT1 records + labels.
 - `scripts/evaluate_beth_replay.py`: evaluate replay anomaly outputs against BETH labels.
+- `scripts/run_beth_train_test_eval.py`: run train warmup replay then test replay and report metrics on test labels only.
 
 ## Optional debug UI
 
