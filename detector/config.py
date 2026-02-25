@@ -8,7 +8,7 @@ class DetectorConfig:
   events_http_port: int = 50052  # 0 to disable; serves GET /recent_events for UI log tail in gRPC mode
   recent_events_buffer_size: int = 10000  # Size of recent events ring buffer for UI (default: 10000)
   # River model configuration
-  model_algorithm: str = "halfspacetrees"  # halfspacetrees | loda | memstream
+  model_algorithm: str = "halfspacetrees"  # halfspacetrees | loda | kitnet | memstream
   threshold: float = 0.7  # Anomaly score threshold (0-1). Lower (e.g. 0.3) to flag more events when scores are mostly low.
   hst_n_trees: int = 25
   hst_height: int = 15
@@ -18,6 +18,11 @@ class DetectorConfig:
   loda_range: float = 3.0
   loda_ema_alpha: float = 0.01
   loda_hist_decay: float = 1.0
+  kitnet_max_size_ae: int = 10
+  kitnet_grace_feature_mapping: int = 10000
+  kitnet_grace_anomaly_detector: int = 50000
+  kitnet_learning_rate: float = 0.1
+  kitnet_hidden_ratio: float = 0.75
   mem_hidden_dim: int = 32
   mem_latent_dim: int = 8
   mem_memory_size: int = 128
@@ -45,6 +50,15 @@ def load_config() -> DetectorConfig:
   loda_range = float(os.environ.get("DETECTOR_LODA_RANGE", str(defaults.loda_range)))
   loda_ema_alpha = float(os.environ.get("DETECTOR_LODA_EMA_ALPHA", str(defaults.loda_ema_alpha)))
   loda_hist_decay = float(os.environ.get("DETECTOR_LODA_HIST_DECAY", str(defaults.loda_hist_decay)))
+  kitnet_max_size_ae = int(os.environ.get("DETECTOR_KITNET_MAX_SIZE_AE", str(defaults.kitnet_max_size_ae)))
+  kitnet_grace_feature_mapping = int(
+    os.environ.get("DETECTOR_KITNET_GRACE_FEATURE_MAPPING", str(defaults.kitnet_grace_feature_mapping))
+  )
+  kitnet_grace_anomaly_detector = int(
+    os.environ.get("DETECTOR_KITNET_GRACE_ANOMALY_DETECTOR", str(defaults.kitnet_grace_anomaly_detector))
+  )
+  kitnet_learning_rate = float(os.environ.get("DETECTOR_KITNET_LEARNING_RATE", str(defaults.kitnet_learning_rate)))
+  kitnet_hidden_ratio = float(os.environ.get("DETECTOR_KITNET_HIDDEN_RATIO", str(defaults.kitnet_hidden_ratio)))
   mem_hidden_dim = int(os.environ.get("DETECTOR_MEMSTREAM_HIDDEN_DIM", str(defaults.mem_hidden_dim)))
   mem_latent_dim = int(os.environ.get("DETECTOR_MEMSTREAM_LATENT_DIM", str(defaults.mem_latent_dim)))
   mem_memory_size = int(os.environ.get("DETECTOR_MEMSTREAM_MEMORY_SIZE", str(defaults.mem_memory_size)))
@@ -66,6 +80,11 @@ def load_config() -> DetectorConfig:
     loda_range=loda_range,
     loda_ema_alpha=loda_ema_alpha,
     loda_hist_decay=loda_hist_decay,
+    kitnet_max_size_ae=kitnet_max_size_ae,
+    kitnet_grace_feature_mapping=kitnet_grace_feature_mapping,
+    kitnet_grace_anomaly_detector=kitnet_grace_anomaly_detector,
+    kitnet_learning_rate=kitnet_learning_rate,
+    kitnet_hidden_ratio=kitnet_hidden_ratio,
     mem_hidden_dim=mem_hidden_dim,
     mem_latent_dim=mem_latent_dim,
     mem_memory_size=mem_memory_size,

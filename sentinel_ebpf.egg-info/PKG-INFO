@@ -18,10 +18,12 @@ Provides-Extra: local
 Requires-Dist: tqdm>=4.66.0; extra == "local"
 Provides-Extra: detector
 Requires-Dist: numpy<2.0.0,>=1.24.0; extra == "detector"
+Requires-Dist: pysad>=0.3.0; python_version >= "3.10" and extra == "detector"
 Requires-Dist: river>=0.21.0; extra == "detector"
 Requires-Dist: torch>=2.2.0; extra == "detector"
 Provides-Extra: detector-cuda
 Requires-Dist: numpy<2.0.0,>=1.24.0; extra == "detector-cuda"
+Requires-Dist: pysad>=0.3.0; python_version >= "3.10" and extra == "detector-cuda"
 Requires-Dist: river>=0.21.0; extra == "detector-cuda"
 Requires-Dist: torch>=2.2.0; extra == "detector-cuda"
 Dynamic: license-file
