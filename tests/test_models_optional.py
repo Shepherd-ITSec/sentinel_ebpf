@@ -19,19 +19,11 @@ def test_loda_detects_anomaly_shift():
 
   detector = OnlineAnomalyDetector(
     algorithm="loda",
-    hst_n_trees=5,
-    hst_height=5,
-    hst_window_size=32,
     loda_n_projections=10,
     loda_bins=32,
     loda_range=3.0,
     loda_ema_alpha=0.05,
     loda_hist_decay=1.0,
-    mem_hidden_dim=16,
-    mem_latent_dim=4,
-    mem_memory_size=32,
-    mem_lr=0.01,
-    model_device="auto",
     seed=42,
   )
 
@@ -61,19 +53,10 @@ def test_memstream_detects_anomaly_shift():
 
   detector = OnlineAnomalyDetector(
     algorithm="memstream",
-    hst_n_trees=5,
-    hst_height=5,
-    hst_window_size=32,
-    loda_n_projections=10,
-    loda_bins=32,
-    loda_range=3.0,
-    loda_ema_alpha=0.05,
-    loda_hist_decay=1.0,
     mem_hidden_dim=16,
     mem_latent_dim=4,
     mem_memory_size=64,
     mem_lr=0.005,
-    model_device="auto",
     seed=7,
   )
 
