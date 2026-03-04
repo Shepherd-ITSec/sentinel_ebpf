@@ -61,6 +61,16 @@ spec:
               value: {{ .Values.detector.model.mem_memory_size | quote }}
             - name: DETECTOR_MEMSTREAM_LR
               value: {{ .Values.detector.model.mem_lr | quote }}
+            - name: DETECTOR_KITNET_MAX_SIZE_AE
+              value: {{ .Values.detector.model.kitnet_max_size_ae | quote }}
+            - name: DETECTOR_KITNET_GRACE_FEATURE_MAPPING
+              value: {{ .Values.detector.model.kitnet_grace_feature_mapping | quote }}
+            - name: DETECTOR_KITNET_GRACE_ANOMALY_DETECTOR
+              value: {{ .Values.detector.model.kitnet_grace_anomaly_detector | quote }}
+            - name: DETECTOR_KITNET_LEARNING_RATE
+              value: {{ .Values.detector.model.kitnet_learning_rate | quote }}
+            - name: DETECTOR_KITNET_HIDDEN_RATIO
+              value: {{ .Values.detector.model.kitnet_hidden_ratio | quote }}
             - name: DETECTOR_MODEL_SEED
               value: {{ .Values.detector.model.seed | quote }}
             {{- if .Values.detector.recentEventsBufferSize }}
@@ -70,6 +80,10 @@ spec:
             {{- if .Values.detector.anomalyLogPath }}
             - name: ANOMALY_LOG_PATH
               value: {{ .Values.detector.anomalyLogPath | quote }}
+            {{- end }}
+            {{- if .Values.detector.eventDumpPath }}
+            - name: EVENT_DUMP_PATH
+              value: {{ .Values.detector.eventDumpPath | quote }}
             {{- end }}
           ports:
             - containerPort: {{ .Values.detector.service.port }}

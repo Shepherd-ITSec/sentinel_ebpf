@@ -72,7 +72,7 @@ Use this to benchmark ranking with a realistic online workflow:
 train split first (model warmup), then test split, then metrics on test labels only.
 
 ```bash
-uv run python scripts/run_beth_train_test_eval.py \
+uv run python scripts/run_detector_eval.py \
   --train-csv test_data/beth/labelled_training_data.csv \
   --test-csv test_data/beth/labelled_testing_data.csv \
   --pace fast

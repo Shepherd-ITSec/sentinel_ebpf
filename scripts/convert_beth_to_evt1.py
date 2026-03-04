@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 MAGIC = b"EVT1"
+BETH_EVENT_TYPE = "network"
 
 
 def _parse_int(raw: str, default: int = 0) -> int:
@@ -77,7 +78,8 @@ def _build_evt(row: Dict[str, str], row_idx: int, base_ts_ns: int, event_id_pref
     "pod": "",
     "namespace": "",
     "container_id": "",
-    "event_type": event_name,
+    "event_name": event_name,
+    "event_type": BETH_EVENT_TYPE,
     "data": [
       event_name,
       str(event_id),
@@ -102,7 +104,7 @@ def _build_evt(row: Dict[str, str], row_idx: int, base_ts_ns: int, event_id_pref
     "event_id": out_event_id,
     "sus": _parse_int(row.get("sus", "0")),
     "evil": _parse_int(row.get("evil", "0")),
-    "event_type": event_name,
+    "event_name": event_name,
   }
   return payload, label_row
 

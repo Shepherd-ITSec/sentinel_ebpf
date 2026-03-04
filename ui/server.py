@@ -355,6 +355,7 @@ class Handler(BaseHTTPRequestHandler):
           "score": max(0.0, min(1.0, score)),
           "anomaly": bool(entry.get("anomaly", False)),
           "reason": entry.get("reason", ""),
+          "event_name": entry.get("event_name", ""),
           "event_type": entry.get("event_type", ""),
           "hostname": entry.get("hostname", ""),
           "path": path,
@@ -450,8 +451,8 @@ class Handler(BaseHTTPRequestHandler):
                 for entry in entries:
                   event_ts_ns = entry.get("ts_unix_nano", 0)
                   if event_ts_ns > threshold_ns:
-                    event_type = entry.get("event_type", "unknown")
-                    window_counts[event_type] = window_counts.get(event_type, 0) + 1
+                    event_name = entry.get("event_name", "unknown")
+                    window_counts[event_name] = window_counts.get(event_name, 0) + 1
                 return window_counts
 
               if current_total_events is None:
@@ -467,8 +468,8 @@ class Handler(BaseHTTPRequestHandler):
                   # Entries are oldest-first, so the newest events are at the end.
                   new_entries = entries[-new_events_count:] if new_events_count <= len(entries) else entries
                   for entry in new_entries:
-                    event_type = entry.get("event_type", "unknown")
-                    counts[event_type] = counts.get(event_type, 0) + 1
+                    event_name = entry.get("event_name", "unknown")
+                    counts[event_name] = counts.get(event_name, 0) + 1
 
               # Update baseline counter after processing this poll.
               if current_total_events is not None:

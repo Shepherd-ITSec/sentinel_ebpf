@@ -8,7 +8,10 @@ option java_multiple_files = true;
 import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
 
-// Envelope for any observed kernel-level event.
+// Envelope for any observed kernel-level event (syscalls and LSM-style events).
+// Universal semantics: event_name = syscall/event name (openat, connect, ...);
+// event_type = category/meta tag from rules (network, file, process, or empty).
+// Syscalls behave like function calls; envelope carries one canonical data layout.
 message EventEnvelope {
   // Unique ID for correlating responses.
   string event_id = 1;
@@ -17,16 +20,17 @@ message EventEnvelope {
   string pod_name = 3;
   string namespace = 4;
   string container_id = 5;
-  // Generic event name and ordered data vector (strings) for efficiency.
-  // Canonical vector order for curated syscall events:
-  // [event_name, event_id, comm, pid, tid, uid, arg0, arg1, path, flags]
-  // Missing values are encoded as empty string.
-  // - arg0/arg1 carry event-specific numeric arguments when present.
-  // - path is used by path-based events (open/exec/unlink/rename/chmod/chown).
-  // - flags is used by open/openat/openat2.
+  // Syscall/event name (e.g. openat, connect, socket, execve). Same as data[0].
+  string event_name = 8;
+  // Category/meta tag from rules (e.g. network, file, process). Empty if no rule type.
   string event_type = 9;
+  // Canonical ordered data vector. Same layout for all events; unused slots are empty.
+  // Order: [event_name, event_id, comm, pid, tid, uid, arg0, arg1, path, flags]
+  // - arg0, arg1: event-specific (e.g. fd, addrlen for connect; dfd, flags for openat).
+  // - path: path-based events (open, execve, unlink, rename, chmod, chown, ...).
+  // - flags: open/openat/openat2 flags; empty for others.
   repeated string data = 10;
-  // Additional labels or enrichment.
+  // Extra key-value enrichment (e.g. return_value, mount_namespace). Same keys for all types.
   map<string, string> attributes = 20;
   // Kernel timestamp (nanoseconds).
   uint64 ts_unix_nano = 30;

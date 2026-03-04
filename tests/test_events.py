@@ -12,18 +12,21 @@ class TestEventEnvelope:
   def test_create_minimal_event(self):
     evt = events_pb2.EventEnvelope(
       event_id="test-123",
-      event_type="openat",
+      event_name="openat",
+      event_type="",
       ts_unix_nano=1234567890000000000,
     )
     assert evt.event_id == "test-123"
-    assert evt.event_type == "openat"
+    assert evt.event_name == "openat"
+    assert evt.event_type == ""
     assert evt.ts_unix_nano == 1234567890000000000
     assert len(evt.data) == 0
 
   def test_create_event_with_data_vector(self):
     evt = events_pb2.EventEnvelope(
       event_id="test-123",
-      event_type="openat",
+      event_name="openat",
+      event_type="",
       ts_unix_nano=1234567890000000000,
       data=["openat", "2", "bash", "1234", "5678", "1000", "-100", "2", "/tmp/test.txt", "2"],
     )
@@ -42,7 +45,8 @@ class TestEventEnvelope:
       pod_name="test-pod",
       namespace="default",
       container_id="container-123",
-      event_type="openat",
+      event_name="openat",
+      event_type="",
       ts_unix_nano=1234567890000000000,
       data=["openat", "2", "cat", "5678", "5678", "0", "-100", "2", "/etc/hosts", "2"],
     )
@@ -50,12 +54,13 @@ class TestEventEnvelope:
     assert evt.pod_name == "test-pod"
     assert evt.namespace == "default"
     assert evt.container_id == "container-123"
-    assert evt.event_type == "openat"
+    assert evt.event_name == "openat"
 
   def test_create_event_with_attributes(self):
     evt = events_pb2.EventEnvelope(
       event_id="test-123",
-      event_type="openat",
+      event_name="openat",
+      event_type="",
       ts_unix_nano=1234567890000000000,
       data=["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
       attributes={"env": "prod", "team": "security"},
@@ -71,7 +76,8 @@ class TestEventEnvelope:
       pod_name="test-pod",
       namespace="default",
       container_id="container-123",
-      event_type="openat",
+      event_name="openat",
+      event_type="",
       ts_unix_nano=1234567890000000000,
       data=["openat", "2", "bash", "1234", "5678", "1000", "-100", "2", "/tmp/test.txt", "2"],
     )
@@ -84,6 +90,7 @@ class TestEventEnvelope:
       "pod": evt.pod_name,
       "namespace": evt.namespace,
       "container_id": evt.container_id,
+      "event_name": evt.event_name,
       "event_type": evt.event_type,
       "data": list(evt.data),
       "attributes": dict(evt.attributes),
@@ -93,14 +100,16 @@ class TestEventEnvelope:
     parsed = json.loads(json_str)
 
     assert parsed["event_id"] == "test-123"
-    assert parsed["event_type"] == "openat"
+    assert parsed["event_name"] == "openat"
+    assert parsed["event_type"] == ""
     assert parsed["data"] == ["openat", "2", "bash", "1234", "5678", "1000", "-100", "2", "/tmp/test.txt", "2"]
 
   def test_generic_event_format(self):
     """Test generic syscall event format (ordered vector)."""
     evt = events_pb2.EventEnvelope(
       event_id="open-123",
-      event_type="openat",
+      event_name="openat",
+      event_type="",
       ts_unix_nano=1234567890000000000,
       data=["openat", "2", "cat", "9999", "9999", "1000", "-100", "2", "/etc/passwd", "2"],
     )

@@ -75,6 +75,14 @@ def _build_bpf_program(ring_buffer_pages: int) -> str:
   return program.replace("__RINGBUF_PAGES__", str(pages))
 
 
+def _mtime_or_zero(path: str) -> float:
+  """Return mtime of path or 0.0 if not exist / not readable."""
+  try:
+    return os.path.getmtime(path)
+  except (OSError, TypeError):
+    return 0.0
+
+
 def _hostname_metadata():
   return {
     "hostname": socket.gethostname(),
@@ -413,6 +421,7 @@ class FileSink:
       "pod": env.pod_name,
       "namespace": env.namespace,
       "container_id": env.container_id,
+      "event_name": env.event_name,
       "event_type": env.event_type,
       "data": list(env.data),  # Ordered vector
       "attributes": dict(env.attributes),
@@ -530,14 +539,6 @@ class HealthHandler(BaseHTTPRequestHandler):
           "# TYPE sentinel_ebpf_probe_host_load1 gauge",
           f"sentinel_ebpf_probe_host_load1 {host.get('load1', 0.0):.3f}",
           "",
-          "# HELP sentinel_ebpf_probe_host_load5 Host load average (5m)",
-          "# TYPE sentinel_ebpf_probe_host_load5 gauge",
-          f"sentinel_ebpf_probe_host_load5 {host.get('load5', 0.0):.3f}",
-          "",
-          "# HELP sentinel_ebpf_probe_host_load15 Host load average (15m)",
-          "# TYPE sentinel_ebpf_probe_host_load15 gauge",
-          f"sentinel_ebpf_probe_host_load15 {host.get('load15', 0.0):.3f}",
-          "",
           "# HELP sentinel_ebpf_probe_host_cpu_count Host CPU core count",
           "# TYPE sentinel_ebpf_probe_host_cpu_count gauge",
           f"sentinel_ebpf_probe_host_cpu_count {host.get('cpu_count', 1)}",
@@ -614,14 +615,6 @@ class HealthHandler(BaseHTTPRequestHandler):
           "# TYPE sentinel_ebpf_probe_host_load1 gauge",
           "sentinel_ebpf_probe_host_load1 0",
           "",
-          "# HELP sentinel_ebpf_probe_host_load5 Host load average (5m)",
-          "# TYPE sentinel_ebpf_probe_host_load5 gauge",
-          "sentinel_ebpf_probe_host_load5 0",
-          "",
-          "# HELP sentinel_ebpf_probe_host_load15 Host load average (15m)",
-          "# TYPE sentinel_ebpf_probe_host_load15 gauge",
-          "sentinel_ebpf_probe_host_load15 0",
-          "",
           "# HELP sentinel_ebpf_probe_host_cpu_count Host CPU core count",
           "# TYPE sentinel_ebpf_probe_host_cpu_count gauge",
           "sentinel_ebpf_probe_host_cpu_count 1",
@@ -664,7 +657,12 @@ class ProbeRunner:
     self._kernel_branches_total = 0
     self._kernel_branches_compiled = 0
     self._kernel_branches_impossible = 0
+    self._rules_reload_lock = threading.Lock()
+    self._rules_file_mtime: float = 0.0
     self._load_rules_into_bpf()
+    self._rules_file_mtime = _mtime_or_zero(cfg.rules_file)
+    _rules_watcher = threading.Thread(target=self._rules_watcher_loop, daemon=True)
+    _rules_watcher.start()
     # Get boot time to convert boot-relative timestamps to Unix epoch nanoseconds
     # bpf_ktime_get_ns() returns nanoseconds since boot, we need Unix epoch
     # Read /proc/uptime to get seconds since boot, then calculate boot time
@@ -732,6 +730,24 @@ class ProbeRunner:
       )
       rules_map[ctypes.c_int(idx)] = entry
 
+  def _rules_watcher_loop(self) -> None:
+    """Background loop: when rules file mtime changes, reload and push to BPF."""
+    poll_interval = 15
+    while not self._stop.wait(poll_interval):
+      try:
+        mtime = _mtime_or_zero(self.cfg.rules_file)
+        if mtime == 0.0 or mtime == self._rules_file_mtime:
+          continue
+        with self._rules_reload_lock:
+          if self._stop.is_set():
+            break
+          self.rule_engine.reload()
+          self._load_rules_into_bpf()
+          self._rules_file_mtime = mtime
+          logging.info("Rules reloaded from %s", self.cfg.rules_file)
+      except Exception as exc:  # pylint: disable=broad-except
+        logging.warning("Rules reload failed: %s", exc)
+
   def _handle_event(self, cpu, data, size):  # noqa: ARG002
     event = self.bpf["events"].event(data)
     
@@ -760,9 +776,7 @@ class ProbeRunner:
       flags_str = str(int(event.flags))
       attributes["open_flags"] = decode_open_flags(int(event.flags))
 
-    if not self.rule_engine.allow_event(
-      {
-        "event_type": event_name,
+    rule_ctx = {
         "event_name": event_name,
         "event_id": event_id,
         "path": filename,
@@ -779,9 +793,11 @@ class ProbeRunner:
         "hostname": self._metadata["hostname"],
         "namespace": self._metadata["namespace"],
       }
-    ):
+    allowed, event_type_val = self.rule_engine.classify_event(rule_ctx)
+    if not allowed:
       return
-    
+    event_type_str = (event_type_val or "").strip()
+
     # Use fast event ID generation (counter + timestamp instead of uuid.uuid4()).
     pid_str = str(event.pid)
     tid_str = str(event.tid)
@@ -789,7 +805,7 @@ class ProbeRunner:
     arg0_str = str(int(event.arg0))
     arg1_str = str(int(event.arg1))
     event_id_str = str(event_id)
-    
+
     env = events_pb2.EventEnvelope(
       event_id=_fast_event_id(),
       hostname=self._metadata["hostname"],
@@ -797,16 +813,17 @@ class ProbeRunner:
       namespace=self._metadata["namespace"],
       container_id=self._metadata["container_id"],
       ts_unix_nano=ts_unix_nano,
-      event_type=event_name,
-      # Canonical generic vector:
-      # [event_name, event_id, comm, pid, tid, uid, arg0, arg1, path, flags]
+      event_name=event_name,
+      event_type=event_type_str,
+      # Canonical generic vector: [event_name, event_id, comm, pid, tid, uid, arg0, arg1, path, flags]
       data=[event_name, event_id_str, comm, pid_str, tid_str, uid_str, arg0_str, arg1_str, filename, flags_str],
       attributes=attributes,
     )
 
     if self.cfg.stream.mode == "stdout":
       payload = {
-        "event_type": event_name,
+        "event_name": env.event_name,
+        "event_type": env.event_type,
         "event_id": env.event_id,
         "ts_unix_nano": env.ts_unix_nano,
         "hostname": env.hostname,

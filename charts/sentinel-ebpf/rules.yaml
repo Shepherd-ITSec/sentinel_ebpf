@@ -5,7 +5,7 @@
 lists:
   file_events: [open, openat, openat2, unlink, unlinkat, rename, renameat, chmod, chown]
   process_events: [execve]
-  net_events: [socket, connect]
+  net_events: [socket, connect, bind, listen, accept, accept4]
   shell_comms: [bash, sh, zsh]
 
 macros:
@@ -19,12 +19,15 @@ macros:
 rules:
   - name: capture-sensitive-file-events
     enabled: true
+    type: file
     condition: "file_evt and sensitive_path and not noisy_path"
 
   - name: capture-shell-execve
-    enabled: true
+    enabled: false
+    type: process
     condition: "process_evt and shell_proc"
 
   - name: capture-network-connectivity
-    enabled: true
+    enabled: false
+    type: network
     condition: "net_evt"

@@ -27,6 +27,9 @@ class ConditionRule:
   name: str
   condition: str
   enabled: bool = True
+  # Optional high-level classification for matched events (e.g. "network", "file").
+  # This is metadata attached to the rule, not part of the expression language.
+  rule_type: str = ""
   ast: Optional["Expr"] = None
 
 
@@ -271,8 +274,9 @@ class RuleEngine:
       tokens = _tokenize_condition(expanded)
       parser = _ConditionParser(tokens=tokens, lists=lists)
       ast = parser.parse()
+      rule_type = str(raw.get("type") or "").strip()
       self.condition_rules.append(
-        ConditionRule(name=name, condition=cond_text, enabled=enabled, ast=ast)
+        ConditionRule(name=name, condition=cond_text, enabled=enabled, rule_type=rule_type, ast=ast)
       )
 
   @staticmethod
@@ -289,7 +293,7 @@ class RuleEngine:
     if field == "path" and value is None:
       value = ctx.get("filename")
     if field == "event_name":
-      value = ctx.get("event_name") or ctx.get("event_type")
+      value = ctx.get("event_name")
     if field == "arg_flags" and value is None:
       value = ctx.get("open_flags")
     if value is None:
@@ -330,12 +334,12 @@ class RuleEngine:
       return not self._eval_expr(expr.inner, ctx)
     return False
 
-  def allow(self, event_type: str, filename: str, comm: str) -> bool:
+  def allow(self, event_name: str, filename: str, comm: str) -> bool:
+    """event_name = syscall name (e.g. openat, connect). Returns True if any rule matches."""
     return self.allow_event(
       {
-        "event_type": event_type,
-        "event_name": event_type,
-        "event_id": EVENT_NAME_TO_ID.get(event_type, 0),
+        "event_name": event_name,
+        "event_id": EVENT_NAME_TO_ID.get(event_name, 0),
         "path": filename,
         "filename": filename,
         "comm": comm,
@@ -351,13 +355,27 @@ class RuleEngine:
       }
     )
 
-  def allow_event(self, ctx: Dict[str, Any]) -> bool:
+  def classify_event(self, ctx: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+    """
+    Evaluate rules against an event context.
+
+    Returns:
+      (allowed, rule_type) where rule_type is the first matching rule's type
+      (or None/\"\" if no type was specified on that rule).
+
+    This is a superset of allow_event; allow_event keeps the original bool-only
+    behavior for compatibility.
+    """
     for rule in self.condition_rules:
       if not rule.enabled or rule.ast is None:
         continue
       if self._eval_expr(rule.ast, ctx):
-        return True
-    return False
+        return True, (rule.rule_type or None)
+    return False, None
+
+  def allow_event(self, ctx: Dict[str, Any]) -> bool:
+    allowed, _ = self.classify_event(ctx)
+    return allowed
 
   def _expr_to_dnf(self, expr: Expr) -> List[List[Expr]]:
     if isinstance(expr, Or):

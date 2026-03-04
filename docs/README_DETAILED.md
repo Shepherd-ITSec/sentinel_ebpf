@@ -146,7 +146,8 @@ Supported operators:
 
 Probe sends `EventEnvelope` with:
 
-- `event_type`: syscall/event name (for example `openat`, `execve`, `socket`, `connect`).
+- `event_name`: syscall/event name (e.g. `openat`, `execve`, `socket`, `connect`).
+- `event_type`: rule-defined category (e.g. `network`, `file`, `process`) or empty.
 - `data`: ordered string vector with canonical format:
   `[event_name, event_id, comm, pid, tid, uid, arg0, arg1, path, flags]`.
 - `attributes.open_flags`: userspace-decoded open flags for open/openat/openat2 events.
@@ -295,7 +296,7 @@ Representative test areas:
 - `scripts/replay_logs.py`: replay EVT1 to detector gRPC endpoint with `fast`/`realtime` pacing and optional time-window filters.
 - `scripts/convert_beth_to_evt1.py`: convert BETH CSV rows into EVT1 records + labels.
 - `scripts/evaluate_beth_replay.py`: evaluate replay anomaly outputs against BETH labels.
-- `scripts/run_beth_train_test_eval.py`: run train warmup replay then test replay and report metrics on test labels only.
+- `scripts/run_detector_eval.py`: run detector eval (BETH train+test or single-stream EVT1); train warmup, replay, report metrics.
 
 ## Optional debug UI
 

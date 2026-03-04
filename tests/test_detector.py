@@ -1,9 +1,12 @@
 """Tests for detector/server.py."""
+import json
+import os
+
 import pytest
 
 import events_pb2
 from detector.config import DetectorConfig
-from detector.server import RuleBasedDetector, _now_timestamp
+from detector.server import RuleBasedDetector, _init_event_dump, _now_timestamp
 
 
 class TestDetector:
@@ -27,7 +30,8 @@ class TestDetector:
 
     evt = events_pb2.EventEnvelope(
       event_id="test-123",
-      event_type="openat",
+      event_name="openat",
+      event_type="",
       ts_unix_nano=1234567890000000000,
       data=["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
     )
@@ -46,7 +50,8 @@ class TestDetector:
       for i in range(3):
         yield events_pb2.EventEnvelope(
           event_id=f"test-{i}",
-          event_type="openat",
+          event_name="openat",
+          event_type="",
           ts_unix_nano=1234567890000000000 + i,
           data=["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
         )
@@ -75,7 +80,8 @@ class TestDetector:
 
     evt = events_pb2.EventEnvelope(
       event_id="test-456",
-      event_type="socket",
+      event_name="socket",
+      event_type="",
       ts_unix_nano=1234567890000000000,
       data=["socket", "5", "bash", "1", "2", "1000", "1", "2", "", "2"],
     )
@@ -98,7 +104,8 @@ class TestDetector:
 
     evt = events_pb2.EventEnvelope(
       event_id="test-789",
-      event_type="execve",
+      event_name="execve",
+      event_type="",
       ts_unix_nano=1234567890000000000,
       data=["execve", "4", "bash", "1", "2", "1000", "0", "0", "/bin/bash", ""],
     )
@@ -122,3 +129,45 @@ class TestDetector:
 
     resp = await detector.ReportAnomaly(report, None)
     assert resp is not None
+
+  @pytest.mark.asyncio
+  async def test_event_dump(self, tmp_path):
+    """When EVENT_DUMP_PATH is set, every event is appended as JSONL to the file."""
+    dump_file = tmp_path / "events.jsonl"
+    prev = os.environ.pop("EVENT_DUMP_PATH", None)
+    try:
+      os.environ["EVENT_DUMP_PATH"] = str(dump_file)
+      _init_event_dump()
+      from collections import deque
+      import detector.server as srv
+      srv.RECENT_EVENTS = deque(maxlen=100)
+      cfg = DetectorConfig(model_algorithm="halfspacetrees", hst_n_trees=5, hst_height=5, hst_window_size=10)
+      detector = RuleBasedDetector(cfg)
+
+      async def one_event():
+        yield events_pb2.EventEnvelope(
+          event_id="dump-me",
+          event_name="openat",
+          event_type="",
+          ts_unix_nano=1234567890000000000,
+          data=["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
+        )
+
+      async for _ in detector.StreamEvents(one_event(), None):
+        pass
+
+      assert dump_file.exists()
+      lines = dump_file.read_text().strip().split("\n")
+      assert len(lines) == 1
+      row = json.loads(lines[0])
+      assert row["event_id"] == "dump-me"
+      assert row["event_name"] == "openat"
+      assert "anomaly" in row
+      assert "score" in row
+      assert "container_id" in row
+      assert "attributes" in row
+    finally:
+      if prev is not None:
+        os.environ["EVENT_DUMP_PATH"] = prev
+      else:
+        os.environ.pop("EVENT_DUMP_PATH", None)

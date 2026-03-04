@@ -6,11 +6,54 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
-from river import anomaly
 try:
-  from pysad.models import KitNet as PySADKitNet
+  from river import anomaly as River_Anomaly
 except ImportError:
-  PySADKitNet = None
+  River_Anomaly = None
+try:
+  from pysad.models import KitNet as Pysad_KitNet
+except ImportError:
+  Pysad_KitNet = None
+
+
+def _auto_loda_projections(input_dim: int) -> int:
+  # Keep enough random views as dimensionality grows, but cap runtime.
+  return max(8, min(256, int(np.ceil(2.0 * np.sqrt(max(1, input_dim))))))
+
+
+def _auto_mem_hidden_dim(input_dim: int) -> int:
+  # Scale hidden size sub-linearly with input dimension.
+  d = float(max(1, input_dim))
+  return max(16, min(256, int(np.ceil(2.0 * np.sqrt(d) * np.log2(d + 1.0)))))
+
+
+def _auto_mem_latent_dim(hidden_dim: int) -> int:
+  return max(4, min(64, hidden_dim // 4))
+
+
+def _auto_kitnet_max_size_ae(input_dim: int) -> int:
+  # Kitsune sub-autoencoders should not exceed input size.
+  return max(2, min(32, int(np.ceil(np.sqrt(max(1, input_dim))))))
+
+
+def _resolve_torch_device(preference: str) -> torch.device:
+  pref = preference.strip().lower()
+  if pref not in ("auto", "cpu", "cuda"):
+    raise ValueError("Invalid model_device value: %s. Choose from: auto, cpu, cuda" % preference)
+
+  if pref == "cpu":
+    return torch.device("cpu")
+
+  cuda_available = torch.cuda.is_available()
+  if pref == "cuda":
+    if not cuda_available:
+      raise RuntimeError("DETECTOR_MODEL_DEVICE=cuda requested but CUDA is not available in this torch runtime")
+    return torch.device("cuda")
+
+  # auto
+  if cuda_available:
+    return torch.device("cuda")
+  return torch.device("cpu")
 
 
 class OnlineHalfSpaceTrees:
@@ -25,7 +68,7 @@ class OnlineHalfSpaceTrees:
         "algorithm=%s requested on CUDA, but River HalfSpaceTrees is CPU-only; using CPU",
         self.algorithm,
       )
-    self.model: Any = anomaly.HalfSpaceTrees(
+    self.model: Any = River_Anomaly.HalfSpaceTrees(
       n_trees=n_trees,
       height=height,
       window_size=window_size,
@@ -75,7 +118,8 @@ class OnlineLODA:
     self.hist_decay = hist_decay
     self.seed = seed
     self._device = _resolve_torch_device(model_device)
-    self._feature_keys: Optional[List[str]] = None
+    self._feature_names: Optional[List[str]] = None
+    self._effective_n_projections: Optional[int] = None
     self._weights: Optional[torch.Tensor] = None
     self._mean: Optional[torch.Tensor] = None
     self._var: Optional[torch.Tensor] = None
@@ -92,13 +136,15 @@ class OnlineLODA:
     )
 
   def _init_from_features(self, features: Dict[str, float]) -> None:
-    self._feature_keys = sorted(features.keys())
-    dim = len(self._feature_keys)
+    self._feature_names = sorted(features.keys())
+    dim = len(self._feature_names)
+    effective_n_projections = max(self.n_projections, _auto_loda_projections(dim))
+    self._effective_n_projections = effective_n_projections
     rng = np.random.default_rng(self.seed)
     # LODA-style sparse random projections: about sqrt(d) non-zero entries.
     nnz = max(1, int(np.sqrt(dim)))
-    weights = np.zeros((self.n_projections, dim), dtype=np.float32)
-    for i in range(self.n_projections):
+    weights = np.zeros((effective_n_projections, dim), dtype=np.float32)
+    for i in range(effective_n_projections):
       idx = rng.choice(dim, size=nnz, replace=False)
       w = rng.normal(0.0, 1.0, size=nnz).astype(np.float32)
       norm = float(np.linalg.norm(w))
@@ -106,16 +152,17 @@ class OnlineLODA:
         w = w / norm
       weights[i, idx] = w
     self._weights = torch.from_numpy(weights).to(self._device)
-    self._mean = torch.zeros(self.n_projections, dtype=torch.float32, device=self._device)
-    self._var = torch.ones(self.n_projections, dtype=torch.float32, device=self._device)
-    self._counts = torch.zeros((self.n_projections, self.bins), dtype=torch.float32, device=self._device)
+    self._mean = torch.zeros(effective_n_projections, dtype=torch.float32, device=self._device)
+    self._var = torch.ones(effective_n_projections, dtype=torch.float32, device=self._device)
+    self._counts = torch.zeros((effective_n_projections, self.bins), dtype=torch.float32, device=self._device)
+    logging.info("LODA input_dim=%d effective_projections=%d", dim, effective_n_projections)
 
   def _vectorize(self, features: Dict[str, float]) -> torch.Tensor:
-    if self._feature_keys is None:
+    if self._feature_names is None:
       self._init_from_features(features)
-    if self._feature_keys is None:
-      raise RuntimeError("LODA feature keys not initialized")
-    vec = np.array([float(features[k]) for k in self._feature_keys], dtype=np.float32)
+    if self._feature_names is None:
+      raise RuntimeError("LODA feature names not initialized")
+    vec = np.array([float(features[k]) for k in self._feature_names], dtype=np.float32)
     return torch.from_numpy(vec).to(self._device)
 
   def score_and_learn(self, features: Dict[str, float]) -> float:
@@ -140,7 +187,7 @@ class OnlineLODA:
     bin_idx = ((normalized + self.proj_range) / (2.0 * self.proj_range) * self.bins).to(torch.long)
     bin_idx = torch.clamp(bin_idx, 0, self.bins - 1)
 
-    row_idx = torch.arange(self.n_projections, device=self._device)
+    row_idx = torch.arange(weights.shape[0], device=self._device)
     smoothing = 1.0
     totals = counts.sum(dim=1) + smoothing * self.bins
     probs = (counts[row_idx, bin_idx] + smoothing) / totals
@@ -182,7 +229,8 @@ class OnlineKitNet:
     self.grace_anomaly_detector = grace_anomaly_detector
     self.learning_rate = learning_rate
     self.hidden_ratio = hidden_ratio
-    self._feature_keys: Optional[List[str]] = None
+    self._feature_names: Optional[List[str]] = None
+    self._effective_max_size_ae: Optional[int] = None
     self._model = None
     logging.info(
       "Initialized %s (max_size_ae=%d, grace_fm=%d, grace_ad=%d, lr=%.4f, hidden_ratio=%.3f)",
@@ -195,35 +243,46 @@ class OnlineKitNet:
     )
 
   def _init_from_features(self, features: Dict[str, float]) -> None:
-    if PySADKitNet is None:
+    if Pysad_KitNet is None:
       raise RuntimeError("PySAD KitNet not available. Install detector deps: `uv sync --extra detector`.")
-    self._feature_keys = sorted(features.keys())
-    self._model = PySADKitNet(
-      max_size_ae=self.max_size_ae,
+    self._feature_names = sorted(features.keys())
+    dim = len(self._feature_names)
+    effective_max_size_ae = min(dim, max(self.max_size_ae, _auto_kitnet_max_size_ae(dim)))
+    self._effective_max_size_ae = effective_max_size_ae
+    self._model = Pysad_KitNet(
+      max_size_ae=effective_max_size_ae,
       grace_feature_mapping=self.grace_feature_mapping,
       grace_anomaly_detector=self.grace_anomaly_detector,
       learning_rate=self.learning_rate,
       hidden_ratio=self.hidden_ratio,
     )
+    logging.info("KitNet input_dim=%d effective_max_size_ae=%d", dim, effective_max_size_ae)
 
   def _vectorize(self, features: Dict[str, float]) -> np.ndarray:
-    if self._feature_keys is None:
+    if self._feature_names is None:
       self._init_from_features(features)
-    if self._feature_keys is None:
-      raise RuntimeError("KitNet feature keys not initialized")
-    return np.array([float(features[k]) for k in self._feature_keys], dtype=np.float64)
+    if self._feature_names is None:
+      raise RuntimeError("KitNet feature names not initialized")
+    return np.array([float(features[k]) for k in self._feature_names], dtype=np.float64)
 
   def score_and_learn(self, features: Dict[str, float]) -> float:
     x = self._vectorize(features)
     if self._model is None:
       raise RuntimeError("KitNet not initialized")
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-      if hasattr(self._model, "fit_score_partial"):
-        raw = float(self._model.fit_score_partial(x))
-      else:
+      # Prequential order: score first, then learn from this instance.
+      # Some PySAD KitNet versions can raise on cold-start before fit_partial
+      # creates the internal `model` object. Treat that first score as neutral.
+      try:
         raw = float(self._model.score_partial(x))
-        self._model.fit_partial(x)
+      except AttributeError as exc:
+        if "model" not in str(exc):
+          raise
+        logging.debug("KitNet cold-start before internal model init; using raw score 0.0")
+        raw = 0.0
+      self._model.fit_partial(x)
     if not np.isfinite(raw):
+      logging.warning("KitNet produced non-finite score (%s); falling back to 0.0", raw)
       raw = 0.0
     return 1.0 - float(np.exp(-max(0.0, raw)))
 
@@ -248,24 +307,6 @@ class _AutoEncoder(torch.nn.Module):
     return z, recon
 
 
-def _resolve_torch_device(preference: str) -> torch.device:
-  pref = preference.strip().lower()
-  if pref not in ("auto", "cpu", "cuda"):
-    raise ValueError("Invalid model_device value: %s. Choose from: auto, cpu, cuda" % preference)
-
-  if pref == "cpu":
-    return torch.device("cpu")
-
-  cuda_available = torch.cuda.is_available()
-  if pref == "cuda":
-    if not cuda_available:
-      raise RuntimeError("DETECTOR_MODEL_DEVICE=cuda requested but CUDA is not available in this torch runtime")
-    return torch.device("cuda")
-
-  # auto
-  if cuda_available:
-    return torch.device("cuda")
-  return torch.device("cpu")
 
 
 class OnlineMemStream:
@@ -298,7 +339,7 @@ class OnlineMemStream:
     self.seed = seed
     self.model_device = model_device
     self._device = _resolve_torch_device(model_device)
-    self._feature_keys: Optional[List[str]] = None
+    self._feature_names: Optional[List[str]] = None
     self._model: Optional[_AutoEncoder] = None
     self._optimizer: Optional[torch.optim.Optimizer] = None
     self._memory_latent: Optional[torch.Tensor] = None
@@ -325,24 +366,38 @@ class OnlineMemStream:
     )
 
   def _init_from_features(self, features: Dict[str, float]) -> None:
-    self._feature_keys = sorted(features.keys())
-    input_dim = len(self._feature_keys)
+    self._feature_names = sorted(features.keys())
+    input_dim = len(self._feature_names)
+    auto_hidden = _auto_mem_hidden_dim(input_dim)
+    auto_latent = _auto_mem_latent_dim(auto_hidden)
+    effective_hidden = max(self.hidden_dim, auto_hidden)
+    effective_latent = max(self.latent_dim, auto_latent)
+    # Keep latent bottleneck strictly below hidden size.
+    effective_latent = min(effective_latent, max(4, effective_hidden - 1))
+    self.hidden_dim = effective_hidden
+    self.latent_dim = effective_latent
     torch.manual_seed(self.seed)
     if self._device.type == "cuda":
       torch.cuda.manual_seed_all(self.seed)
-    self._model = _AutoEncoder(input_dim=input_dim, hidden_dim=self.hidden_dim, latent_dim=self.latent_dim).to(self._device)
+    self._model = _AutoEncoder(input_dim=input_dim, hidden_dim=effective_hidden, latent_dim=effective_latent).to(self._device)
     self._optimizer = torch.optim.Adam(self._model.parameters(), lr=self.lr)
-    self._memory_latent = torch.zeros(self.memory_size, self.latent_dim, dtype=torch.float32, device=self._device)
+    self._memory_latent = torch.zeros(self.memory_size, effective_latent, dtype=torch.float32, device=self._device)
     self._memory_input = torch.zeros(self.memory_size, input_dim, dtype=torch.float32, device=self._device)
     self._norm_mean = torch.zeros(input_dim, dtype=torch.float32, device=self._device)
     self._norm_std = torch.ones(input_dim, dtype=torch.float32, device=self._device)
+    logging.info(
+      "MemStream input_dim=%d effective_hidden=%d effective_latent=%d",
+      input_dim,
+      effective_hidden,
+      effective_latent,
+    )
 
   def _vectorize(self, features: Dict[str, float]) -> torch.Tensor:
-    if self._feature_keys is None:
+    if self._feature_names is None:
       self._init_from_features(features)
-    if self._feature_keys is None:
-      raise RuntimeError("MemStream feature keys not initialized")
-    vec = np.array([float(features[k]) for k in self._feature_keys], dtype=np.float32)
+    if self._feature_names is None:
+      raise RuntimeError("MemStream feature names not initialized")
+    vec = np.array([float(features[k]) for k in self._feature_names], dtype=np.float32)
     return torch.from_numpy(vec).to(self._device)
 
   def _normalize(self, x: torch.Tensor) -> torch.Tensor:

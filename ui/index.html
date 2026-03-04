@@ -166,6 +166,14 @@
         border: 1px solid var(--border);
         border-radius: 6px;
       }
+      .logs-table {
+        table-layout: fixed;
+      }
+      .logs-table th,
+      .logs-table td {
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
       table {
         width: 100%;
         border-collapse: collapse;
@@ -479,6 +487,13 @@
           });
         });
       }
+      function pad2(n) { return n < 10 ? "0" + n : String(n); }
+      function formatTimestampLocal(date) {
+        if (!(date instanceof Date) || isNaN(date.getTime())) return "—";
+        const y = date.getFullYear(), m = date.getMonth() + 1, d = date.getDate();
+        const h = date.getHours(), min = date.getMinutes(), s = date.getSeconds();
+        return `${y}-${pad2(m)}-${pad2(d)} ${pad2(h)}:${pad2(min)}:${pad2(s)}`;
+      }
       function formatTimestampNs(nsLike) {
         if (nsLike == null) return "—";
         const nsNum = Number(nsLike);
@@ -486,7 +501,7 @@
         const ms = nsNum < 1e12 ? nsNum * 1000 : nsNum / 1e6;
         const date = new Date(ms);
         if (isNaN(date.getTime())) return "—";
-        return date.toISOString().replace("T", " ").replace("Z", "");
+        return formatTimestampLocal(date);
       }
       function applyTheme(theme) {
         html.setAttribute("data-theme", theme === "light" ? "light" : "");
@@ -514,14 +529,18 @@
           throw e;
         }
       }
+      let lastStatusSignature = "";
       function renderStatus(data) {
         const el = document.getElementById("status");
         if (typeof data !== "object" || data === null) {
           el.innerHTML = "<pre>" + escapeHtml(String(data)) + "</pre>";
           return;
         }
+        const sig = JSON.stringify({ ts: data.ts, probe: data.probe_health, detector: data.detector_health, algo: data.detector_algorithm });
+        if (sig === lastStatusSignature) return;
+        lastStatusSignature = sig;
         const items = [
-          ["Timestamp", new Date((data.ts || 0) * 1000).toISOString()],
+          ["Timestamp", formatTimestampLocal(new Date((data.ts || 0) * 1000))],
           ["Probe health", data.probe_health || "—"],
           ["Detector health", data.detector_health || "—"],
         ];
@@ -564,7 +583,8 @@
           if (match) {
             const [, name, value] = match;
             const numValue = parseFloat(value);
-            const readableName = metricNameMap[name] || name.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase());
+            const raw = name.replace(/^sentinel_ebpf_probe_/, "").replace(/^sentinel_ebpf_detector_/, "");
+            const readableName = metricNameMap[name] || raw.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase());
             metrics.push({
               name: name,
               readableName: readableName,
@@ -575,6 +595,7 @@
         }
         return metrics;
       }
+      let lastMetricsSignature = "";
       function renderMetrics(data) {
         const el = document.getElementById("metrics");
         if (typeof data !== "object" || data === null) {
@@ -583,6 +604,9 @@
         }
         const probeText = data.probe_metrics != null ? String(data.probe_metrics) : "";
         const detectorText = data.detector_metrics != null ? String(data.detector_metrics) : "";
+        const metricsSig = (data.ts || 0) + "|" + probeText + "|" + detectorText;
+        if (metricsSig === lastMetricsSignature) return;
+        lastMetricsSignature = metricsSig;
         const probeMetrics = parsePrometheusMetrics(probeText);
         const detectorMetrics = parsePrometheusMetrics(detectorText);
         
@@ -637,6 +661,7 @@
         
         el.innerHTML = `<div class="metrics-blocks">${probeHtml}${detectorHtml}</div>`;
       }
+      let lastCapacitySignature = "";
       function renderCapacity(data) {
         const el = document.getElementById("capacity");
         if (typeof data !== "object" || data === null) {
@@ -645,28 +670,67 @@
         }
         const host = data.host || {};
         const pipe = data.pipeline || {};
+        const capSig = JSON.stringify({
+          status: data.status,
+          ts: data.ts,
+          cpu: host.cpu_usage_percent,
+          mem: host.memory_usage_percent,
+          load1: host.load1,
+          queue_size: pipe.queue_size,
+          queue_capacity: pipe.queue_capacity,
+          drops_total: pipe.drops_total,
+          drops_delta: pipe.drops_delta,
+          eps: pipe.detector_events_per_sec,
+          has_host_metrics: host.has_host_metrics,
+          replica_hint: data.replica_hint,
+        });
+        if (capSig === lastCapacitySignature) return;
+        lastCapacitySignature = capSig;
+
         let badgeClass = "status-ok-badge";
         if (data.status === "Near Limit") badgeClass = "status-near-badge";
         if (data.status === "Saturated") badgeClass = "status-sat-badge";
         const queueRatio = (pipe.queue_fill_ratio == null) ? "n/a" : String(pipe.queue_fill_ratio);
-        const hostMetricsNote = host.has_host_metrics
-          ? ""
-          : "<div class=\"map-note\" style=\"margin-top:6px;\">Host metrics not available yet. Restart probe pod to expose new host CPU/memory/load metrics.</div>";
-        el.innerHTML =
-          `<div style="margin-bottom:8px;"><span class="status-badge ${badgeClass}">${escapeHtml(String(data.status || "Unknown"))}</span></div>` +
-          `<dl class="capacity-summary">` +
-          `<dt>CPU</dt><dd>${escapeHtml(String(host.cpu_usage_percent ?? 0))}%</dd>` +
-          `<dt>Memory</dt><dd>${escapeHtml(String(host.memory_usage_percent ?? 0))}%</dd>` +
-          `<dt>Load (1m)</dt><dd>${escapeHtml(String(host.load1 ?? 0))} / ${escapeHtml(String(host.cpu_count ?? 1))} cores</dd>` +
-          `<dt>Queue</dt><dd>${escapeHtml(String(pipe.queue_size ?? 0))}/${escapeHtml(String(pipe.queue_capacity ?? 0))} (${escapeHtml(queueRatio)})</dd>` +
-          `<dt>Drops</dt><dd>${escapeHtml(String(pipe.drops_total ?? 0))}</dd>` +
-          `<dt>New Drops</dt><dd>${escapeHtml(String(pipe.drops_delta ?? 0))}</dd>` +
-          `<dt>Detector EPS</dt><dd>${escapeHtml(String(pipe.detector_events_per_sec ?? 0))}</dd>` +
-          `</dl>` +
-          `<div class="map-note" style="margin-top:10px;">${escapeHtml(String(data.replica_hint || ""))}</div>` +
-          `<div class="map-note" style="margin-top:10px;">CPU usage over time (per poll)</div>` +
-          `<div class="cpu-chart-container"><div class="cpu-chart-wrapper"><canvas id="cpuChart"></canvas></div></div>` +
-          hostMetricsNote;
+
+        if (!el.querySelector(".capacity-root")) {
+          el.innerHTML =
+            "<div class=\"capacity-root\">" +
+            "<div style=\"margin-bottom:8px;\"><span class=\"status-badge status-ok-badge\" data-role=\"capacity-status-badge\"></span></div>" +
+            "<dl class=\"capacity-summary\">" +
+            "<dt>CPU</dt><dd data-role=\"capacity-cpu\"></dd>" +
+            "<dt>Memory</dt><dd data-role=\"capacity-mem\"></dd>" +
+            "<dt>Load (1m)</dt><dd data-role=\"capacity-load\"></dd>" +
+            "<dt>Queue</dt><dd data-role=\"capacity-queue\"></dd>" +
+            "<dt>Drops</dt><dd data-role=\"capacity-drops\"></dd>" +
+            "<dt>New Drops</dt><dd data-role=\"capacity-drops-delta\"></dd>" +
+            "<dt>Detector EPS</dt><dd data-role=\"capacity-eps\"></dd>" +
+            "</dl>" +
+            "<div class=\"map-note\" style=\"margin-top:10px;\" data-role=\"capacity-replica-hint\"></div>" +
+            "<div class=\"map-note\" style=\"margin-top:10px;\">CPU usage over time (per poll)</div>" +
+            "<div class=\"cpu-chart-container\"><div class=\"cpu-chart-wrapper\"><canvas id=\"cpuChart\"></canvas></div></div>" +
+            "<div class=\"map-note\" style=\"margin-top:6px;\" data-role=\"capacity-host-note\"></div>" +
+            "</div>";
+        }
+
+        const statusBadge = el.querySelector("[data-role='capacity-status-badge']");
+        if (statusBadge) {
+          statusBadge.textContent = String(data.status || "Unknown");
+          statusBadge.className = "status-badge " + badgeClass;
+        }
+        const set = function(role, text) {
+          const node = el.querySelector("[data-role='" + role + "']");
+          if (node) node.textContent = text;
+        };
+        set("capacity-cpu", (host.cpu_usage_percent ?? 0) + "%");
+        set("capacity-mem", (host.memory_usage_percent ?? 0) + "%");
+        set("capacity-load", (host.load1 ?? 0) + " / " + (host.cpu_count ?? 1) + " cores");
+        set("capacity-queue", (pipe.queue_size ?? 0) + "/" + (pipe.queue_capacity ?? 0) + " (" + queueRatio + ")");
+        set("capacity-drops", String(pipe.drops_total ?? 0));
+        set("capacity-drops-delta", String(pipe.drops_delta ?? 0));
+        set("capacity-eps", String(pipe.detector_events_per_sec ?? 0));
+        set("capacity-replica-hint", String(data.replica_hint || ""));
+        set("capacity-host-note", host.has_host_metrics ? "" : "Host metrics not available yet. Restart probe pod to expose new host CPU/memory/load metrics.");
+
         renderCpuUsageChart(data);
       }
       const cpuHistory = [];
@@ -694,9 +758,10 @@
         } else {
           lastPoint.cpu = cpuPercent;
         }
-        const labels = cpuHistory.map((p) =>
-          new Date(p.ts * 1000).toISOString().split("T")[1].split(".")[0]
-        );
+        const labels = cpuHistory.map((p) => {
+          const d = new Date(p.ts * 1000);
+          return pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":" + pad2(d.getSeconds());
+        });
         const values = cpuHistory.map((p) => p.cpu);
         const chartSignature = JSON.stringify({ labels, values });
         if (cpuChartInstance && cpuChartLastSignature === chartSignature) return;
@@ -768,6 +833,7 @@
       let logsSortKey = "ts_unix_nano";
       let logsSortDir = "desc";
       let lastLogsData = null;
+      let lastLogsSignature = "";
       function renderLogs(data) {
         lastLogsData = data;
         const el = document.getElementById("logs");
@@ -777,14 +843,19 @@
         }
         const message = data.message || "";
         let entries = Array.isArray(data.entries) ? data.entries : [];
+        const logsSig = entries.length + "|" + (entries[0] && entries[0].ts_unix_nano) + "|" + (entries.length && entries[entries.length - 1] && entries[entries.length - 1].ts_unix_nano);
+        if (logsSig === lastLogsSignature) return;
+        const tableWrap = el.querySelector(".table-wrap");
+        const savedScrollTop = tableWrap ? tableWrap.scrollTop : 0;
         function extractEventFields(entry) {
           const d = Array.isArray(entry?.data) ? entry.data : [];
           return {
-            comm: (d.length > 2 && d[2] !== "") ? d[2] : (entry.comm || "—"),
-            pid: (d.length > 3 && d[3] !== "") ? d[3] : (entry.pid || "—"),
-            tid: (d.length > 4 && d[4] !== "") ? d[4] : (entry.tid || "—"),
-            uid: (d.length > 5 && d[5] !== "") ? d[5] : (entry.uid || "—"),
-            path: (d.length > 8 && d[8] !== "") ? d[8] : (d.length > 0 ? d[0] : (entry.path || entry.prefix || "—")),
+            syscall: entry.event_name ?? "",
+            comm: d.length > 2 ? d[2] : "",
+            pid: d.length > 3 ? d[3] : "",
+            tid: d.length > 4 ? d[4] : "",
+            uid: d.length > 5 ? d[5] : "",
+            path: d.length > 8 ? d[8] : "",
           };
         }
         function getCell(entry, key) {
@@ -792,12 +863,13 @@
           if (key === "ts_unix_nano") {
             return formatTimestampNs(entry.ts_unix_nano);
           }
+          if (key === "event_name") return fields.syscall;
           if (key === "comm") return fields.comm;
           if (key === "path") return fields.path;
           if (key === "pid_tid_uid") return `${fields.pid}/${fields.tid}/${fields.uid}`;
           const v = entry[key];
           if (v === true || v === false) return v ? "Yes" : "No";
-          return v != null ? String(v) : "—";
+          return v != null ? String(v) : "";
         }
         function compare(a, b) {
           const va = getCell(a, logsSortKey);
@@ -819,6 +891,7 @@
         const headers = [
           { key: "ts_unix_nano", label: "Time" },
           { key: "event_type", label: "Type" },
+          { key: "event_name", label: "Syscall" },
           { key: "hostname", label: "Host" },
           { key: "comm", label: "Comm" },
           { key: "path", label: "Path" },
@@ -827,46 +900,57 @@
           { key: "score", label: "Score" },
           { key: "reason", label: "Reason" },
         ];
-        let table = "<div class=\"logs-message\">" + escapeHtml(message || (entries.length ? "Live tail from detector." : "No events yet.")) + "</div>";
-        if (entries.length === 0) {
-          table += "<p class=\"logs-message\">No entries.</p>";
-        } else {
-          table += "<div class=\"table-wrap\"><table><thead><tr>";
+        function buildRow(entry) {
+          let row = "<tr>";
           headers.forEach(function(h) {
-            const sort = h.key === logsSortKey ? logsSortDir : "";
-            let arrow = "";
-            if (sort === "asc") arrow = " ↑";
-            else if (sort === "desc") arrow = " ↓";
-            else if (sort === "") arrow = " ↕";
-            table += "<th data-sort=\"" + sort + "\" data-key=\"" + escapeHtml(h.key) + "\">" + escapeHtml(h.label) + arrow + "</th>";
+            let cell = getCell(entry, h.key);
+            if (h.key === "anomaly" && (entry.anomaly === true || cell === "Yes")) {
+              cell = "<span class=\"badge badge-anomaly\">Yes</span>";
+            } else if (h.key === "anomaly" && (entry.anomaly === false || cell === "No")) {
+              cell = "<span class=\"badge badge-ok\">No</span>";
+            } else {
+              cell = escapeHtml(cell);
+            }
+            row += "<td>" + cell + "</td>";
           });
-          table += "</tr></thead><tbody>";
-          entries.forEach(function(entry) {
-            table += "<tr>";
-            headers.forEach(function(h) {
-              let cell = getCell(entry, h.key);
-              if (h.key === "anomaly" && (entry.anomaly === true || cell === "Yes")) {
-                cell = "<span class=\"badge badge-anomaly\">Yes</span>";
-              } else if (h.key === "anomaly" && (entry.anomaly === false || cell === "No")) {
-                cell = "<span class=\"badge badge-ok\">No</span>";
-              } else {
-                cell = escapeHtml(cell);
-              }
-              table += "<td>" + cell + "</td>";
-            });
-            table += "</tr>";
-          });
-          table += "</tbody></table></div>";
+          return row + "</tr>";
         }
-        el.innerHTML = table;
-        el.querySelectorAll("th[data-key]").forEach(function(th) {
-          th.addEventListener("click", function() {
-            const key = th.getAttribute("data-key");
-            if (key === logsSortKey) logsSortDir = logsSortDir === "asc" ? "desc" : "asc";
-            else { logsSortKey = key; logsSortDir = "asc"; }
-            if (lastLogsData) renderLogs(lastLogsData);
+        const messageText = message || (entries.length ? "Live tail from detector." : "No events yet.");
+        const tbody = el.querySelector(".table-wrap .logs-table tbody");
+        const canUpdateInPlace = entries.length > 0 && tbody;
+        if (canUpdateInPlace) {
+          const msgDiv = el.querySelector(".logs-message");
+          if (msgDiv) msgDiv.textContent = messageText;
+          tbody.innerHTML = entries.map(buildRow).join("");
+        } else {
+          let table = "<div class=\"logs-message\">" + escapeHtml(messageText) + "</div>";
+          if (entries.length === 0) {
+            table += "<p class=\"logs-message\">No entries.</p>";
+          } else {
+            const colWidths = ["10%", "7%", "8%", "8%", "7%", "22%", "12%", "6%", "6%", "14%"];
+            table += "<div class=\"table-wrap\"><table class=\"logs-table\"><colgroup>";
+            colWidths.forEach(function(w) { table += "<col style=\"width:" + w + "\">"; });
+            table += "</colgroup><thead><tr>";
+            headers.forEach(function(h) {
+              const sort = h.key === logsSortKey ? logsSortDir : "";
+              let arrow = sort === "asc" ? " ↑" : (sort === "desc" ? " ↓" : " ↕");
+              table += "<th data-sort=\"" + sort + "\" data-key=\"" + escapeHtml(h.key) + "\">" + escapeHtml(h.label) + arrow + "</th>";
+            });
+            table += "</tr></thead><tbody>" + entries.map(buildRow).join("") + "</tbody></table></div>";
+          }
+          el.innerHTML = table;
+          const newWrap = el.querySelector(".table-wrap");
+          if (newWrap && savedScrollTop) newWrap.scrollTop = savedScrollTop;
+          el.querySelectorAll("th[data-key]").forEach(function(th) {
+            th.addEventListener("click", function() {
+              const key = th.getAttribute("data-key");
+              if (key === logsSortKey) logsSortDir = logsSortDir === "asc" ? "desc" : "asc";
+              else { logsSortKey = key; logsSortDir = "asc"; }
+              if (lastLogsData) renderLogs(lastLogsData);
+            });
           });
-        });
+        }
+        lastLogsSignature = logsSig;
       }
       function escapeHtml(s) {
         const div = document.createElement("div");
@@ -1075,8 +1159,15 @@
         });
         const sortedEventTypes = Array.from(eventTypes).sort();
         
-        // Extract time labels (x-axis)
-        const timeLabels = timeBuckets.map(bucket => bucket.time);
+        // Extract time labels (x-axis) in local time
+        const timeLabels = timeBuckets.map(bucket => {
+          const ts = bucket.timestamp != null ? bucket.timestamp * 1000 : null;
+          if (ts != null && Number.isFinite(ts)) {
+            const d = new Date(ts);
+            return formatTimestampLocal(d).split(" ")[1] || bucket.time;
+          }
+          return bucket.time || "";
+        });
         
         // Create datasets: one per event type
         const isDark = document.documentElement.getAttribute("data-theme") !== "light";
@@ -1182,6 +1273,7 @@
         }
       }
 
+      let lastAnomaliesSignature = "";
       function renderAnomalies(data) {
         const el = document.getElementById("anomalies");
         if (typeof data !== "object" || data === null) {
@@ -1189,24 +1281,45 @@
           return;
         }
         const entries = Array.isArray(data.entries) ? data.entries : [];
-        if (entries.length === 0) {
-          el.innerHTML = "<div class=\"metrics-empty\">No anomalies detected</div>";
-          return;
+        const anomSig = entries.length + "|" + (entries[0] && entries[0].event_id) + "|" + (entries.length && entries[entries.length - 1] && entries[entries.length - 1].event_id);
+        if (anomSig === lastAnomaliesSignature) return;
+        function buildAnomalyItemsHtml() {
+          if (entries.length === 0) return "<div class=\"metrics-empty\">No anomalies detected</div>";
+          let html = "";
+          entries.slice().reverse().forEach(entry => {
+            const d = Array.isArray(entry.data) ? entry.data : [];
+            const ts = formatTimestampNs(entry.ts_unix_nano);
+            const syscall = entry.event_name || (d.length > 0 ? d[0] : "");
+            const comm = d.length > 2 ? d[2] : "";
+            const pid = d.length > 3 ? d[3] : "";
+            const tid = d.length > 4 ? d[4] : "";
+            const path = d.length > 8 ? d[8] : "";
+            const host = entry.hostname || "";
+            const pod = entry.pod_name || "";
+            const ns = entry.namespace || "";
+            const reason = entry.reason || "";
+            const score = entry.score != null ? entry.score : "";
+            html += `<div class="anomaly-item">`;
+            html += `<div><strong>${escapeHtml(ts)}</strong> <span class="anomaly-score">Score: ${escapeHtml(String(score))}</span>`;
+            if (syscall) html += ` <span style="font-weight:600;">${escapeHtml(syscall)}</span>`;
+            if (host) html += ` · ${escapeHtml(host)}`;
+            html += `</div>`;
+            if (reason) html += `<div style="color: var(--text-muted); font-size: 0.75rem; margin-top: 2px;">${escapeHtml(reason)}</div>`;
+            const details = [comm && `comm=${escapeHtml(comm)}`, (pid || tid) && `pid/tid=${escapeHtml(pid)}/${escapeHtml(tid)}`, path && `path=${escapeHtml(path)}`, pod && `pod=${escapeHtml(pod)}`, ns && `ns=${escapeHtml(ns)}`].filter(Boolean).join(" ");
+            if (details) html += `<div style="color: var(--text-muted); font-size: 0.75rem; margin-top: 4px;">${details}</div>`;
+            html += `</div>`;
+          });
+          return html;
         }
-        let html = `<div style="max-height: 400px; overflow-y: auto;">`;
-        entries.slice().reverse().forEach(entry => {
-          const ts = formatTimestampNs(entry.ts_unix_nano);
-          const path = Array.isArray(entry.data) && entry.data.length > 8
-            ? (entry.data[8] || "—")
-            : (Array.isArray(entry.data) && entry.data.length > 0 ? entry.data[0] : "—");
-          html += `<div class="anomaly-item">`;
-          html += `<div><strong>${escapeHtml(ts)}</strong> <span class="anomaly-score">Score: ${escapeHtml(String(entry.score || 0))}</span></div>`;
-          html += `<div style="color: var(--text-muted); font-size: 0.75rem; margin-top: 4px;">${escapeHtml(path)}</div>`;
-          html += `<div style="color: var(--text-muted); font-size: 0.75rem; margin-top: 2px;">${escapeHtml(entry.reason || "")}</div>`;
-          html += `</div>`;
-        });
-        html += `</div>`;
-        el.innerHTML = html;
+        const scrollEl = el.querySelector(".anomalies-scroll");
+        const savedScrollTop = scrollEl ? scrollEl.scrollTop : 0;
+        if (scrollEl) {
+          scrollEl.innerHTML = buildAnomalyItemsHtml();
+          scrollEl.scrollTop = savedScrollTop;
+        } else {
+          el.innerHTML = `<div class="anomalies-scroll" style="max-height: 400px; overflow-y: auto;">${buildAnomalyItemsHtml()}</div>`;
+        }
+        lastAnomaliesSignature = anomSig;
       }
 
       async function refresh() {

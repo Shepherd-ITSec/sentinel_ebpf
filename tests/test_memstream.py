@@ -65,3 +65,36 @@ def test_memstream_auto_selects_expected_device():
   assert impl.algorithm == "memstream"
   expected = "cuda" if torch.cuda.is_available() else "cpu"
   assert impl._device.type == expected
+
+
+def test_memstream_effective_dims_scale_with_input_dim():
+  small = OnlineAnomalyDetector(
+    algorithm="memstream",
+    mem_hidden_dim=8,
+    mem_latent_dim=4,
+    mem_memory_size=16,
+    mem_lr=0.005,
+    seed=23,
+  )
+  small.score_and_learn(_make_features(np.zeros(9)))
+  small_impl = small.impl
+  assert small_impl._model is not None
+  small_hidden = small_impl._model.encoder[0].out_features
+  small_latent = small_impl._model.encoder[2].out_features
+
+  large = OnlineAnomalyDetector(
+    algorithm="memstream",
+    mem_hidden_dim=8,
+    mem_latent_dim=4,
+    mem_memory_size=16,
+    mem_lr=0.005,
+    seed=23,
+  )
+  large.score_and_learn(_make_features(np.zeros(196)))
+  large_impl = large.impl
+  assert large_impl._model is not None
+  large_hidden = large_impl._model.encoder[0].out_features
+  large_latent = large_impl._model.encoder[2].out_features
+
+  assert large_hidden > small_hidden
+  assert large_latent > small_latent

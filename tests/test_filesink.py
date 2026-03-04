@@ -9,7 +9,7 @@ import pytest
 import events_pb2
 
 pytest.importorskip("bcc", reason="bcc not installed; eBPF-related tests are allowed to fail for now.")
-from probe.probe_runner import FileSink
+from probe.probe_runner import FileSink, _mtime_or_zero
 
 
 @pytest.fixture
@@ -21,7 +21,8 @@ def sample_event():
     pod_name="test-pod",
     namespace="default",
     container_id="container-123",
-    event_type="openat",
+    event_name="openat",
+    event_type="",
     ts_unix_nano=1234567890000000000,
     data=["openat", "2", "bash", "1234", "5678", "1000", "-100", "2", "/tmp/test.txt", "2"],
   )
@@ -50,7 +51,8 @@ class TestFileSink:
         payload = json.loads(f.read(length).decode("utf-8"))
 
       assert payload["event_id"] == "test-event-123"
-      assert payload["event_type"] == "openat"
+      assert payload["event_name"] == "openat"
+      assert payload["event_type"] == ""
       assert payload["data"] == ["openat", "2", "bash", "1234", "5678", "1000", "-100", "2", "/tmp/test.txt", "2"]
     finally:
       sink.close()
@@ -89,7 +91,8 @@ class TestFileSink:
       for i in range(5):
         evt = events_pb2.EventEnvelope(
           event_id=f"event-{i}",
-          event_type="openat",
+          event_name="openat",
+          event_type="",
           ts_unix_nano=1234567890000000000 + i,
           data=["openat", "2", "bash", "1234", "5678", "1000", "-100", "2", "/tmp/test.txt", "2"],
         )
@@ -125,7 +128,8 @@ class TestFileSink:
       for i in range(10):
         evt = events_pb2.EventEnvelope(
           event_id=f"event-{i}",
-          event_type="openat",
+          event_name="openat",
+          event_type="",
           ts_unix_nano=1234567890000000000 + i,
           data=["openat", "2", "bash", "1234", "5678", "1000", "-100", "2", "/tmp/test.txt", "2"],
         )
@@ -152,7 +156,8 @@ class TestFileSink:
       for i in range(100):
         evt = events_pb2.EventEnvelope(
           event_id=f"event-{i}",
-          event_type="openat",
+          event_name="openat",
+          event_type="",
           ts_unix_nano=1234567890000000000 + i,
           data=["openat", "2", "bash", "1234", "5678", "1000", "-100", "2", "/tmp/test.txt", "2"],
         )
@@ -180,3 +185,16 @@ class TestFileSink:
       assert nested_path.parent.exists()
     finally:
       sink.close()
+
+
+def test_mtime_or_zero_missing_path():
+  """_mtime_or_zero returns 0 for non-existent path."""
+  assert _mtime_or_zero("/nonexistent/path/12345") == 0.0
+
+
+def test_mtime_or_zero_existing_file(temp_dir):
+  """_mtime_or_zero returns mtime for existing file."""
+  path = temp_dir / "file.txt"
+  path.write_text("x")
+  t = _mtime_or_zero(str(path))
+  assert t > 0.0

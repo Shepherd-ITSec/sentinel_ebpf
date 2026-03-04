@@ -14,7 +14,7 @@ try:
 except ImportError:
   tqdm = None
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
 log = logging.getLogger(__name__)
 
 import events_pb2
@@ -31,9 +31,35 @@ def open_stream(path: Path):
   return path.open("rb")
 
 
-def iter_events(path: Path, start_ms=None, end_ms=None):
+def _detect_format(path: Path) -> str:
+  """Return 'evt1' if file starts with EVT1 magic, else 'jsonl' (detector-events.jsonl style)."""
+  with path.open("rb") as f:
+    head = f.read(2)
+  if head == b"\x1f\x8b":
+    with gzip.open(path, "rb") as zf:
+      first = zf.read(4)
+    return "evt1" if first == MAGIC else "jsonl"
+  with path.open("rb") as f:
+    first = f.read(4)
+  return "evt1" if first == MAGIC else "jsonl"
+
+
+def _open_text_lines(path: Path):
+  """Open path for reading text lines (supports .gz)."""
+  with path.open("rb") as f:
+    head = f.read(2)
+  if head == b"\x1f\x8b":
+    return gzip.open(path, "rt", encoding="utf-8")
+  return path.open("r", encoding="utf-8")
+
+
+def iter_events(path: Path, start_ms=None, end_ms=None, max_events=None):
+  """Yield event dicts from an EVT1 file. Optional: start_ms, end_ms (timestamp filter), max_events (stop after N events)."""
+  n = 0
   with open_stream(path) as f:
     while True:
+      if max_events is not None and n >= max_events:
+        return
       magic = f.read(4)
       if not magic:
         break
@@ -52,29 +78,70 @@ def iter_events(path: Path, start_ms=None, end_ms=None):
         continue
       if end_ms is not None and ts_ms > end_ms:
         break
+      n += 1
       yield obj
 
 
-def replay(path, target, pace, start_ms, end_ms, total=None, label="Replay"):
-  log.info("replay: %s -> %s (pace=%s)", path, target, pace)
+def iter_events_jsonl(path: Path, start_ms=None, end_ms=None, max_events=None):
+  """Yield event dicts from a detector-events.jsonl file (lossless dump). Skips lines that are not event records (e.g. no event_id)."""
+  n = 0
+  with _open_text_lines(path) as f:
+    for line in f:
+      line = line.strip()
+      if not line:
+        continue
+      if max_events is not None and n >= max_events:
+        return
+      try:
+        obj = json.loads(line)
+      except json.JSONDecodeError:
+        continue
+      if "event_id" not in obj:
+        continue
+      ts_ns = obj.get("ts_unix_nano", 0)
+      ts_ms = ts_ns // 1_000_000
+      if start_ms is not None and ts_ms < start_ms:
+        continue
+      if end_ms is not None and ts_ms > end_ms:
+        continue
+      n += 1
+      yield obj
+
+
+def replay(path, target, pace, start_ms, end_ms, total=None, label="Replay", max_events=None):
+  path = Path(path)
+  fmt = _detect_format(path)
+  log.info("replay: %s -> %s (format=%s, pace=%s%s)", path, target, fmt, pace, f" max_events={max_events}" if max_events else "")
   channel = grpc.insecure_channel(target)
   stub = events_pb2_grpc.DetectorServiceStub(channel)
+
+  event_iter = iter_events_jsonl(path, start_ms, end_ms, max_events) if fmt == "jsonl" else iter_events(path, start_ms, end_ms, max_events)
 
   def gen():
     first_ts = None
     start_wall = None
-    for obj in iter_events(Path(path), start_ms, end_ms):
+    for obj in event_iter:
       data_field = obj.get("data", [])
       if not isinstance(data_field, list):
         raise ValueError("invalid event record: 'data' must be an ordered list")
+      # event_name = syscall name; event_type = category. Support old payloads that only had event_type (syscall name).
+      if "event_name" in obj:
+        event_name = obj.get("event_name", "") or (data_field[0] if data_field else "")
+        event_type = obj.get("event_type", "")
+      else:
+        event_name = obj.get("event_type", "") or (data_field[0] if data_field else "")
+        event_type = ""
+      # JSONL dump uses pod_name; EVT1 uses pod
+      pod_name = obj.get("pod_name", obj.get("pod", ""))
       env = events_pb2.EventEnvelope(
         event_id=obj.get("event_id", ""),
         hostname=obj.get("hostname", ""),
-        pod_name=obj.get("pod", ""),
+        pod_name=pod_name,
         namespace=obj.get("namespace", ""),
         container_id=obj.get("container_id", ""),
         ts_unix_nano=int(obj.get("ts_unix_nano", 0)),
-        event_type=obj.get("event_type", ""),
+        event_name=event_name,
+        event_type=event_type,
         data=data_field,
         attributes=dict(obj.get("attributes", {}) or {}),
       )
@@ -106,22 +173,23 @@ def replay(path, target, pace, start_ms, end_ms, total=None, label="Replay"):
     if pbar:
       pbar.update(1)
     elif (n % 10000) == 0:
-      log.info("replay: %d events sent", n)
+      log.info("Replay: %d events sent", n)
   if pbar:
     pbar.close()
-  log.info("replay done: %d events sent", n)
+  log.info("Replay: Done: %d events sent", n)
 
 
 def main():
-  ap = argparse.ArgumentParser(description="Replay EVT1 logs to DetectorService.StreamEvents")
-  ap.add_argument("logfile", help="Path to events.bin (EVT1), supports .gz")
+  ap = argparse.ArgumentParser(description="Replay event logs to DetectorService.StreamEvents. Supports EVT1 (events.bin) or detector-events.jsonl (lossless dump).")
+  ap.add_argument("logfile", help="Path to events.bin (EVT1) or detector-events.jsonl (supports .gz for EVT1)")
   ap.add_argument("--target", default="localhost:50051", help="Detector gRPC endpoint")
   ap.add_argument("--pace", choices=["realtime", "fast"], default="fast", help="Pace replay in realtime or as fast as possible")
   ap.add_argument("--start-ms", type=int, default=None, help="Start timestamp filter (ms since epoch)")
   ap.add_argument("--end-ms", type=int, default=None, help="End timestamp filter (ms since epoch)")
+  ap.add_argument("--max-events", type=int, default=None, help="Stop after replaying this many events (for warmup)")
   args = ap.parse_args()
 
-  replay(args.logfile, args.target, args.pace, args.start_ms, args.end_ms)
+  replay(args.logfile, args.target, args.pace, args.start_ms, args.end_ms, max_events=args.max_events)
 
 
 if __name__ == "__main__":

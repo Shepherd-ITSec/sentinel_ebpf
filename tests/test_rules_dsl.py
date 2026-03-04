@@ -20,7 +20,7 @@ rules:
   engine = RuleEngine(str(rules_file))
   assert engine.allow_event(
     {
-      "event_type": "openat",
+      "event_name": "openat",
       "path": "/etc/passwd",
       "comm": "bash",
       "pid": 1,
@@ -33,7 +33,7 @@ rules:
   )
   assert not engine.allow_event(
     {
-      "event_type": "openat",
+      "event_name": "openat",
       "path": "/tmp/file",
       "comm": "bash",
       "pid": 1,
@@ -44,6 +44,40 @@ rules:
       "namespace": "default",
     }
   )
+
+
+def test_rule_type_label_is_exposed_via_classify_event(temp_dir):
+  rules_file = temp_dir / "rules.yaml"
+  rules_file.write_text(
+    """rules:
+  - name: capture-network-connectivity
+    enabled: true
+    type: network
+    condition: "event_name in (socket, connect)"
+"""
+  )
+  engine = RuleEngine(str(rules_file))
+  allowed, rule_type = engine.classify_event(
+    {
+      "event_name": "connect",
+      "event_id": 42,
+      "path": "",
+      "filename": "",
+      "comm": "curl",
+      "pid": 123,
+      "tid": 123,
+      "uid": 1000,
+      "open_flags": "",
+      "arg0": 3,
+      "arg1": 16,
+      "arg_flags": "",
+      "return_value": 0,
+      "hostname": "node-a",
+      "namespace": "default",
+    }
+  )
+  assert allowed
+  assert rule_type == "network"
 
 
 def test_kernel_compile_with_userspace_fallback_predicates(temp_dir):

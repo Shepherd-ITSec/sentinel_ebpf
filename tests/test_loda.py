@@ -52,6 +52,36 @@ def test_loda_anomaly_shift_scores_higher():
   assert np.mean(anomaly_scores) > np.mean(normal_scores)
 
 
+def test_loda_effective_projections_scale_with_input_dim():
+  small = OnlineAnomalyDetector(
+    algorithm="loda",
+    loda_n_projections=4,
+    loda_bins=16,
+    loda_range=3.0,
+    loda_ema_alpha=0.05,
+    loda_hist_decay=1.0,
+    seed=19,
+  )
+  small.score_and_learn(_make_features(np.zeros(9)))
+  small_proj = small.impl._effective_n_projections
+
+  large = OnlineAnomalyDetector(
+    algorithm="loda",
+    loda_n_projections=4,
+    loda_bins=16,
+    loda_range=3.0,
+    loda_ema_alpha=0.05,
+    loda_hist_decay=1.0,
+    seed=19,
+  )
+  large.score_and_learn(_make_features(np.zeros(144)))
+  large_proj = large.impl._effective_n_projections
+
+  assert small_proj is not None
+  assert large_proj is not None
+  assert large_proj > small_proj
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available in test runtime")
 def test_loda_can_run_on_cuda_device():
   detector = OnlineAnomalyDetector(

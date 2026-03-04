@@ -26,7 +26,10 @@ def test_build_evt_uses_event_id_prefix():
   }
   payload, label = _build_evt(row, row_idx=7, base_ts_ns=1_700_000_000_000_000_000, event_id_prefix="beth-train")
   assert payload["event_id"] == "beth-train-7-10-11"
+  assert payload["event_name"] == "openat"
+  assert payload["event_type"] == "network"
   assert label["event_id"] == "beth-train-7-10-11"
+  assert label["event_name"] == "openat"
 
 
 def test_convert_writes_prefixed_ids(temp_dir):
@@ -49,6 +52,10 @@ def test_convert_writes_prefixed_ids(temp_dir):
   payload = json.loads(blob[8 : 8 + payload_len].decode("utf-8"))
   assert payload["event_id"].startswith("beth-test-")
 
+  assert payload["event_name"] == "execve"
+  assert payload["event_type"] == "network"
+
   label_line = out_labels.read_text(encoding="utf-8").strip()
   label = json.loads(label_line)
   assert label["event_id"].startswith("beth-test-")
+  assert label["event_name"] == "execve"

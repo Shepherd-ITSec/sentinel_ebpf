@@ -22,7 +22,6 @@ import events_pb2_grpc
 from detector.config import DetectorConfig, load_config
 from detector.features import extract_feature_dict
 from detector.model import OnlineAnomalyDetector
-from scripts.replay_logs import replay  # type: ignore
 
 # Ring buffer of recent events for UI log tail in gRPC mode (GET /recent_events).
 # Size is set during initialization from config
@@ -36,6 +35,10 @@ _anomalies_lock = threading.Lock()
 # Anomaly log file
 _anomaly_log_path: Optional[Path] = None
 _anomaly_log_lock = threading.Lock()
+
+# Event dump file (all incoming events)
+_event_dump_path: Optional[Path] = None
+_event_dump_lock = threading.Lock()
 
 # Metrics counters (thread-safe)
 _metrics_lock = threading.Lock()
@@ -54,7 +57,21 @@ def _init_anomaly_log():
   if log_path:
     _anomaly_log_path = Path(log_path)
     _anomaly_log_path.parent.mkdir(parents=True, exist_ok=True)
+    # Pre-create the file so eval runs always have an explicit artifact,
+    # even when zero anomalies are emitted.
+    _anomaly_log_path.touch(exist_ok=True)
     logging.info("Anomaly logging enabled: %s", _anomaly_log_path)
+
+
+def _init_event_dump():
+  """Initialize event dump file if configured (all incoming events)."""
+  global _event_dump_path
+  dump_path = os.environ.get("EVENT_DUMP_PATH", "")
+  if dump_path:
+    _event_dump_path = Path(dump_path)
+    _event_dump_path.parent.mkdir(parents=True, exist_ok=True)
+    _event_dump_path.touch(exist_ok=True)
+    logging.info("Event dump enabled: %s", _event_dump_path)
 
 
 def _log_anomaly(evt, resp) -> None:
@@ -65,6 +82,7 @@ def _log_anomaly(evt, resp) -> None:
     entry = {
       "timestamp": datetime.now(timezone.utc).isoformat(),
       "event_id": evt.event_id,
+      "event_name": evt.event_name or "",
       "event_type": evt.event_type or "",
       "data": list(evt.data) if evt.data else [],
       "hostname": evt.hostname or "",
@@ -81,9 +99,38 @@ def _log_anomaly(evt, resp) -> None:
     logging.error(f"Failed to log anomaly to file: {e}", exc_info=True)
 
 
+def _dump_event(evt, resp) -> None:
+  """Append one JSONL line for the event (and detection result) to the event dump file if configured."""
+  if not _event_dump_path:
+    return
+  try:
+    entry = {
+      "timestamp": datetime.now(timezone.utc).isoformat(),
+      "event_id": evt.event_id,
+      "event_name": evt.event_name or "",
+      "event_type": evt.event_type or "",
+      "data": list(evt.data) if evt.data else [],
+      "hostname": evt.hostname or "",
+      "pod_name": evt.pod_name or "",
+      "namespace": evt.namespace or "",
+      "container_id": evt.container_id or "",
+      "attributes": dict(evt.attributes or {}),
+      "ts_unix_nano": evt.ts_unix_nano,
+      "anomaly": resp.anomaly,
+      "score": round(resp.score, 4),
+      "reason": resp.reason or "",
+    }
+    with _event_dump_lock:
+      with _event_dump_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry) + "\n")
+  except Exception as e:
+    logging.error("Failed to dump event to file: %s", e, exc_info=True)
+
+
 def _recent_events_append(evt, resp) -> None:
   entry = {
     "event_id": evt.event_id,
+    "event_name": evt.event_name or "",
     "event_type": evt.event_type or "",
     "data": list(evt.data) if evt.data else [],
     "hostname": evt.hostname or "",
@@ -100,6 +147,7 @@ def _recent_events_append(evt, resp) -> None:
   if resp.anomaly:
     anomaly_entry = {
       "event_id": evt.event_id,
+      "event_name": evt.event_name or "",
       "event_type": evt.event_type or "",
       "data": list(evt.data) if evt.data else [],
       "hostname": evt.hostname or "",
@@ -115,6 +163,9 @@ def _recent_events_append(evt, resp) -> None:
     # Log to file
     _log_anomaly(evt, resp)
 
+  # Dump all events to file if configured
+  _dump_event(evt, resp)
+
 
 def _now_timestamp() -> timestamp_pb2.Timestamp:
   ts = timestamp_pb2.Timestamp()
@@ -123,33 +174,51 @@ def _now_timestamp() -> timestamp_pb2.Timestamp:
 
 
 class DeterministicScorer:
-  """Single-model scorer that preserves deterministic learning semantics."""
+  """Per-event_type scorer that preserves deterministic learning semantics.
+
+  We maintain one OnlineAnomalyDetector instance per event_type (including the
+  empty/default type). Each model sees a consistent feature vector shape, since
+  extract_feature_dict() always returns the same feature set for a given type.
+  """
 
   def __init__(self, cfg: DetectorConfig):
     self.cfg = cfg
-    self.detector = OnlineAnomalyDetector(
-      algorithm=cfg.model_algorithm,
-      hst_n_trees=cfg.hst_n_trees,
-      hst_height=cfg.hst_height,
-      hst_window_size=cfg.hst_window_size,
-      loda_n_projections=cfg.loda_n_projections,
-      loda_bins=cfg.loda_bins,
-      loda_range=cfg.loda_range,
-      loda_ema_alpha=cfg.loda_ema_alpha,
-      loda_hist_decay=cfg.loda_hist_decay,
-      kitnet_max_size_ae=cfg.kitnet_max_size_ae,
-      kitnet_grace_feature_mapping=cfg.kitnet_grace_feature_mapping,
-      kitnet_grace_anomaly_detector=cfg.kitnet_grace_anomaly_detector,
-      kitnet_learning_rate=cfg.kitnet_learning_rate,
-      kitnet_hidden_ratio=cfg.kitnet_hidden_ratio,
-      mem_hidden_dim=cfg.mem_hidden_dim,
-      mem_latent_dim=cfg.mem_latent_dim,
-      mem_memory_size=cfg.mem_memory_size,
-      mem_lr=cfg.mem_lr,
-      model_device=cfg.model_device,
-      seed=cfg.model_seed,
-    )
+    self._models: dict[str, OnlineAnomalyDetector] = {}
     self._lock = threading.Lock()
+
+  def _key_for_type(self, event_type: str) -> str:
+    t = (event_type or "").strip().lower()
+    return t or "__default__"
+
+  def _get_model(self, event_type: str) -> OnlineAnomalyDetector:
+    key = self._key_for_type(event_type)
+    model = self._models.get(key)
+    if model is None:
+      model = OnlineAnomalyDetector(
+        algorithm=self.cfg.model_algorithm,
+        hst_n_trees=self.cfg.hst_n_trees,
+        hst_height=self.cfg.hst_height,
+        hst_window_size=self.cfg.hst_window_size,
+        loda_n_projections=self.cfg.loda_n_projections,
+        loda_bins=self.cfg.loda_bins,
+        loda_range=self.cfg.loda_range,
+        loda_ema_alpha=self.cfg.loda_ema_alpha,
+        loda_hist_decay=self.cfg.loda_hist_decay,
+        kitnet_max_size_ae=self.cfg.kitnet_max_size_ae,
+        kitnet_grace_feature_mapping=self.cfg.kitnet_grace_feature_mapping,
+        kitnet_grace_anomaly_detector=self.cfg.kitnet_grace_anomaly_detector,
+        kitnet_learning_rate=self.cfg.kitnet_learning_rate,
+        kitnet_hidden_ratio=self.cfg.kitnet_hidden_ratio,
+        mem_hidden_dim=self.cfg.mem_hidden_dim,
+        mem_latent_dim=self.cfg.mem_latent_dim,
+        mem_memory_size=self.cfg.mem_memory_size,
+        mem_lr=self.cfg.mem_lr,
+        model_device=self.cfg.model_device,
+        seed=self.cfg.model_seed,
+      )
+      self._models[key] = model
+      logging.info("Initialized model for event_type=%r (algorithm=%s)", key, model.algorithm)
+    return model
 
   def score_event(self, evt: events_pb2.EventEnvelope) -> events_pb2.DetectionResponse:
     anomaly = False
@@ -159,11 +228,12 @@ class DeterministicScorer:
     try:
       with self._lock:
         features = extract_feature_dict(evt)
-        score = self.detector.score_and_learn(features)
+        model = self._get_model(evt.event_type or "")
+        score = model.score_and_learn(features)
         anomaly = score >= self.cfg.threshold
 
       if anomaly:
-        reason = f"{self.detector.algorithm} anomaly score {score:.3f} exceeds threshold {self.cfg.threshold}"
+        reason = f"{model.algorithm} anomaly score {score:.3f} exceeds threshold {self.cfg.threshold}"
     except Exception as e:
       logging.error("Error scoring event %s: %s", evt.event_id, e, exc_info=True)
       anomaly = False
@@ -229,6 +299,7 @@ async def serve():
   logging.info("initializing anomaly model (%s)...", cfg.model_algorithm)
   RECENT_EVENTS = deque(maxlen=cfg.recent_events_buffer_size)
   _init_anomaly_log()
+  _init_event_dump()
   servicer = RuleBasedDetector(cfg)
   logging.info("model initialized (recent_events buffer size=%d)", cfg.recent_events_buffer_size)
 
@@ -342,43 +413,9 @@ async def serve():
 
 
 def main():
-  import argparse
-
   logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
   logging.info("detector process starting (imports and setup may take a moment)...")
-
-  parser = argparse.ArgumentParser(description="Detector service with optional replay test mode")
-  parser.add_argument("--replay-log", help="Path to EVT1 log to replay to the detector")
-  parser.add_argument("--replay-pace", default="fast", choices=["fast", "realtime"], help="Replay pacing")
-  parser.add_argument("--replay-start-ms", type=int, default=None, help="Start timestamp ms")
-  parser.add_argument("--replay-end-ms", type=int, default=None, help="End timestamp ms")
-  args = parser.parse_args()
-
-  if args.replay_log:
-    # Start server in background loop and replay into it.
-    async def run_with_replay():
-      logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-      logging.info("loading config (replay mode)...")
-      cfg = load_config()
-      logging.info("config loaded: algorithm=%s threshold=%.2f", cfg.model_algorithm, cfg.threshold)
-      logging.info("initializing anomaly model (%s)...", cfg.model_algorithm)
-      servicer = RuleBasedDetector(cfg)
-      logging.info("model initialized; starting gRPC server...")
-      server = grpc.aio.server()
-      events_pb2_grpc.add_DetectorServiceServicer_to_server(servicer, server)
-      health_svc = health.HealthServicer()
-      health_pb2_grpc.add_HealthServicer_to_server(health_svc, server)
-      health_svc.set("", health_pb2.HealthCheckResponse.SERVING)
-      listen_addr = f"[::]:{cfg.port}"
-      server.add_insecure_port(listen_addr)
-      await server.start()
-      logging.info("detector listening on %s; replaying %s...", listen_addr, args.replay_log)
-      replay(args.replay_log, f"localhost:{cfg.port}", args.replay_pace, args.replay_start_ms, args.replay_end_ms)
-      await server.wait_for_termination()
-
-    asyncio.run(run_with_replay())
-  else:
-    asyncio.run(serve())
+  asyncio.run(serve())
 
 
 if __name__ == "__main__":
