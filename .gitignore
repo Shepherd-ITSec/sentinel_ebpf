@@ -37,6 +37,3 @@ kubeconfig
 
 # Big data / event dumps (avoid re-adding; use LFS only if needed)
 /test_data
-events_*.json
-events_*.jsonl
-detector-events.jsonl
