@@ -18,6 +18,20 @@ events_pb2_grpc.py
 # Helm artifacts
 *.tgz
 
+# LaTeX artefacts
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+*.toc
+*.nav
+*.snm
+*.vrb
+
 # Misc
 kubeconfig
 
