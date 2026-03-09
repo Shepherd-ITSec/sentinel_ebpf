@@ -132,16 +132,16 @@ class TestDetector:
 
   @pytest.mark.asyncio
   async def test_event_dump(self, tmp_path):
-    """When EVENT_DUMP_PATH is set, every event is appended as JSONL to the file."""
+    """When EVENT_DUMP_PATH is set, metadata is written first, then every event is appended as JSONL."""
     dump_file = tmp_path / "events.jsonl"
     prev = os.environ.pop("EVENT_DUMP_PATH", None)
     try:
       os.environ["EVENT_DUMP_PATH"] = str(dump_file)
-      _init_event_dump()
+      cfg = DetectorConfig(model_algorithm="halfspacetrees", hst_n_trees=5, hst_height=5, hst_window_size=10)
+      _init_event_dump(cfg)
       from collections import deque
       import detector.server as srv
       srv.RECENT_EVENTS = deque(maxlen=100)
-      cfg = DetectorConfig(model_algorithm="halfspacetrees", hst_n_trees=5, hst_height=5, hst_window_size=10)
       detector = RuleBasedDetector(cfg)
 
       async def one_event():
@@ -158,8 +158,13 @@ class TestDetector:
 
       assert dump_file.exists()
       lines = dump_file.read_text().strip().split("\n")
-      assert len(lines) == 1
-      row = json.loads(lines[0])
+      assert len(lines) == 2  # metadata + 1 event
+      meta = json.loads(lines[0])
+      assert meta.get("_meta") is True
+      assert meta.get("config", {}).get("model_algorithm") == "halfspacetrees"
+      assert "date" in meta
+      assert "config" in meta
+      row = json.loads(lines[1])
       assert row["event_id"] == "dump-me"
       assert row["event_name"] == "openat"
       assert "anomaly" in row

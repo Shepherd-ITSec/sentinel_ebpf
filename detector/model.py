@@ -82,6 +82,10 @@ class OnlineHalfSpaceTrees:
       window_size,
     )
 
+  def score_only(self, features: Dict[str, float]) -> float:
+    """Return anomaly score without updating model state (read-only)."""
+    return float(self.model.score_one(features))
+
   def score_and_learn(self, features: Dict[str, float]) -> float:
     score = self.model.score_one(features)
     self.model.learn_one(features)  # in-place; learn_one returns None
@@ -164,6 +168,33 @@ class OnlineLODA:
       raise RuntimeError("LODA feature names not initialized")
     vec = np.array([float(features[k]) for k in self._feature_names], dtype=np.float32)
     return torch.from_numpy(vec).to(self._device)
+
+  def score_only(self, features: Dict[str, float]) -> float:
+    """Return anomaly score without updating model state (read-only)."""
+    if self._weights is None:
+      self._init_from_features(features)
+    x = self._vectorize(features)
+    weights = self._weights
+    mean = self._mean
+    var = self._var
+    counts = self._counts
+    if weights is None or mean is None or var is None or counts is None:
+      raise RuntimeError("LODA not initialized")
+
+    effective_counts = counts * self.hist_decay if self.hist_decay < 1.0 else counts
+    projections = weights @ x
+    std = torch.sqrt(var + 1e-6)
+    normalized = (projections - mean) / std
+    normalized = torch.clamp(normalized, -self.proj_range, self.proj_range)
+    bin_idx = ((normalized + self.proj_range) / (2.0 * self.proj_range) * self.bins).to(torch.long)
+    bin_idx = torch.clamp(bin_idx, 0, self.bins - 1)
+
+    row_idx = torch.arange(weights.shape[0], device=self._device)
+    smoothing = 1.0
+    totals = effective_counts.sum(dim=1) + smoothing * self.bins
+    probs = (effective_counts[row_idx, bin_idx] + smoothing) / totals
+    score = float(torch.mean(-torch.log(probs)).item())
+    return 1.0 - float(np.exp(-score))
 
   def score_and_learn(self, features: Dict[str, float]) -> float:
     if self._weights is None:
@@ -264,6 +295,24 @@ class OnlineKitNet:
     if self._feature_names is None:
       raise RuntimeError("KitNet feature names not initialized")
     return np.array([float(features[k]) for k in self._feature_names], dtype=np.float64)
+
+  def score_only(self, features: Dict[str, float]) -> float:
+    """Return anomaly score without updating model state (read-only)."""
+    x = self._vectorize(features)
+    if self._model is None:
+      raise RuntimeError("KitNet not initialized")
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+      try:
+        raw = float(self._model.score_partial(x))
+      except AttributeError as exc:
+        if "model" not in str(exc):
+          raise
+        logging.debug("KitNet cold-start before internal model init; using raw score 0.0")
+        raw = 0.0
+    if not np.isfinite(raw):
+      logging.warning("KitNet produced non-finite score (%s); falling back to 0.0", raw)
+      raw = 0.0
+    return 1.0 - float(np.exp(-max(0.0, raw)))
 
   def score_and_learn(self, features: Dict[str, float]) -> float:
     x = self._vectorize(features)
@@ -458,6 +507,25 @@ class OnlineMemStream:
     self._memory_input[idx] = x.detach()
     self._refresh_norm_from_memory()
 
+  def score_only(self, features: Dict[str, float]) -> float:
+    """Return anomaly score without updating model state (read-only)."""
+    if self._model is None or self._optimizer is None:
+      self._init_from_features(features)
+    if self._model is None or self._optimizer is None:
+      raise RuntimeError("MemStream not initialized")
+
+    x = self._vectorize(features)
+    x_norm = self._normalize(x).unsqueeze(0)
+    self._model.eval()
+    with torch.no_grad():
+      z_eval, recon_eval = self._model(x_norm)
+      z_eval = z_eval.squeeze(0)
+      recon_error = float(torch.mean((x_norm - recon_eval) ** 2).item())
+      memory_error = self._memory_distance(z_eval, k=3)
+      score_raw = (0.8 * memory_error) + (0.2 * recon_error)
+    score = 1.0 - float(np.exp(-max(0.0, score_raw)))
+    return score
+
   def score_and_learn(self, features: Dict[str, float]) -> float:
     if self._model is None or self._optimizer is None:
       self._init_from_features(features)
@@ -561,5 +629,45 @@ class OnlineAnomalyDetector:
       raise ValueError("Unknown algorithm: %s. Choose from: halfspacetrees, loda, kitnet, memstream" % algorithm)
     self.algorithm = self.impl.algorithm
 
+  def score_only(self, features: Dict[str, float]) -> float:
+    """Return anomaly score without updating model state (read-only)."""
+    return self.impl.score_only(features)
+
   def score_and_learn(self, features: Dict[str, float]) -> float:
     return self.impl.score_and_learn(features)
+
+  def compute_feature_attribution(
+    self,
+    features: Dict[str, float],
+    epsilon: float = 0.01,
+  ) -> Tuple[float, Dict[str, float]]:
+    """Model-agnostic perturbation-based attribution. Returns (score, {name: attribution})."""
+    return compute_feature_attribution(self, features, epsilon)
+
+
+def compute_feature_attribution(
+  detector: OnlineAnomalyDetector,
+  features: Dict[str, float],
+  epsilon: float = 0.01,
+) -> Tuple[float, Dict[str, float]]:
+  """
+  Model-agnostic perturbation-based feature attribution.
+  Returns (score, {feature_name: attribution}).
+  Positive attribution = feature pushes score up (more anomalous).
+  """
+  score = detector.score_only(features)
+  names = sorted(features.keys())
+  attribution: Dict[str, float] = {}
+  for name in names:
+    val = float(features[name])
+    val_plus = max(0.0, min(1.0, val + epsilon))
+    val_minus = max(0.0, min(1.0, val - epsilon))
+    features_plus = dict(features)
+    features_plus[name] = val_plus
+    features_minus = dict(features)
+    features_minus[name] = val_minus
+    s_plus = detector.score_only(features_plus)
+    s_minus = detector.score_only(features_minus)
+    grad_approx = (s_plus - s_minus) / (2.0 * epsilon) if epsilon > 0 else 0.0
+    attribution[name] = float(grad_approx * val)
+  return (score, attribution)

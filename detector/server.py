@@ -5,6 +5,7 @@ import os
 import threading
 import time
 from collections import deque
+from dataclasses import asdict
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -63,14 +64,23 @@ def _init_anomaly_log():
     logging.info("Anomaly logging enabled: %s", _anomaly_log_path)
 
 
-def _init_event_dump():
-  """Initialize event dump file if configured (all incoming events)."""
+def _init_event_dump(cfg: Optional[DetectorConfig] = None):
+  """Initialize event dump file if configured (all incoming events). Writes metadata header when file is empty."""
   global _event_dump_path
   dump_path = os.environ.get("EVENT_DUMP_PATH", "")
   if dump_path:
     _event_dump_path = Path(dump_path)
     _event_dump_path.parent.mkdir(parents=True, exist_ok=True)
     _event_dump_path.touch(exist_ok=True)
+    # Write metadata header when file is empty (new run)
+    if _event_dump_path.stat().st_size == 0 and cfg is not None:
+      meta = {
+        "_meta": True,
+        "date": datetime.now(timezone.utc).isoformat(),
+        "config": asdict(cfg),
+      }
+      with _event_dump_path.open("w", encoding="utf-8") as f:
+        f.write(json.dumps(meta) + "\n")
     logging.info("Event dump enabled: %s", _event_dump_path)
 
 
@@ -299,7 +309,7 @@ async def serve():
   logging.info("initializing anomaly model (%s)...", cfg.model_algorithm)
   RECENT_EVENTS = deque(maxlen=cfg.recent_events_buffer_size)
   _init_anomaly_log()
-  _init_event_dump()
+  _init_event_dump(cfg)
   servicer = RuleBasedDetector(cfg)
   logging.info("model initialized (recent_events buffer size=%d)", cfg.recent_events_buffer_size)
 

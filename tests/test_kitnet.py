@@ -95,3 +95,22 @@ def test_kitnet_cold_start_missing_internal_model_attribute(monkeypatch):
   assert score == 0.0
   assert detector._model is not None
   assert [name for name, _ in detector._model.calls] == ["score_partial", "fit_partial"]
+
+
+def test_kitnet_score_only_does_not_call_fit_partial(monkeypatch):
+  monkeypatch.setattr(model_module, "Pysad_KitNet", _FakeKitNet)
+  detector = OnlineKitNet(
+    max_size_ae=10,
+    grace_feature_mapping=5,
+    grace_anomaly_detector=10,
+    learning_rate=0.1,
+    hidden_ratio=0.75,
+    model_device="cpu",
+    seed=0,
+  )
+  detector.score_and_learn(_make_features())
+  detector._model.calls.clear()
+
+  detector.score_only(_make_features())
+
+  assert [name for name, _ in detector._model.calls] == ["score_partial"]

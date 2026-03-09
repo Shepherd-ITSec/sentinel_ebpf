@@ -40,9 +40,9 @@ def decode(path: Path, out):
       obj = json.loads(payload.decode("utf-8"))
       out.write(json.dumps(obj))
       out.write("\n")
-      if pbar:
+      if pbar is not None:
         pbar.update(1)
-    if pbar:
+    if pbar is not None:
       pbar.close()
 
 

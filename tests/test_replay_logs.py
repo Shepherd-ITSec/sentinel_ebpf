@@ -165,6 +165,16 @@ class TestReplayLogs:
     assert obj["container_id"] == "cid"
     assert obj["attributes"] == {"return_value": "0"}
 
+  def test_iter_events_jsonl_skips_metadata_line(self, temp_dir):
+    """iter_events_jsonl skips _meta lines (no event_id) written by detector event dump."""
+    jsonl_file = temp_dir / "events.jsonl"
+    meta = json.dumps({"_meta": True, "date": "2026-03-09T12:00:00Z", "config": {}}) + "\n"
+    evt = json.dumps({"event_id": "evt-1", "ts_unix_nano": 1234567890000000000, "data": ["x"]}) + "\n"
+    jsonl_file.write_text(meta + evt)
+    events = list(iter_events_jsonl(jsonl_file))
+    assert len(events) == 1
+    assert events[0]["event_id"] == "evt-1"
+
   def test_iter_events_jsonl_skip_second_half(self, temp_dir):
     """skip yields second half of events (for compare_replay_scores)."""
     jsonl_file = temp_dir / "events.jsonl"

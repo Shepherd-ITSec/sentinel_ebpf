@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Replay a slice of detector-events JSONL and compare model scores with original log.
 
-Define a starting point (--start-event or --start-ms). From there, the reduced dataset
-is split: first half = warmup, second half = replay. Compares replay scores with the
-scores originally written into the log.
+Compare: original scores (model had seen events 0..N-1) vs cold-model scores (model had
+NOT seen events before --start-event). Slice = events [start, start+limit). Replay the
+full slice with online score-and-learn; compare every event's scores.
 """
 
 import argparse
@@ -49,9 +49,8 @@ def _count_and_load_slice(
   start_event: int = 0,
   start_ms: Optional[int] = None,
   limit: int = 0,
-) -> Tuple[int, int, Dict[str, float]]:
-  """Count events from start, load original scores for second half of slice. Returns (total_in_slice, half, {event_id: score})."""
-  # First pass: count events in the slice (from start_event or start_ms onwards)
+) -> Tuple[int, Dict[str, float]]:
+  """Count events from start, load original scores for full slice. Returns (total_in_slice, {event_id: score})."""
   total_in_slice = 0
   cap = limit if limit > 0 else None
   n_seen = 0
@@ -82,8 +81,7 @@ def _count_and_load_slice(
         break
 
   total_in_slice = min(total_in_slice, cap) if cap else total_in_slice
-  half = total_in_slice // 2
-  second_half_scores: Dict[str, float] = {}
+  scores: Dict[str, float] = {}
   n_in_slice = 0
   n_seen = 0
   with _open_text_lines(path) as f:
@@ -108,21 +106,18 @@ def _count_and_load_slice(
       elif n_seen < start_event:
         n_seen += 1
         continue
-      if n_in_slice < half:
-        n_in_slice += 1
-        continue
       eid = str(obj.get("event_id", ""))
       if "score" in obj:
-        second_half_scores[eid] = float(obj["score"])
+        scores[eid] = float(obj["score"])
       n_in_slice += 1
       if n_in_slice >= total_in_slice:
         break
 
-  return total_in_slice, half, second_half_scores
+  return total_in_slice, scores
 
 
 def _load_replay_scores(dump_path: Path, expected_count: int) -> Dict[str, float]:
-  """Load scores from event dump. The last expected_count lines are from the second-half replay."""
+  """Load scores from event dump. The last expected_count lines are from the replay."""
   lines: list[str] = []
   with dump_path.open("r", encoding="utf-8") as f:
     line_iter = iter(f)
@@ -194,7 +189,7 @@ def _stop_detector(proc: subprocess.Popen) -> None:
 
 def main() -> None:
   ap = argparse.ArgumentParser(
-    description="Replay second half of detector-events JSONL and compare model scores with original log.",
+    description="Replay slice of detector-events JSONL and compare model scores with original log.",
   )
   ap.add_argument("events", default="events_09_03_26.jsonl", nargs="?", help="Path to detector-events JSONL")
   ap.add_argument("--out-dir", default="test_data/compare_replay", help="Output directory for dump and report")
@@ -204,7 +199,7 @@ def main() -> None:
   ap.add_argument("--algorithm", default=None, help="Model algorithm (kitnet, loda, halfspacetrees, memstream)")
   ap.add_argument("--threshold", default=None, help="Anomaly threshold (e.g. 0.7)")
   ap.add_argument("--limit", type=int, default=0, help="Cap total events in slice for quick testing (0=all)")
-  ap.add_argument("--start-event", type=int, default=0, help="Skip first N events; warmup+replay on the rest")
+  ap.add_argument("--start-event", type=int, default=0, help="Skip first N events; replay slice from there")
   ap.add_argument("--start-ms", type=int, default=None, help="Start from timestamp (ms since epoch); overrides --start-event")
   args = ap.parse_args()
 
@@ -220,14 +215,14 @@ def main() -> None:
     dump_path.unlink()
 
   log.info("Loading slice (start_event=%s, start_ms=%s, limit=%s)...", args.start_event, args.start_ms, args.limit or "all")
-  total, half, original_scores = _count_and_load_slice(
+  total, original_scores = _count_and_load_slice(
     events_path,
     start_event=args.start_event,
     start_ms=args.start_ms,
     limit=args.limit,
   )
-  second_half_count = total - half
-  log.info("Slice: %d events, warmup=%d, replay=%d", total, half, second_half_count)
+  skip = args.start_event if args.start_ms is None else 0
+  log.info("Slice: %d events (cold from start), replay with online score-and-learn", total)
 
   env_overrides: Dict[str, str] = {"EVENT_DUMP_PATH": str(dump_path)}
   if args.algorithm:
@@ -238,40 +233,26 @@ def main() -> None:
   log.info("Starting detector (EVENT_DUMP_PATH=%s)...", dump_path)
   detector = _start_detector(args.detector_port, env_overrides=env_overrides)
   target = f"localhost:{args.detector_port}"
-  warmup_skip = 0 if args.start_ms is not None else args.start_event
-  replay_skip = half if args.start_ms is not None else args.start_event + half
 
   try:
     _wait_for_detector(target, timeout_s=args.startup_timeout)
-    log.info("Warmup: first half of slice (%d events)...", half)
+    log.info("Replay slice (%d events)...", total)
     replay(
       str(events_path),
       target,
       args.pace,
       start_ms=args.start_ms,
       end_ms=None,
-      total=half,
-      label="Warmup",
-      max_events=half,
-      skip=warmup_skip,
-    )
-    log.info("Replay: second half of slice (%d events)...", second_half_count)
-    replay(
-      str(events_path),
-      target,
-      args.pace,
-      start_ms=args.start_ms,
-      end_ms=None,
-      total=second_half_count,
-      label="SecondHalf",
-      skip=replay_skip,
-      max_events=second_half_count,
+      total=total,
+      label="Replay",
+      max_events=total,
+      skip=skip,
     )
   finally:
     _stop_detector(detector)
 
   log.info("Loading replay scores from dump...")
-  replay_scores = _load_replay_scores(dump_path, second_half_count)
+  replay_scores = _load_replay_scores(dump_path, total)
 
   # Compare
   common = set(original_scores.keys()) & set(replay_scores.keys())
@@ -299,8 +280,6 @@ def main() -> None:
     "start_event": args.start_event,
     "start_ms": args.start_ms,
     "total_events_in_slice": total,
-    "first_half_warmup": half,
-    "second_half_replay": second_half_count,
     "common_event_ids": len(common),
     "mae": round(mae, 6),
     "max_abs_diff": round(max_diff, 6),
