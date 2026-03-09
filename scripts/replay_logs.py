@@ -53,13 +53,12 @@ def _open_text_lines(path: Path):
   return path.open("r", encoding="utf-8")
 
 
-def iter_events(path: Path, start_ms=None, end_ms=None, max_events=None):
-  """Yield event dicts from an EVT1 file. Optional: start_ms, end_ms (timestamp filter), max_events (stop after N events)."""
+def iter_events(path: Path, start_ms=None, end_ms=None, max_events=None, skip=None):
+  """Yield event dicts from an EVT1 file. Optional: start_ms, end_ms (timestamp filter), max_events (stop after N events), skip (skip first N events)."""
   n = 0
+  skipped = 0
   with open_stream(path) as f:
     while True:
-      if max_events is not None and n >= max_events:
-        return
       magic = f.read(4)
       if not magic:
         break
@@ -78,20 +77,24 @@ def iter_events(path: Path, start_ms=None, end_ms=None, max_events=None):
         continue
       if end_ms is not None and ts_ms > end_ms:
         break
+      if skip is not None and skipped < skip:
+        skipped += 1
+        continue
+      if max_events is not None and n >= max_events:
+        return
       n += 1
       yield obj
 
 
-def iter_events_jsonl(path: Path, start_ms=None, end_ms=None, max_events=None):
+def iter_events_jsonl(path: Path, start_ms=None, end_ms=None, max_events=None, skip=None):
   """Yield event dicts from a detector-events.jsonl file (lossless dump). Skips lines that are not event records (e.g. no event_id)."""
   n = 0
+  skipped = 0
   with _open_text_lines(path) as f:
     for line in f:
       line = line.strip()
       if not line:
         continue
-      if max_events is not None and n >= max_events:
-        return
       try:
         obj = json.loads(line)
       except json.JSONDecodeError:
@@ -104,18 +107,28 @@ def iter_events_jsonl(path: Path, start_ms=None, end_ms=None, max_events=None):
         continue
       if end_ms is not None and ts_ms > end_ms:
         continue
+      if skip is not None and skipped < skip:
+        skipped += 1
+        continue
+      if max_events is not None and n >= max_events:
+        return
       n += 1
       yield obj
 
 
-def replay(path, target, pace, start_ms, end_ms, total=None, label="Replay", max_events=None):
+def replay(path, target, pace, start_ms, end_ms, total=None, label="Replay", max_events=None, skip=None):
   path = Path(path)
   fmt = _detect_format(path)
-  log.info("replay: %s -> %s (format=%s, pace=%s%s)", path, target, fmt, pace, f" max_events={max_events}" if max_events else "")
+  extra = []
+  if max_events is not None:
+    extra.append(f"max_events={max_events}")
+  if skip is not None:
+    extra.append(f"skip={skip}")
+  log.info("replay: %s -> %s (format=%s, pace=%s%s)", path, target, fmt, pace, f" {' '.join(extra)}" if extra else "")
   channel = grpc.insecure_channel(target)
   stub = events_pb2_grpc.DetectorServiceStub(channel)
 
-  event_iter = iter_events_jsonl(path, start_ms, end_ms, max_events) if fmt == "jsonl" else iter_events(path, start_ms, end_ms, max_events)
+  event_iter = iter_events_jsonl(path, start_ms, end_ms, max_events, skip) if fmt == "jsonl" else iter_events(path, start_ms, end_ms, max_events, skip)
 
   def gen():
     first_ts = None
@@ -187,9 +200,10 @@ def main():
   ap.add_argument("--start-ms", type=int, default=None, help="Start timestamp filter (ms since epoch)")
   ap.add_argument("--end-ms", type=int, default=None, help="End timestamp filter (ms since epoch)")
   ap.add_argument("--max-events", type=int, default=None, help="Stop after replaying this many events (for warmup)")
+  ap.add_argument("--skip", type=int, default=None, help="Skip first N events before replaying (e.g. for second-half replay)")
   args = ap.parse_args()
 
-  replay(args.logfile, args.target, args.pace, args.start_ms, args.end_ms, max_events=args.max_events)
+  replay(args.logfile, args.target, args.pace, args.start_ms, args.end_ms, max_events=args.max_events, skip=args.skip)
 
 
 if __name__ == "__main__":

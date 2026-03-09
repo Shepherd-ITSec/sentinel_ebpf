@@ -165,6 +165,17 @@ class TestReplayLogs:
     assert obj["container_id"] == "cid"
     assert obj["attributes"] == {"return_value": "0"}
 
+  def test_iter_events_jsonl_skip_second_half(self, temp_dir):
+    """skip yields second half of events (for compare_replay_scores)."""
+    jsonl_file = temp_dir / "events.jsonl"
+    lines = []
+    for i in range(6):
+      lines.append(json.dumps({"event_id": f"evt-{i}", "ts_unix_nano": 1000000000 + i, "data": ["x"]}) + "\n")
+    jsonl_file.write_text("".join(lines))
+    events = list(iter_events_jsonl(jsonl_file, skip=3, max_events=3))
+    assert len(events) == 3
+    assert [e["event_id"] for e in events] == ["evt-3", "evt-4", "evt-5"]
+
   def test_iter_events_non_list_data_rejected_by_replay(self, temp_dir):
     """Replay should reject non-canonical non-list data vectors."""
     log_file = temp_dir / "events.bin"

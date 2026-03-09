@@ -16,10 +16,10 @@ def test_extract_feature_dict_returns_expected_shape():
     data=["openat", "2", "cat", "123", "124", "1000", "-100", "2", "/etc/passwd", "2"],
   )
   values = extract_feature_dict(evt)
-  # No event_type -> general features only (18)
-  assert len(values) == 18
+  # No event_type -> general features (18) + shared online stats (5 windows * 4)
+  assert len(values) == 18 + 5 * 4
   vec = np.array(list(values.values()), dtype=np.float32)
-  assert vec.shape == (18,)
+  assert vec.shape == (18 + 5 * 4,)
   assert np.isfinite(vec).all()
 
 
@@ -48,7 +48,7 @@ def test_extract_feature_dict_has_stable_features():
     data=["openat", "2", "ls", "10", "10", "0", "-100", "64", "/bin/ls", "64"],
   )
   values = extract_feature_dict(evt)
-  # Empty event_type -> general features only
+  # Empty event_type -> general features + shared online stats (proc/host rate, proc interarrival)
   general_features = {
     "event_hash",
     "comm_hash",
@@ -69,6 +69,11 @@ def test_extract_feature_dict_has_stable_features():
     "mount_ns_hash",
     "hostname_hash",
   }
+  for w in ("01", "1", "5", "30", "120"):
+    general_features.add(f"proc_rate_{w}")
+    general_features.add(f"host_rate_{w}")
+    general_features.add(f"proc_interarrival_{w}")
+    general_features.add(f"proc_interarrival_std_{w}")
   assert set(values.keys()) == general_features
 
 
@@ -117,7 +122,54 @@ def test_extract_feature_dict_adds_file_features_when_event_type_file():
   assert "file_tmp_path" in values
   assert values["file_tmp_path"] == 0.0
   assert "file_extension_hash" in values
-  assert len(values) == 18 + 3
+  assert "file_event_name_hash" in values
+  assert "file_open_flags_hash" in values
+  assert "file_arg0_norm" in values
+  assert "file_arg1_norm" in values
+  assert "proc_rate_1" in values
+  assert "host_rate_30" in values
+  assert "file_path_rate_5" in values
+  assert "file_pair_interarrival_std_1" in values
+  assert "file_proc_path_depth_mean_120" in values
+  assert "file_host_path_depth_std_30" in values
+  # 18 general + 5*4 shared online + 7 static file + 5*(2 rate + 4 interarrival + 6 path_depth) = 38+57 = 95
+  assert len(values) == 95
+
+
+def test_extract_file_features_open_flags_only_for_open_syscalls():
+  """open/openat/openat2 use open_flags; unlink, chmod, chown etc. get file_open_flags_hash 0.0."""
+  evt_openat = events_pb2.EventEnvelope(
+    event_id="f1",
+    event_name="openat",
+    event_type="file",
+    ts_unix_nano=1_700_000_000_000_000_000,
+    data=["openat", "257", "cat", "1", "1", "0", "0", "524288", "/etc/passwd", "O_RDONLY"],
+    attributes={"open_flags": "O_RDONLY|O_CLOEXEC"},
+  )
+  values_open = extract_feature_dict(evt_openat)
+  assert values_open["file_open_flags_hash"] != 0.0
+
+  evt_unlink = events_pb2.EventEnvelope(
+    event_id="f2",
+    event_name="unlink",
+    event_type="file",
+    ts_unix_nano=1_700_000_000_000_000_000,
+    data=["unlink", "87", "rm", "1", "1", "0", "0", "0", "/tmp/foo", ""],
+  )
+  values_unlink = extract_feature_dict(evt_unlink)
+  assert values_unlink["file_open_flags_hash"] == 0.0
+  assert values_unlink["file_tmp_path"] == 1.0
+
+  evt_chmod = events_pb2.EventEnvelope(
+    event_id="f3",
+    event_name="chmod",
+    event_type="file",
+    ts_unix_nano=1_700_000_000_000_000_000,
+    data=["chmod", "90", "chmod", "1", "1", "0", "493", "0", "/etc/shadow", ""],
+  )
+  values_chmod = extract_feature_dict(evt_chmod)
+  assert values_chmod["file_open_flags_hash"] == 0.0
+  assert values_chmod["file_event_name_hash"] != values_unlink["file_event_name_hash"]
 
 
 def test_extract_feature_dict_adds_network_features_when_event_type_network():
@@ -136,17 +188,16 @@ def test_extract_feature_dict_adds_network_features_when_event_type_network():
   assert "net_dport_norm" in values
   assert "net_daddr_hash" in values
   assert "net_af_hash" in values
-  assert "net_proc_rate_1" in values
-  assert "net_host_rate_30" in values
+  assert "proc_rate_1" in values
+  assert "host_rate_30" in values
   assert "net_daddr_rate_5" in values
-  assert "net_proc_interarrival_std_1" in values
   assert "net_pair_interarrival_std_30" in values
   assert "net_host_dport_mean_5" in values
   assert "net_host_addrlen_std_1" in values
   assert "net_daddr_dport_mean_30" in values
   assert "net_proc_daddr_dport_std_120" in values
-  # 7 static + 5*(4 rate + 4 interarrival mean+std + 4 proc dport/addrlen + 4 host + 4 daddr + 4 proc_daddr dport) = 7 + 5*20 = 107 network
-  assert len(values) == 18 + 107
+  # 18 general + 5*4 shared online + 7 static + 5*16 network-specific (no proc/host rate or proc interarrival) = 38+87 = 125
+  assert len(values) == 125
 
 
 def test_extract_network_features_socket_family_type():
@@ -207,6 +258,6 @@ def test_extract_feature_dict_adds_process_features_when_event_type_process():
   values = extract_feature_dict(evt)
   assert "process_is_execve" in values
   assert values["process_is_execve"] == 1.0
-  assert len(values) == 18 + 1
+  assert len(values) == 18 + 5 * 4 + 1
 
 

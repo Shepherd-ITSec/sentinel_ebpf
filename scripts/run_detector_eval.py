@@ -8,14 +8,19 @@ Run-all: full matrix; use nohup/tmux for overnight runs.
 
 import argparse
 import json
+import logging
 import os
 import subprocess
-import logging
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
+
+try:
+  from tqdm import tqdm
+except ImportError:
+  tqdm = None
 
 import grpc
 from grpc_health.v1 import health_pb2, health_pb2_grpc
@@ -120,7 +125,10 @@ def _count_labels(path: Path) -> int:
   """Count non-empty lines in a labels NDJSON file."""
   n = 0
   with path.open("r", encoding="utf-8") as f:
-    for line in f:
+    line_iter = iter(f)
+    if tqdm:
+      line_iter = tqdm(line_iter, desc="Count labels", unit=" line", file=sys.stderr)
+    for line in line_iter:
       if line.strip():
         n += 1
   return n

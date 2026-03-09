@@ -3,8 +3,14 @@
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Dict, Literal, Set
+
+try:
+  from tqdm import tqdm
+except ImportError:
+  tqdm = None
 
 LabelMode = Literal["evil_only", "sus_or_evil"]
 
@@ -13,7 +19,10 @@ def _load_labels(path: Path, label_mode: LabelMode = "sus_or_evil") -> Dict[str,
   """Load labels ndjson; positive = 1 by label_mode: evil_only (evil>0) or sus_or_evil (sus>0 or evil>0)."""
   labels: Dict[str, int] = {}
   with path.open("r", encoding="utf-8") as f:
-    for line in f:
+    line_iter = iter(f)
+    if tqdm:
+      line_iter = tqdm(line_iter, desc="Load labels", unit=" line", file=sys.stderr)
+    for line in line_iter:
       if not line.strip():
         continue
       row = json.loads(line)
@@ -33,7 +42,10 @@ def _load_flagged(path: Path) -> Set[str]:
   if not path.exists():
     return flagged
   with path.open("r", encoding="utf-8") as f:
-    for line in f:
+    line_iter = iter(f)
+    if tqdm:
+      line_iter = tqdm(line_iter, desc="Load anomalies", unit=" line", file=sys.stderr)
+    for line in line_iter:
       if not line.strip():
         continue
       row = json.loads(line)

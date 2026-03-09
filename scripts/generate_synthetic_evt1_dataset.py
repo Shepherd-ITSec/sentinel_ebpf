@@ -21,10 +21,16 @@ import csv
 import json
 import random
 import struct
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
+
+try:
+  from tqdm import tqdm
+except ImportError:
+  tqdm = None
 
 try:
   from .convert_beth_to_evt1 import _build_evt
@@ -75,7 +81,10 @@ def _load_beth_rows(csv_paths: List[Path]) -> List[SourceRow]:
       raise ValueError(f"CSV does not exist: {csv_path}")
     with csv_path.open("r", encoding="utf-8", newline="") as src:
       reader = csv.DictReader(src)
-      for row_idx, row in enumerate(reader):
+      row_iter = enumerate(reader)
+      if tqdm:
+        row_iter = tqdm(row_iter, desc=f"Load {csv_path.name}", unit=" row", file=sys.stderr)
+      for row_idx, row in row_iter:
         all_rows.append(SourceRow(source_file=str(csv_path), source_row_idx=row_idx, row=row))
   if not all_rows:
     raise ValueError("No rows loaded from CSV input files.")
@@ -176,7 +185,10 @@ def _write_evt1(path: Path, events: List[dict]) -> None:
   """Write events to an EVT1 binary file."""
   path.parent.mkdir(parents=True, exist_ok=True)
   with path.open("wb") as f:
-    for evt in events:
+    evt_iter = events
+    if tqdm:
+      evt_iter = tqdm(events, desc="Write EVT1", unit=" evt", file=sys.stderr)
+    for evt in evt_iter:
       payload = json.dumps(evt, separators=(",", ":")).encode("utf-8")
       f.write(MAGIC)
       f.write(struct.pack("<I", len(payload)))
@@ -187,7 +199,10 @@ def _write_labels_ndjson(path: Path, labels: List[dict]) -> None:
   """Write labels to NDJSON."""
   path.parent.mkdir(parents=True, exist_ok=True)
   with path.open("w", encoding="utf-8") as f:
-    for row in labels:
+    label_iter = labels
+    if tqdm:
+      label_iter = tqdm(labels, desc="Write labels", unit=" row", file=sys.stderr)
+    for row in label_iter:
       f.write(json.dumps(row) + "\n")
 
 

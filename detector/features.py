@@ -248,9 +248,29 @@ def _extract_feature_values(evt: events_pb2.EventEnvelope) -> tuple[float, ...]:
 
 
 def _extract_file_features(evt: events_pb2.EventEnvelope) -> Dict[str, float]:
-  """Type-specific features for event_type == 'file' (path semantics)."""
+  """
+  Type-specific features for event_type == 'file'.
+
+  Covers all file syscalls that trigger this extractor: open, openat, openat2,
+  unlink, unlinkat, rename, renameat, chmod, chown. They share the same event layout
+  (data[8]=path, data[6]/[7]=arg0/arg1, attributes open_flags for open*). One unified
+  feature set: path semantics, syscall identity, open flags (when applicable), and
+  Kitsune-style online stats (rate, interarrival, path-depth streams) per process,
+  host, path, and (comm, path) pair.
+  """
   path = (evt.data[8] if len(evt.data) > 8 else "").strip()
   path_lower = path.lower()
+  comm = (evt.data[2] if len(evt.data) > 2 else "") or "unknown"
+  host = (evt.hostname or "") or "unknown"
+  event_name = (evt.event_name or "") or (evt.data[0] if len(evt.data) > 0 else "")
+  arg0_str = evt.data[6] if len(evt.data) > 6 else "0"
+  arg1_str = evt.data[7] if len(evt.data) > 7 else "0"
+  arg0_val = abs(_safe_int(arg0_str, default=0))
+  arg1_val = abs(_safe_int(arg1_str, default=0))
+  ts_s = float(evt.ts_unix_nano) / 1_000_000_000.0
+  attrs = dict(evt.attributes or {})
+
+  # Path semantics (all file syscalls have at least one path)
   sensitive_prefixes = ("/etc", "/root", "/bin", "/usr/bin", "/sbin", "/usr/sbin")
   file_sensitive_path = 1.0 if any(path_lower.startswith(p) for p in sensitive_prefixes) else 0.0
   file_tmp_path = 1.0 if path_lower.startswith("/tmp") or path_lower.startswith("/var/tmp") else 0.0
@@ -261,11 +281,54 @@ def _extract_file_features(evt: events_pb2.EventEnvelope) -> Dict[str, float]:
     if "." in last:
       ext = "." + last.split(".")[-1]
   file_extension_hash = _hash01(ext)
-  return {
+  path_depth_norm = min(len(components) / 20.0, 1.0)
+
+  # Syscall identity (open vs unlink vs rename vs chmod vs chown etc.)
+  file_event_name_hash = _hash01(event_name)
+  # open_flags only meaningful for open/openat/openat2; others get 0.0 so feature always present
+  open_flags_str = (attrs.get("open_flags") or (evt.data[9] if len(evt.data) > 9 else "")) or ""
+  file_open_flags_hash = _hash01(open_flags_str) if event_name in ("open", "openat", "openat2") else 0.0
+
+  # Normalized args (dfd/flags for openat, mode for chmod, user/group for chown, etc.)
+  file_arg0_norm = min(np.log1p(arg0_val) / 20.0, 1.0)
+  file_arg1_norm = min(np.log1p(arg1_val) / 20.0, 1.0)
+
+  # Online statistics: only type-specific streams (path, pair). proc/host rate and
+  # proc interarrival are in general features.
+  path_key = path or "unknown"
+  pair_key = f"{comm}|{path_key}"
+  path_rate = _ONLINE_STATS.update_value("file", "rate", path_key, ts_s, 1.0)
+  pair_rate = _ONLINE_STATS.update_value("file", "rate", pair_key, ts_s, 1.0)
+  pair_dt = _ONLINE_STATS.update_interarrival("file", "interarrival", pair_key, ts_s, dt_scale_s=30.0)
+  proc_path_depth = _ONLINE_STATS.update_value("file", "path_depth", comm, ts_s, path_depth_norm)
+  host_path_depth = _ONLINE_STATS.update_value("file", "path_depth", host, ts_s, path_depth_norm)
+  pair_path_depth = _ONLINE_STATS.update_value("file", "path_depth", pair_key, ts_s, path_depth_norm)
+
+  def _rate01(weight: float) -> float:
+    return float(1.0 - np.exp(-max(0.0, weight)))
+
+  out: Dict[str, float] = {
     "file_sensitive_path": file_sensitive_path,
     "file_tmp_path": file_tmp_path,
     "file_extension_hash": file_extension_hash,
+    "file_event_name_hash": file_event_name_hash,
+    "file_open_flags_hash": file_open_flags_hash,
+    "file_arg0_norm": file_arg0_norm,
+    "file_arg1_norm": file_arg1_norm,
   }
+  for w in _ONLINE_WINDOWS:
+    wn = w[0]
+    out[f"file_path_rate_{wn}"] = _rate01(path_rate[wn][2])
+    out[f"file_pair_rate_{wn}"] = _rate01(pair_rate[wn][2])
+    out[f"file_pair_interarrival_{wn}"] = pair_dt[wn][0]
+    out[f"file_pair_interarrival_std_{wn}"] = pair_dt[wn][1]
+    out[f"file_proc_path_depth_mean_{wn}"] = proc_path_depth[wn][0]
+    out[f"file_proc_path_depth_std_{wn}"] = proc_path_depth[wn][1]
+    out[f"file_host_path_depth_mean_{wn}"] = host_path_depth[wn][0]
+    out[f"file_host_path_depth_std_{wn}"] = host_path_depth[wn][1]
+    out[f"file_pair_path_depth_mean_{wn}"] = pair_path_depth[wn][0]
+    out[f"file_pair_path_depth_std_{wn}"] = pair_path_depth[wn][1]
+  return out
 
 
 def _extract_network_features(evt: events_pb2.EventEnvelope) -> Dict[str, float]:
@@ -311,23 +374,19 @@ def _extract_network_features(evt: events_pb2.EventEnvelope) -> Dict[str, float]
   net_daddr_hash = _hash01(daddr)
   net_af_hash = _hash01(sockaddr.get("sa_family") or ("AF_INET" if family_val == 2 else "AF_INET6" if family_val == 10 else ""))
 
-  # --- Online statistics (generalized layer) ---
-  # Kitsune-style: process, host, process→destination, and per-destination streams;
-  # five decay windows; mean + std for value streams.
+  # --- Online statistics: only type-specific streams (pair, daddr). proc/host rate
+  # and proc interarrival are in general features.
   pair_key = f"{comm}|{daddr}|{dport}"
   daddr_key = daddr or "unknown"
-  proc_rate = _ONLINE_STATS.update_value("network", "rate", comm, ts_s, 1.0)
-  host_rate = _ONLINE_STATS.update_value("network", "rate", host, ts_s, 1.0)
   pair_rate = _ONLINE_STATS.update_value("network", "rate", pair_key, ts_s, 1.0)
   daddr_rate = _ONLINE_STATS.update_value("network", "rate", daddr_key, ts_s, 1.0)
-  proc_dt = _ONLINE_STATS.update_interarrival("network", "interarrival", comm, ts_s, dt_scale_s=30.0)
   pair_dt = _ONLINE_STATS.update_interarrival("network", "interarrival", pair_key, ts_s, dt_scale_s=30.0)
   proc_dport = _ONLINE_STATS.update_value("network", "dport", comm, ts_s, net_dport_norm)
   proc_addrlen = _ONLINE_STATS.update_value("network", "addrlen", comm, ts_s, net_addrlen_norm)
   host_dport = _ONLINE_STATS.update_value("network", "dport", host, ts_s, net_dport_norm)
   host_addrlen = _ONLINE_STATS.update_value("network", "addrlen", host, ts_s, net_addrlen_norm)
   daddr_dport = _ONLINE_STATS.update_value("network", "dport", daddr_key, ts_s, net_dport_norm)
-  proc_daddr_key = f"{comm}|{daddr}"  # process→IP (no port): port distribution per (process, destination IP)
+  proc_daddr_key = f"{comm}|{daddr}"
   proc_daddr_dport = _ONLINE_STATS.update_value("network", "dport", proc_daddr_key, ts_s, net_dport_norm)
 
   def _rate01(weight: float) -> float:
@@ -344,12 +403,8 @@ def _extract_network_features(evt: events_pb2.EventEnvelope) -> Dict[str, float]
   }
   for w in _ONLINE_WINDOWS:
     wn = w[0]
-    out[f"net_proc_rate_{wn}"] = _rate01(proc_rate[wn][2])
-    out[f"net_host_rate_{wn}"] = _rate01(host_rate[wn][2])
     out[f"net_pair_rate_{wn}"] = _rate01(pair_rate[wn][2])
     out[f"net_daddr_rate_{wn}"] = _rate01(daddr_rate[wn][2])
-    out[f"net_proc_interarrival_{wn}"] = proc_dt[wn][0]
-    out[f"net_proc_interarrival_std_{wn}"] = proc_dt[wn][1]
     out[f"net_pair_interarrival_{wn}"] = pair_dt[wn][0]
     out[f"net_pair_interarrival_std_{wn}"] = pair_dt[wn][1]
     out[f"net_proc_dport_mean_{wn}"] = proc_dport[wn][0]
@@ -376,13 +431,39 @@ def _extract_process_features(evt: events_pb2.EventEnvelope) -> Dict[str, float]
   }
 
 
+def _extract_general_online_stats(evt: events_pb2.EventEnvelope) -> Dict[str, float]:
+  """
+  Online stats that share the same composition across event types: proc rate,
+  host rate, proc interarrival. Used for all events so type-specific extractors
+  do not duplicate these fields.
+  """
+  comm = (evt.data[2] if len(evt.data) > 2 else "") or "unknown"
+  host = (evt.hostname or "") or "unknown"
+  ts_s = float(evt.ts_unix_nano) / 1_000_000_000.0
+  proc_rate = _ONLINE_STATS.update_value("general", "rate", comm, ts_s, 1.0)
+  host_rate = _ONLINE_STATS.update_value("general", "rate", host, ts_s, 1.0)
+  proc_dt = _ONLINE_STATS.update_interarrival("general", "interarrival", comm, ts_s, dt_scale_s=30.0)
+
+  def _rate01(weight: float) -> float:
+    return float(1.0 - np.exp(-max(0.0, weight)))
+
+  out: Dict[str, float] = {}
+  for w in _ONLINE_WINDOWS:
+    wn = w[0]
+    out[f"proc_rate_{wn}"] = _rate01(proc_rate[wn][2])
+    out[f"host_rate_{wn}"] = _rate01(host_rate[wn][2])
+    out[f"proc_interarrival_{wn}"] = proc_dt[wn][0]
+    out[f"proc_interarrival_std_{wn}"] = proc_dt[wn][1]
+  return out
+
+
 def extract_feature_dict(evt: events_pb2.EventEnvelope) -> Dict[str, float]:
   """
   Extract features as a dict for streaming models.
 
-  Always includes general features. If evt.event_type is set (e.g. 'file', 'network',
-  'process'), appends type-specific features. Features and thus vector size can
-  differ per event.
+  Always includes general features (including shared online stats: proc/host rate,
+  proc interarrival). If evt.event_type is set (e.g. 'file', 'network', 'process'),
+  appends type-specific features. Features and thus vector size can differ per event.
   """
   values = _extract_feature_values(evt)
   out: Dict[str, float] = {
@@ -405,6 +486,7 @@ def extract_feature_dict(evt: events_pb2.EventEnvelope) -> Dict[str, float]:
     "mount_ns_hash": values[16],
     "hostname_hash": values[17],
   }
+  out.update(_extract_general_online_stats(evt))
   event_type = (evt.event_type or "").strip().lower()
   if event_type == "file":
     out.update(_extract_file_features(evt))

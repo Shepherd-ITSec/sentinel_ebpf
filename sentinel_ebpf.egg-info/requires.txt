@@ -3,6 +3,7 @@ grpcio-tools==1.76.0
 grpcio-health-checking==1.76.0
 protobuf>=4.21.0
 PyYAML==6.0.2
+tqdm>=4.66.0
 
 [detector]
 numpy<2.0.0,>=1.24.0
@@ -21,10 +22,8 @@ pysad>=0.3.0
 pysad>=0.3.0
 
 [dev]
+matplotlib>=3.7.0
 pytest>=7.0.0
 pytest-asyncio>=0.21.0
 pytest-mock>=3.10.0
 requests>=2.31.0
-
-[local]
-tqdm>=4.66.0

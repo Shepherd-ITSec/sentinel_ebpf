@@ -6,9 +6,15 @@ import ast
 import csv
 import json
 import struct
+import sys
 import time
 from pathlib import Path
 from typing import Dict, List, Tuple
+
+try:
+  from tqdm import tqdm
+except ImportError:
+  tqdm = None
 
 MAGIC = b"EVT1"
 BETH_EVENT_TYPE = "network"
@@ -117,7 +123,10 @@ def convert(csv_file: Path, evt1_out: Path, labels_out: Path, limit: int = 0, ev
 
   with csv_file.open("r", encoding="utf-8", newline="") as src, evt1_out.open("wb") as evtf, labels_out.open("w", encoding="utf-8") as labf:
     reader = csv.DictReader(src)
-    for idx, row in enumerate(reader):
+    row_iter = reader
+    if tqdm:
+      row_iter = tqdm(reader, desc="Convert", unit=" row", file=sys.stderr)
+    for idx, row in enumerate(row_iter):
       if limit > 0 and written >= limit:
         break
       payload, label_row = _build_evt(row, idx, base_ts_ns, event_id_prefix=event_id_prefix)

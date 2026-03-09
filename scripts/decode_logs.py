@@ -5,6 +5,11 @@ import struct
 import sys
 from pathlib import Path
 
+try:
+  from tqdm import tqdm
+except ImportError:
+  tqdm = None
+
 MAGIC = b"EVT1"
 
 
@@ -18,6 +23,7 @@ def open_stream(path: Path):
 
 def decode(path: Path, out):
   with open_stream(path) as f:
+    pbar = tqdm(desc="Decode", unit=" rec", file=sys.stderr) if tqdm else None
     while True:
       magic = f.read(4)
       if not magic:
@@ -34,6 +40,10 @@ def decode(path: Path, out):
       obj = json.loads(payload.decode("utf-8"))
       out.write(json.dumps(obj))
       out.write("\n")
+      if pbar:
+        pbar.update(1)
+    if pbar:
+      pbar.close()
 
 
 def main():

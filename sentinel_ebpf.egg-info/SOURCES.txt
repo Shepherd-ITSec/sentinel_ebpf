@@ -20,6 +20,8 @@ tests/test_detector.py
 tests/test_events.py
 tests/test_features.py
 tests/test_filesink.py
+tests/test_generate_synthetic_evt1_dataset.py
+tests/test_kitnet.py
 tests/test_loda.py
 tests/test_memstream.py
 tests/test_models_optional.py
