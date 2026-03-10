@@ -78,4 +78,7 @@ fi
 echo "✓ Suspicious operations complete"
 echo ""
 echo "=== Activity generation finished ==="
-echo "Check detector logs for anomaly detections!"
+echo "Expected paths for verification (used by run-activity-generator):"
+echo "  Sensitive: /etc/passwd /etc/shadow /etc/group /etc/sudoers /etc/hosts /etc/ssh/sshd_config /root/.ssh/id_rsa /etc/ssl/private /etc/sentinel-test-write.txt"
+echo "  Normal: /tmp/sentinel-test-*.txt /proc/*/status /proc/version"
+echo "Run ./scripts/run-activity-generator.sh to verify which of these appear in the detector anomaly log."

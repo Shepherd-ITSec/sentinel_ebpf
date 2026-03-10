@@ -136,7 +136,7 @@ def _count_labels(path: Path) -> int:
 
 def _run_all_matrix(single_stream: bool = False) -> List[tuple]:
   """Yield (run_id, label_mode, env_overrides). BETH: 24 runs (both label_modes). Single-stream (e.g. synthetic): 12 runs (evil_only only)."""
-  algorithms = ["kitnet", "halfspacetrees", "loda", "memstream"]
+  algorithms = ["kitnet", "halfspacetrees", "loda", "memstream", "zscore"]
   thresholds = [0.7, 0.5, 0.3]
   label_modes = ["evil_only"] if single_stream else ["evil_only", "sus_or_evil"]
   runs: List[tuple] = []

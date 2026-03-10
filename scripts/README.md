@@ -12,6 +12,7 @@ This directory contains helper scripts for working with sentinel-ebpf. They are 
 
 - **`replay_logs.py`**: Replay EVT1 logs to the detector over gRPC, either as fast as possible or in realtime pacing.
 - **`decode_logs.py`**: Decode EVT1 binary logs (optionally gzipped) into human-readable NDJSON for inspection or debugging.
+- **`compare_replay_scores.py`**: Take a slice of `detector-events` JSONL, replay it to a fresh detector instance, and compare original vs replayed scores to sanity‑check determinism and state handling.
 
 ### Synthetic / activity generation
 
@@ -51,11 +52,17 @@ This directory contains helper scripts for working with sentinel-ebpf. They are 
    Optional second argument is total events (default 100000): `./scripts/run_synthetic_overnight.sh --generate test_data/synthetic/run5 50000`. The script generates the EVT1 and labels, then starts the matrix in the background; watch with `tail -f run4.log` (log name from the output prefix).
 - **`generate-activity.sh`**: Run inside a pod or host to generate a mix of normal and suspicious file activity (e.g., reading `/etc/passwd`) to exercise the probe and detector.
 - **`run-activity-generator.sh`**: Convenience wrapper for running the activity generator against a cluster or environment (see script for invocation details).
+- **`verify_activity_in_anomaly_log.py`**: Given an anomaly log and/or full event dump, report which generated activity paths were flagged, and check that benign vs sensitive paths match expectations (helps validate the activity generator and detector behavior).
 
 ### Long-running / orchestration helpers
 
 - **`run_beth_overnight.sh`**: Fire-and-forget wrapper that starts `run_detector_eval.py --run-all` (BETH mode) under `nohup`, logs to `run_all.log`.
 - **`run_synthetic_overnight.sh`**: Same in single-stream mode: `run_detector_eval.py --evt1/--labels --run-all`. No args = defaults to `test_data/synthetic/run3.evt1` and `run3.labels.ndjson`; optional args: `[evt1] [labels] [log]`. Warmup is in the data: generate the EVT1 with `--warmup-fraction 0.75` so the first part of the stream has no positives and the detector can learn normal behavior.
+
+### Analysis / visualization
+
+- **`analyze_dataset.py`**: Load detector event dump JSONL, plot loss/anomaly score over samples, and optionally count near-duplicate records (0/1/2/3‑field differences) to inspect dataset quality and anomaly distribution.
+- **`feature_attribution.py`**: Compute perturbation‑based feature attribution for detector events. Replays the stream up to a target event, then generates bar‑chart PNGs (and optional JSON reports) under `test_data/attribution/` by default; supports attributing multiple consecutive events via `--num-events`.
 
 ### Cluster / tooling setup
 

@@ -1,5 +1,8 @@
 """Focused tests for LODA-style online detector."""
 
+import tempfile
+from pathlib import Path
+
 import numpy as np
 import pytest
 import torch
@@ -80,6 +83,47 @@ def test_loda_effective_projections_scale_with_input_dim():
   assert small_proj is not None
   assert large_proj is not None
   assert large_proj > small_proj
+
+
+def test_loda_checkpoint_save_load_preserves_scores():
+  """Save checkpoint after N events, load, continue; scores match full replay."""
+  rng = np.random.default_rng(42)
+  events = [{f"f{i}": float(v) for i, v in enumerate(rng.normal(0.0, 1.0, size=12))} for _ in range(101)]
+
+  # Full replay: learn 0..99, score event 100
+  full = OnlineAnomalyDetector(algorithm="loda", seed=7)
+  for i in range(100):
+    full.score_and_learn(events[i])
+  full_score = full.score_only(events[100])
+
+  # Checkpoint at 50, load, replay 50..99, score event 100
+  with tempfile.NamedTemporaryFile(suffix=".pkl", delete=False) as f:
+    ckpt = Path(f.name)
+  try:
+    ckpt_det = OnlineAnomalyDetector(algorithm="loda", seed=7)
+    for i in range(100):
+      ckpt_det.score_and_learn(events[i])
+      if i == 49:
+        ckpt_det.save_checkpoint(ckpt, 50)
+
+    loaded = OnlineAnomalyDetector(algorithm="loda", seed=7)
+    idx = loaded.load_checkpoint(ckpt)
+    assert idx == 50
+    for i in range(50, 100):
+      loaded.score_and_learn(events[i])
+    loaded_score = loaded.score_only(events[100])
+    assert abs(full_score - loaded_score) < 1e-6
+  finally:
+    ckpt.unlink(missing_ok=True)
+
+
+def test_loda_attribution_space_lograw_matches_log1p_raw_score():
+  det = OnlineAnomalyDetector(algorithm="loda", seed=11)
+  det.score_and_learn(_make_features(np.zeros(9)))
+  features = _make_features(np.linspace(0.0, 1.0, num=9))
+  score_raw = det.score_only_raw(features)
+  score_lograw, _ = det.compute_feature_attribution(features, epsilon=0.01, score_mode="lograw")
+  assert abs(score_lograw - float(np.log1p(max(0.0, score_raw)))) < 1e-9
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available in test runtime")

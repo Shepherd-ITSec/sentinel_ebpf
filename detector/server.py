@@ -223,6 +223,8 @@ class DeterministicScorer:
         mem_latent_dim=self.cfg.mem_latent_dim,
         mem_memory_size=self.cfg.mem_memory_size,
         mem_lr=self.cfg.mem_lr,
+        zscore_min_count=self.cfg.zscore_min_count,
+        zscore_std_floor=self.cfg.zscore_std_floor,
         model_device=self.cfg.model_device,
         seed=self.cfg.model_seed,
       )
@@ -239,7 +241,10 @@ class DeterministicScorer:
       with self._lock:
         features = extract_feature_dict(evt)
         model = self._get_model(evt.event_type or "")
-        score = model.score_and_learn(features)
+        if getattr(self.cfg, "score_mode", "raw") == "scaled":
+          score = model.score_and_learn(features)
+        else:
+          score = model.score_and_learn_raw(features)
         anomaly = score >= self.cfg.threshold
 
       if anomaly:
@@ -250,11 +255,15 @@ class DeterministicScorer:
       score = 0.0
       reason = f"Scoring error: {str(e)}"
 
+    resp_score = float(score)
+    if getattr(self.cfg, "score_mode", "raw") == "scaled":
+      resp_score = min(resp_score, 1.0)
+
     return events_pb2.DetectionResponse(  # type: ignore[attr-defined]
       event_id=evt.event_id,
       anomaly=anomaly,
       reason=reason,
-      score=min(score, 1.0),
+      score=resp_score,
       ts=_now_timestamp(),
     )
 

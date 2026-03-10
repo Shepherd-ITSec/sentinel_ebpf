@@ -2,6 +2,9 @@
 import contextlib
 import io
 import logging
+import math
+import pickle
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -84,12 +87,28 @@ class OnlineHalfSpaceTrees:
 
   def score_only(self, features: Dict[str, float]) -> float:
     """Return anomaly score without updating model state (read-only)."""
+    return self.score_only_raw(features)
+
+  def score_only_raw(self, features: Dict[str, float]) -> float:
+    """Return the underlying (unsquashed) score."""
     return float(self.model.score_one(features))
 
   def score_and_learn(self, features: Dict[str, float]) -> float:
+    return self.score_and_learn_raw(features)
+
+  def score_and_learn_raw(self, features: Dict[str, float]) -> float:
+    """Return the underlying (unsquashed) score, learning from this instance."""
     score = self.model.score_one(features)
     self.model.learn_one(features)  # in-place; learn_one returns None
     return float(score)
+
+  def get_state(self) -> Dict[str, Any]:
+    """Return picklable state for checkpointing."""
+    return {"model": self.model}
+
+  def set_state(self, state: Dict[str, Any]) -> None:
+    """Restore from checkpoint state."""
+    self.model = state["model"]
 
 
 class OnlineLODA:
@@ -171,6 +190,11 @@ class OnlineLODA:
 
   def score_only(self, features: Dict[str, float]) -> float:
     """Return anomaly score without updating model state (read-only)."""
+    score_raw = self.score_only_raw(features)
+    return 1.0 - float(np.exp(-max(0.0, score_raw)))
+
+  def score_only_raw(self, features: Dict[str, float]) -> float:
+    """Return the underlying (unsquashed) score."""
     if self._weights is None:
       self._init_from_features(features)
     x = self._vectorize(features)
@@ -194,9 +218,14 @@ class OnlineLODA:
     totals = effective_counts.sum(dim=1) + smoothing * self.bins
     probs = (effective_counts[row_idx, bin_idx] + smoothing) / totals
     score = float(torch.mean(-torch.log(probs)).item())
-    return 1.0 - float(np.exp(-score))
+    return score
 
   def score_and_learn(self, features: Dict[str, float]) -> float:
+    score_raw = self.score_and_learn_raw(features)
+    return 1.0 - float(np.exp(-max(0.0, score_raw)))
+
+  def score_and_learn_raw(self, features: Dict[str, float]) -> float:
+    """Return the underlying (unsquashed) score, learning from this instance."""
     if self._weights is None:
       self._init_from_features(features)
     x = self._vectorize(features)
@@ -230,7 +259,29 @@ class OnlineLODA:
     delta = projections - mean
     mean[:] = mean + alpha * delta
     var[:] = (1.0 - alpha) * var + alpha * (delta * delta)
-    return 1.0 - float(np.exp(-score))
+    return score
+
+  def get_state(self) -> Dict[str, Any]:
+    """Return picklable state for checkpointing."""
+    if self._weights is None:
+      raise RuntimeError("LODA not initialized; cannot save empty state")
+    return {
+      "feature_names": list(self._feature_names),
+      "effective_n_projections": self._effective_n_projections,
+      "weights": self._weights.cpu().numpy(),
+      "mean": self._mean.cpu().numpy(),
+      "var": self._var.cpu().numpy(),
+      "counts": self._counts.cpu().numpy(),
+    }
+
+  def set_state(self, state: Dict[str, Any]) -> None:
+    """Restore from checkpoint state."""
+    self._feature_names = list(state["feature_names"])
+    self._effective_n_projections = int(state["effective_n_projections"])
+    self._weights = torch.from_numpy(np.asarray(state["weights"], dtype=np.float32)).to(self._device)
+    self._mean = torch.from_numpy(np.asarray(state["mean"], dtype=np.float32)).to(self._device)
+    self._var = torch.from_numpy(np.asarray(state["var"], dtype=np.float32)).to(self._device)
+    self._counts = torch.from_numpy(np.asarray(state["counts"], dtype=np.float32)).to(self._device)
 
 
 class OnlineKitNet:
@@ -298,6 +349,11 @@ class OnlineKitNet:
 
   def score_only(self, features: Dict[str, float]) -> float:
     """Return anomaly score without updating model state (read-only)."""
+    raw = self.score_only_raw(features)
+    return 1.0 - float(np.exp(-max(0.0, raw)))
+
+  def score_only_raw(self, features: Dict[str, float]) -> float:
+    """Return the underlying (unsquashed) score."""
     x = self._vectorize(features)
     if self._model is None:
       raise RuntimeError("KitNet not initialized")
@@ -312,9 +368,14 @@ class OnlineKitNet:
     if not np.isfinite(raw):
       logging.warning("KitNet produced non-finite score (%s); falling back to 0.0", raw)
       raw = 0.0
-    return 1.0 - float(np.exp(-max(0.0, raw)))
+    return max(0.0, float(raw))
 
   def score_and_learn(self, features: Dict[str, float]) -> float:
+    raw = self.score_and_learn_raw(features)
+    return 1.0 - float(np.exp(-max(0.0, raw)))
+
+  def score_and_learn_raw(self, features: Dict[str, float]) -> float:
+    """Return the underlying (unsquashed) score, learning from this instance."""
     x = self._vectorize(features)
     if self._model is None:
       raise RuntimeError("KitNet not initialized")
@@ -333,7 +394,23 @@ class OnlineKitNet:
     if not np.isfinite(raw):
       logging.warning("KitNet produced non-finite score (%s); falling back to 0.0", raw)
       raw = 0.0
-    return 1.0 - float(np.exp(-max(0.0, raw)))
+    return max(0.0, float(raw))
+
+  def get_state(self) -> Dict[str, Any]:
+    """Return picklable state for checkpointing."""
+    if self._model is None:
+      raise RuntimeError("KitNet not initialized; cannot save empty state")
+    return {
+      "feature_names": list(self._feature_names),
+      "effective_max_size_ae": self._effective_max_size_ae,
+      "model": self._model,
+    }
+
+  def set_state(self, state: Dict[str, Any]) -> None:
+    """Restore from checkpoint state."""
+    self._feature_names = list(state["feature_names"])
+    self._effective_max_size_ae = int(state["effective_max_size_ae"])
+    self._model = state["model"]
 
 
 class _AutoEncoder(torch.nn.Module):
@@ -509,6 +586,11 @@ class OnlineMemStream:
 
   def score_only(self, features: Dict[str, float]) -> float:
     """Return anomaly score without updating model state (read-only)."""
+    score_raw = self.score_only_raw(features)
+    return 1.0 - float(np.exp(-max(0.0, score_raw)))
+
+  def score_only_raw(self, features: Dict[str, float]) -> float:
+    """Return the underlying (unsquashed) score."""
     if self._model is None or self._optimizer is None:
       self._init_from_features(features)
     if self._model is None or self._optimizer is None:
@@ -523,10 +605,14 @@ class OnlineMemStream:
       recon_error = float(torch.mean((x_norm - recon_eval) ** 2).item())
       memory_error = self._memory_distance(z_eval, k=3)
       score_raw = (0.8 * memory_error) + (0.2 * recon_error)
-    score = 1.0 - float(np.exp(-max(0.0, score_raw)))
-    return score
+    return max(0.0, float(score_raw))
 
   def score_and_learn(self, features: Dict[str, float]) -> float:
+    score_raw = self.score_and_learn_raw(features)
+    return 1.0 - float(np.exp(-max(0.0, score_raw)))
+
+  def score_and_learn_raw(self, features: Dict[str, float]) -> float:
+    """Return the underlying (unsquashed) score, learning from this instance."""
     if self._model is None or self._optimizer is None:
       self._init_from_features(features)
     if self._model is None or self._optimizer is None:
@@ -555,9 +641,156 @@ class OnlineMemStream:
       loss.backward()
       self._optimizer.step()
       self._write_memory(x, z_train.squeeze(0))
+    return max(0.0, float(score_raw))
 
-    score = 1.0 - float(np.exp(-max(0.0, score_raw)))
-    return score
+  def get_state(self) -> Dict[str, Any]:
+    """Return picklable state for checkpointing."""
+    if self._model is None:
+      raise RuntimeError("MemStream not initialized; cannot save empty state")
+    return {
+      "feature_names": list(self._feature_names),
+      "model_state": {k: v.cpu() for k, v in self._model.state_dict().items()},
+      "optimizer_state": self._optimizer.state_dict() if self._optimizer else None,
+      "memory_latent": self._memory_latent.cpu().numpy() if self._memory_latent is not None else None,
+      "memory_input": self._memory_input.cpu().numpy() if self._memory_input is not None else None,
+      "norm_mean": self._norm_mean.cpu().numpy() if self._norm_mean is not None else None,
+      "norm_std": self._norm_std.cpu().numpy() if self._norm_std is not None else None,
+      "mem_index": self._mem_index,
+      "mem_filled": self._mem_filled,
+      "score_ema": self._score_ema,
+      "score_var_ema": self._score_var_ema,
+    }
+
+  def set_state(self, state: Dict[str, Any]) -> None:
+    """Restore from checkpoint state."""
+    self._feature_names = list(state["feature_names"])
+    # Init model from feature names so architecture exists
+    dummy = {k: 0.0 for k in self._feature_names}
+    self._init_from_features(dummy)
+    self._model.load_state_dict(
+      {k: v.to(self._device) for k, v in state["model_state"].items()}
+    )
+    if state["optimizer_state"] and self._optimizer:
+      self._optimizer.load_state_dict(state["optimizer_state"])
+    if state["memory_latent"] is not None:
+      self._memory_latent = torch.from_numpy(state["memory_latent"]).to(self._device)
+    if state["memory_input"] is not None:
+      self._memory_input = torch.from_numpy(state["memory_input"]).to(self._device)
+    if state["norm_mean"] is not None:
+      self._norm_mean = torch.from_numpy(state["norm_mean"]).to(self._device)
+    if state["norm_std"] is not None:
+      self._norm_std = torch.from_numpy(state["norm_std"]).to(self._device)
+    self._mem_index = int(state["mem_index"])
+    self._mem_filled = int(state["mem_filled"])
+    self._score_ema = state.get("score_ema")
+    self._score_var_ema = float(state.get("score_var_ema", 0.0))
+
+
+class OnlineZScore:
+  """Simple online per-feature Z-score baseline."""
+
+  def __init__(self, min_count: int, std_floor: float, model_device: str, seed: int):
+    del seed  # deterministic, no RNG state required
+    self.algorithm = "zscore"
+    requested_device = _resolve_torch_device(model_device)
+    self.device = "cpu"
+    if requested_device.type == "cuda":
+      logging.warning(
+        "algorithm=%s requested on CUDA, but zscore is CPU-only; using CPU",
+        self.algorithm,
+      )
+    self.min_count = int(max(1, min_count))
+    self.std_floor = float(max(1e-12, std_floor))
+    self._feature_names: Optional[List[str]] = None
+    self._count = 0
+    self._mean: Optional[np.ndarray] = None
+    self._m2: Optional[np.ndarray] = None
+    logging.info(
+      "Initialized %s (min_count=%d, std_floor=%.6f)",
+      self.algorithm,
+      self.min_count,
+      self.std_floor,
+    )
+
+  def _init_from_features(self, features: Dict[str, float]) -> None:
+    self._feature_names = sorted(features.keys())
+    dim = len(self._feature_names)
+    self._count = 0
+    self._mean = np.zeros(dim, dtype=np.float64)
+    self._m2 = np.zeros(dim, dtype=np.float64)
+    logging.info("ZScore input_dim=%d", dim)
+
+  def _vectorize(self, features: Dict[str, float]) -> np.ndarray:
+    if self._feature_names is None:
+      self._init_from_features(features)
+    if self._feature_names is None:
+      raise RuntimeError("ZScore feature names not initialized")
+    return np.array([float(features[k]) for k in self._feature_names], dtype=np.float64)
+
+  def _raw_from_vector(self, x: np.ndarray) -> float:
+    mean = self._mean
+    m2 = self._m2
+    if mean is None or m2 is None:
+      raise RuntimeError("ZScore not initialized")
+    if self._count < self.min_count:
+      return 0.0
+    denom = float(max(1, self._count - 1))
+    variance = np.maximum(m2 / denom, self.std_floor * self.std_floor)
+    std = np.sqrt(variance)
+    z_abs = np.abs((x - mean) / std)
+    return float(np.mean(z_abs))
+
+  def _learn_vector(self, x: np.ndarray) -> None:
+    mean = self._mean
+    m2 = self._m2
+    if mean is None or m2 is None:
+      raise RuntimeError("ZScore not initialized")
+    self._count += 1
+    delta = x - mean
+    mean += delta / float(self._count)
+    delta2 = x - mean
+    m2 += delta * delta2
+
+  def score_only(self, features: Dict[str, float]) -> float:
+    raw = self.score_only_raw(features)
+    return 1.0 - float(np.exp(-max(0.0, raw)))
+
+  def score_only_raw(self, features: Dict[str, float]) -> float:
+    x = self._vectorize(features)
+    return max(0.0, self._raw_from_vector(x))
+
+  def score_and_learn(self, features: Dict[str, float]) -> float:
+    raw = self.score_and_learn_raw(features)
+    return 1.0 - float(np.exp(-max(0.0, raw)))
+
+  def score_and_learn_raw(self, features: Dict[str, float]) -> float:
+    """Return the underlying (unsquashed) score, learning from this instance."""
+    x = self._vectorize(features)
+    raw = self._raw_from_vector(x)
+    self._learn_vector(x)
+    return max(0.0, raw)
+
+  def get_state(self) -> Dict[str, Any]:
+    """Return picklable state for checkpointing."""
+    if self._feature_names is None or self._mean is None or self._m2 is None:
+      raise RuntimeError("ZScore not initialized; cannot save empty state")
+    return {
+      "feature_names": list(self._feature_names),
+      "min_count": self.min_count,
+      "std_floor": self.std_floor,
+      "count": self._count,
+      "mean": self._mean,
+      "m2": self._m2,
+    }
+
+  def set_state(self, state: Dict[str, Any]) -> None:
+    """Restore from checkpoint state."""
+    self._feature_names = list(state["feature_names"])
+    self.min_count = int(state.get("min_count", self.min_count))
+    self.std_floor = float(state.get("std_floor", self.std_floor))
+    self._count = int(state["count"])
+    self._mean = np.asarray(state["mean"], dtype=np.float64)
+    self._m2 = np.asarray(state["m2"], dtype=np.float64)
 
 
 class OnlineAnomalyDetector:
@@ -584,6 +817,8 @@ class OnlineAnomalyDetector:
     mem_latent_dim: int = 8,
     mem_memory_size: int = 128,
     mem_lr: float = 0.001,
+    zscore_min_count: int = 20,
+    zscore_std_floor: float = 1e-3,
     model_device: str = "auto",
     seed: int = 42,
   ):
@@ -625,49 +860,126 @@ class OnlineAnomalyDetector:
         model_device=model_device,
         seed=seed,
       )
+    elif algo == "zscore":
+      self.impl = OnlineZScore(
+        min_count=zscore_min_count,
+        std_floor=zscore_std_floor,
+        model_device=model_device,
+        seed=seed,
+      )
     else:
-      raise ValueError("Unknown algorithm: %s. Choose from: halfspacetrees, loda, kitnet, memstream" % algorithm)
+      raise ValueError("Unknown algorithm: %s. Choose from: halfspacetrees, loda, kitnet, memstream, zscore" % algorithm)
     self.algorithm = self.impl.algorithm
 
   def score_only(self, features: Dict[str, float]) -> float:
     """Return anomaly score without updating model state (read-only)."""
     return self.impl.score_only(features)
 
+  def score_only_raw(self, features: Dict[str, float]) -> float:
+    """Return the underlying (unsquashed) score."""
+    return self.impl.score_only_raw(features)
+
   def score_and_learn(self, features: Dict[str, float]) -> float:
     return self.impl.score_and_learn(features)
+
+  def score_and_learn_raw(self, features: Dict[str, float]) -> float:
+    """Return the underlying (unsquashed) score, learning from this instance."""
+    return self.impl.score_and_learn_raw(features)
+
+  def save_checkpoint(self, path: Path, checkpoint_index: int) -> None:
+    """Save detector state after learning events 0..checkpoint_index-1."""
+    state = {
+      "algorithm": self.algorithm,
+      "checkpoint_index": checkpoint_index,
+      "impl_state": self.impl.get_state(),
+    }
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as f:
+      pickle.dump(state, f, protocol=pickle.HIGHEST_PROTOCOL)
+    logging.info("Saved checkpoint at index %d to %s", checkpoint_index, path)
+
+  def load_checkpoint(self, path: Path) -> int:
+    """Load detector state. Returns checkpoint_index (events 0..index-1 were learned)."""
+    path = Path(path)
+    with path.open("rb") as f:
+      state = pickle.load(f)
+    if state["algorithm"] != self.algorithm:
+      raise ValueError(
+        "Checkpoint algorithm %r does not match detector %r"
+        % (state["algorithm"], self.algorithm)
+      )
+    self.impl.set_state(state["impl_state"])
+    idx = int(state["checkpoint_index"])
+    logging.info("Loaded checkpoint from %s (index %d)", path, idx)
+    return idx
 
   def compute_feature_attribution(
     self,
     features: Dict[str, float],
     epsilon: float = 0.01,
+    *,
+    score_mode: str = "raw",
   ) -> Tuple[float, Dict[str, float]]:
     """Model-agnostic perturbation-based attribution. Returns (score, {name: attribution})."""
-    return compute_feature_attribution(self, features, epsilon)
+    if score_mode not in ("raw", "lograw", "scaled"):
+      raise ValueError("score_mode must be 'raw', 'lograw', or 'scaled'")
+    if score_mode == "raw":
+      score_fn = self.score_only_raw
+    elif score_mode == "scaled":
+      score_fn = self.score_only
+    else:
+      # log(1 + raw) behaves like percent change for large raw values:
+      # log(1+raw+Δ) - log(1+raw) ≈ Δ/(1+raw)
+      score_fn = lambda f: math.log1p(max(0.0, float(self.score_only_raw(f))))
+    return compute_feature_attribution(self, features, epsilon, score_fn=score_fn)
 
 
 def compute_feature_attribution(
   detector: OnlineAnomalyDetector,
   features: Dict[str, float],
   epsilon: float = 0.01,
+  binary_threshold: float = 0.01,
+  *,
+  score_fn=None,
 ) -> Tuple[float, Dict[str, float]]:
   """
   Model-agnostic perturbation-based feature attribution.
   Returns (score, {feature_name: attribution}).
   Positive attribution = feature pushes score up (more anomalous).
+
+  Binary features (value in [0, binary_threshold] or [1-binary_threshold, 1]) use flip:
+  attribution = (score(feature=1) - score(feature=0)) * value.
+  Avoids invalid interpolation and threshold effects from ±epsilon.
+
+  Continuous features use finite difference:
+  attribution = (s_plus - s_minus) / (2*epsilon) * value.
   """
-  score = detector.score_only(features)
+  if score_fn is None:
+    score_fn = detector.score_only
+  score = float(score_fn(features))
   names = sorted(features.keys())
   attribution: Dict[str, float] = {}
   for name in names:
     val = float(features[name])
-    val_plus = max(0.0, min(1.0, val + epsilon))
-    val_minus = max(0.0, min(1.0, val - epsilon))
-    features_plus = dict(features)
-    features_plus[name] = val_plus
-    features_minus = dict(features)
-    features_minus[name] = val_minus
-    s_plus = detector.score_only(features_plus)
-    s_minus = detector.score_only(features_minus)
-    grad_approx = (s_plus - s_minus) / (2.0 * epsilon) if epsilon > 0 else 0.0
-    attribution[name] = float(grad_approx * val)
+    is_binary = val <= binary_threshold or val >= (1.0 - binary_threshold)
+    if is_binary:
+      features_0 = dict(features)
+      features_0[name] = 0.0
+      features_1 = dict(features)
+      features_1[name] = 1.0
+      s_0 = float(score_fn(features_0))
+      s_1 = float(score_fn(features_1))
+      attribution[name] = float((s_1 - s_0) * val)
+    else:
+      val_plus = max(0.0, min(1.0, val + epsilon))
+      val_minus = max(0.0, min(1.0, val - epsilon))
+      features_plus = dict(features)
+      features_plus[name] = val_plus
+      features_minus = dict(features)
+      features_minus[name] = val_minus
+      s_plus = float(score_fn(features_plus))
+      s_minus = float(score_fn(features_minus))
+      grad_approx = (s_plus - s_minus) / (2.0 * epsilon) if epsilon > 0 else 0.0
+      attribution[name] = float(grad_approx * val)
   return (score, attribution)

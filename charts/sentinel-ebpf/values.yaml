@@ -61,8 +61,9 @@ detector:
   eventDumpPath: "/var/log/sentinel-ebpf/events.jsonl"   # Path to dump all incoming events to file (empty to disable, e.g., /var/log/sentinel-ebpf/events.jsonl)
   # Model configurations
   model:
-    algorithm: "kitnet"  # halfspacetrees | loda | memstream | kitnet
+    algorithm: "kitnet"  # halfspacetrees | loda | memstream | kitnet | zscore
     threshold: 0.7  # Anomaly score threshold (0-1)
+    score_mode: "raw"  # raw | scaled (scaled = bounded [0,1] scores)
     # Half-Space Trees parameters
     hst_n_trees: 25
     hst_height: 15
@@ -84,6 +85,9 @@ detector:
     mem_latent_dim: 8
     mem_memory_size: 128
     mem_lr: 0.001
+    # ZScore baseline parameters
+    zscore_min_count: 20
+    zscore_std_floor: 0.001
     seed: 42
   resources: {}
   nodeSelector: {}

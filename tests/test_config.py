@@ -115,10 +115,11 @@ class TestDetectorConfig:
 
   def test_load_default_config(self):
     # Clear env vars
-    for key in ["DETECTOR_PORT"]:
+    for key in ["DETECTOR_PORT", "DETECTOR_SCORE_MODE"]:
       os.environ.pop(key, None)
     cfg = load_detector_config()
     assert cfg.port == 50051
+    assert cfg.score_mode == "raw"
 
   def test_load_from_env(self):
     os.environ["DETECTOR_PORT"] = "8080"
@@ -136,6 +137,9 @@ class TestDetectorConfig:
     os.environ["DETECTOR_MEMSTREAM_LATENT_DIM"] = "6"
     os.environ["DETECTOR_MEMSTREAM_MEMORY_SIZE"] = "64"
     os.environ["DETECTOR_MEMSTREAM_LR"] = "0.005"
+    os.environ["DETECTOR_ZSCORE_MIN_COUNT"] = "15"
+    os.environ["DETECTOR_ZSCORE_STD_FLOOR"] = "0.002"
+    os.environ["DETECTOR_SCORE_MODE"] = "scaled"
     os.environ["DETECTOR_MODEL_DEVICE"] = "cpu"
     os.environ["DETECTOR_MODEL_SEED"] = "7"
     try:
@@ -155,6 +159,9 @@ class TestDetectorConfig:
       assert cfg.mem_latent_dim == 6
       assert cfg.mem_memory_size == 64
       assert cfg.mem_lr == 0.005
+      assert cfg.zscore_min_count == 15
+      assert cfg.zscore_std_floor == 0.002
+      assert cfg.score_mode == "scaled"
       assert cfg.model_device == "cpu"
       assert cfg.model_seed == 7
     finally:
@@ -174,6 +181,9 @@ class TestDetectorConfig:
         "DETECTOR_MEMSTREAM_LATENT_DIM",
         "DETECTOR_MEMSTREAM_MEMORY_SIZE",
         "DETECTOR_MEMSTREAM_LR",
+        "DETECTOR_ZSCORE_MIN_COUNT",
+        "DETECTOR_ZSCORE_STD_FLOOR",
+        "DETECTOR_SCORE_MODE",
         "DETECTOR_MODEL_DEVICE",
         "DETECTOR_MODEL_SEED",
       ]:

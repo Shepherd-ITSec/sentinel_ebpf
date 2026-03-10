@@ -183,11 +183,12 @@ Supported operators: `=`, `in`, `startswith`, `contains`, `and`, `or`, `not`, pa
 
 Set via `detector.model.*` in Helm values:
 
-- `algorithm`: `halfspacetrees`, `loda`, or `memstream`
-- `threshold`: anomaly threshold
-- per-algorithm params: `hst_*`, `loda_*`, `mem_*`, plus `seed`
+- `algorithm`: `halfspacetrees`, `loda`, `kitnet`, `memstream`, or `zscore`
+- `threshold`: anomaly threshold (interpreted in the space selected by `score_mode`)
+  - `score_mode` (env: `DETECTOR_SCORE_MODE`): `raw` (default) or `scaled`
+- per-algorithm params: `hst_*`, `loda_*`, `kitnet_*`, `mem_*`, `zscore_*`, plus `seed`
 - Model device selection via env var `DETECTOR_MODEL_DEVICE`: `auto` (default), `cpu`, or `cuda`
-- `loda` and `memstream` support CUDA; `halfspacetrees` is River-based and runs on CPU
+- `loda` and `memstream` support CUDA; `halfspacetrees`, `kitnet`, and `zscore` run on CPU in this implementation
 
 
 The detector scores events online (streaming), no separate batch training phase required.

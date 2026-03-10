@@ -25,7 +25,13 @@ class TestDetector:
   @pytest.mark.asyncio
   async def test_score_event_online(self):
     """Test online scoring behavior."""
-    cfg = DetectorConfig(model_algorithm="halfspacetrees", hst_n_trees=5, hst_height=5, hst_window_size=10)
+    cfg = DetectorConfig(
+      model_algorithm="halfspacetrees",
+      hst_n_trees=5,
+      hst_height=5,
+      hst_window_size=10,
+      score_mode="scaled",
+    )
     detector = RuleBasedDetector(cfg)
 
     evt = events_pb2.EventEnvelope(
@@ -43,7 +49,13 @@ class TestDetector:
   @pytest.mark.asyncio
   async def test_stream_events(self):
     """Test StreamEvents method with online scoring."""
-    cfg = DetectorConfig(model_algorithm="halfspacetrees", hst_n_trees=5, hst_height=5, hst_window_size=10)
+    cfg = DetectorConfig(
+      model_algorithm="halfspacetrees",
+      hst_n_trees=5,
+      hst_height=5,
+      hst_window_size=10,
+      score_mode="scaled",
+    )
     detector = RuleBasedDetector(cfg)
 
     async def event_gen():
@@ -75,6 +87,7 @@ class TestDetector:
       loda_range=2.0,
       loda_ema_alpha=0.5,
       loda_hist_decay=1.0,
+      score_mode="scaled",
     )
     detector = RuleBasedDetector(cfg)
 
@@ -99,6 +112,7 @@ class TestDetector:
       mem_latent_dim=4,
       mem_memory_size=4,
       mem_lr=0.01,
+      score_mode="scaled",
     )
     detector = RuleBasedDetector(cfg)
 
@@ -112,6 +126,29 @@ class TestDetector:
 
     resp = detector._score_event(evt)
     assert resp.event_id == "test-789"
+    assert 0.0 <= resp.score <= 1.0
+
+  @pytest.mark.asyncio
+  async def test_score_event_zscore(self):
+    """Test ZScore scoring path."""
+    cfg = DetectorConfig(
+      model_algorithm="zscore",
+      zscore_min_count=5,
+      zscore_std_floor=1e-3,
+      score_mode="scaled",
+    )
+    detector = RuleBasedDetector(cfg)
+
+    evt = events_pb2.EventEnvelope(
+      event_id="test-zscore",
+      event_name="execve",
+      event_type="",
+      ts_unix_nano=1234567890000000000,
+      data=["execve", "4", "bash", "1", "2", "1000", "0", "0", "/bin/bash", ""],
+    )
+
+    resp = detector._score_event(evt)
+    assert resp.event_id == "test-zscore"
     assert 0.0 <= resp.score <= 1.0
 
   @pytest.mark.asyncio

@@ -37,6 +37,8 @@ spec:
               value: {{ .Values.detector.model.algorithm | quote }}
             - name: DETECTOR_THRESHOLD
               value: {{ .Values.detector.model.threshold | quote }}
+            - name: DETECTOR_SCORE_MODE
+              value: {{ .Values.detector.model.score_mode | quote }}
             - name: DETECTOR_HST_N_TREES
               value: {{ .Values.detector.model.hst_n_trees | quote }}
             - name: DETECTOR_HST_HEIGHT
@@ -61,6 +63,10 @@ spec:
               value: {{ .Values.detector.model.mem_memory_size | quote }}
             - name: DETECTOR_MEMSTREAM_LR
               value: {{ .Values.detector.model.mem_lr | quote }}
+            - name: DETECTOR_ZSCORE_MIN_COUNT
+              value: {{ .Values.detector.model.zscore_min_count | quote }}
+            - name: DETECTOR_ZSCORE_STD_FLOOR
+              value: {{ .Values.detector.model.zscore_std_floor | quote }}
             - name: DETECTOR_KITNET_MAX_SIZE_AE
               value: {{ .Values.detector.model.kitnet_max_size_ae | quote }}
             - name: DETECTOR_KITNET_GRACE_FEATURE_MAPPING

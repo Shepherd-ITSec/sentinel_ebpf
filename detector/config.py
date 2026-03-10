@@ -8,7 +8,7 @@ class DetectorConfig:
   events_http_port: int = 50052  # 0 to disable; serves GET /recent_events for UI log tail in gRPC mode
   recent_events_buffer_size: int = 10000  # Size of recent events ring buffer for UI (default: 10000)
   # River model configuration
-  model_algorithm: str = "halfspacetrees"  # halfspacetrees | loda | kitnet | memstream
+  model_algorithm: str = "halfspacetrees"  # halfspacetrees | loda | kitnet | memstream | zscore
   threshold: float = 0.7  # Anomaly score threshold (0-1). Lower (e.g. 0.3) to flag more events when scores are mostly low.
   hst_n_trees: int = 25
   hst_height: int = 15
@@ -27,6 +27,10 @@ class DetectorConfig:
   mem_latent_dim: int = 8
   mem_memory_size: int = 128
   mem_lr: float = 0.001
+  zscore_min_count: int = 20
+  zscore_std_floor: float = 1e-3
+  # score_mode: raw = use model.score_*_raw() and emit raw scores; scaled = use bounded [0,1] scores.
+  score_mode: str = "raw"  # raw | scaled
   # auto: use CUDA when available, else CPU for torch-backed models (LODA, MemStream)
   # cpu/cuda: force explicit device choice
   model_device: str = "auto"
@@ -63,6 +67,11 @@ def load_config() -> DetectorConfig:
   mem_latent_dim = int(os.environ.get("DETECTOR_MEMSTREAM_LATENT_DIM", str(defaults.mem_latent_dim)))
   mem_memory_size = int(os.environ.get("DETECTOR_MEMSTREAM_MEMORY_SIZE", str(defaults.mem_memory_size)))
   mem_lr = float(os.environ.get("DETECTOR_MEMSTREAM_LR", str(defaults.mem_lr)))
+  zscore_min_count = int(os.environ.get("DETECTOR_ZSCORE_MIN_COUNT", str(defaults.zscore_min_count)))
+  zscore_std_floor = float(os.environ.get("DETECTOR_ZSCORE_STD_FLOOR", str(defaults.zscore_std_floor)))
+  score_mode = os.environ.get("DETECTOR_SCORE_MODE", defaults.score_mode).strip().lower()
+  if score_mode not in ("raw", "scaled"):
+    raise ValueError(f"Invalid DETECTOR_SCORE_MODE={score_mode!r}; must be 'raw' or 'scaled'")
   model_device = os.environ.get("DETECTOR_MODEL_DEVICE", defaults.model_device).strip().lower()
   model_seed = int(os.environ.get("DETECTOR_MODEL_SEED", str(defaults.model_seed)))
 
@@ -89,6 +98,9 @@ def load_config() -> DetectorConfig:
     mem_latent_dim=mem_latent_dim,
     mem_memory_size=mem_memory_size,
     mem_lr=mem_lr,
+    zscore_min_count=zscore_min_count,
+    zscore_std_floor=zscore_std_floor,
+    score_mode=score_mode,
     model_device=model_device,
     model_seed=model_seed,
   )
