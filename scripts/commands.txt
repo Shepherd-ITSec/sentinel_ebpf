@@ -1,0 +1,42 @@
+# Z-score on 09
+uv run python scripts/compare_replay_scores.py   events_09_03_26.jsonl   --algorithm zscore   --threshold 0.7 \
+--out-dir test_data/compare_replay_zscore_09 --score-mode raw
+
+uv run python scripts/analyze_dataset.py  test_data/compare_replay_zscore_09/replay_dump.jsonl   \
+--out test_data/compare_replay_zscore_09/loss_over_samples.png --diffs 0
+
+uv run python scripts/compare_replay_scores.py   events_09_03_26.jsonl   --algorithm zscore   --threshold 0.7  \
+--out-dir test_data/compare_replay_zscore_09_scaled --score-mode scaled
+
+uv run python scripts/analyze_dataset.py  test_data/compare_replay_zscore_09_scaled/replay_dump.jsonl   \
+--out test_data/compare_replay_zscore_09_scaled/loss_over_samples.png --diffs 0
+
+
+# kitnet on 09
+uv run python scripts/compare_replay_scores.py   events_09_03_26.jsonl   --algorithm kitnet   --threshold 0.7   \
+--out-dir test_data/compare_replay_kitnet_09 --score-mode raw
+
+uv run python scripts/analyze_dataset.py  test_data/compare_replay_kitnet_09/replay_dump.jsonl   \
+--out test_data/compare_replay_kitnet_09/loss_over_samples.png --diffs 0
+
+uv run python scripts/compare_replay_scores.py   events_09_03_26.jsonl   --algorithm kitnet   --threshold 0.7  \
+--out-dir test_data/compare_replay_kitnet_09_scaled --score-mode scaled
+
+uv run python scripts/analyze_dataset.py  test_data/compare_replay_kitnet_09_scaled/replay_dump.jsonl   \
+--out test_data/compare_replay_kitnet_09_scaled/loss_over_samples.png --diffs 0
+
+# Kitnet with AE=2 on 09
+export DETECTOR_KITNET_MAX_SIZE_AE=2
+
+uv run python scripts/compare_replay_scores.py   events_09_03_26.jsonl   --algorithm kitnet   --threshold 0.7   \
+--out-dir test_data/compare_replay_kitnet_09_AE2 --score-mode raw
+
+uv run python scripts/analyze_dataset.py  test_data/compare_replay_kitnet_09_AE2/replay_dump.jsonl   \
+--out test_data/compare_replay_kitnet_09_AE2/loss_over_samples.png --diffs 0
+
+uv run python scripts/compare_replay_scores.py   events_09_03_26.jsonl   --algorithm kitnet   --threshold 0.7  \
+--out-dir test_data/compare_replay_kitnet_09_scaled_AE2 --score-mode scaled
+
+uv run python scripts/analyze_dataset.py  test_data/compare_replay_kitnet_09_scaled_AE2/replay_dump.jsonl   \
+--out test_data/compare_replay_kitnet_09_scaled_AE2/loss_over_samples.png --diffs 0
+

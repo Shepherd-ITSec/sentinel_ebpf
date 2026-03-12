@@ -17,6 +17,10 @@ try:
   from pysad.models import KitNet as Pysad_KitNet
 except ImportError:
   Pysad_KitNet = None
+try:
+  from sklearn.neighbors import NearestNeighbors
+except ImportError:
+  NearestNeighbors = None
 
 
 def _auto_loda_projections(input_dim: int) -> int:
@@ -60,7 +64,7 @@ def _resolve_torch_device(preference: str) -> torch.device:
 
 
 class OnlineHalfSpaceTrees:
-  """Online anomaly detector using River Half-Space Trees."""
+  """Online anomaly detector using River Half-Space Trees. (Library-based wrapper)"""
 
   def __init__(self, n_trees: int, height: int, window_size: int, model_device: str, seed: int):
     self.algorithm = "halfspacetrees"
@@ -113,7 +117,7 @@ class OnlineHalfSpaceTrees:
 
 class OnlineLODA:
   """
-  Online LODA-style anomaly detector for streaming vectors.
+  Online LODA-style anomaly detector for streaming vectors. (Self-implementation)
   Uses sparse random projections + online histograms to estimate 1D densities.
 
   Reference design:
@@ -285,7 +289,7 @@ class OnlineLODA:
 
 
 class OnlineKitNet:
-  """Online anomaly detector using PySAD KitNet."""
+  """Online anomaly detector using PySAD KitNet. (Library-based wrapper)"""
 
   def __init__(
     self,
@@ -329,7 +333,13 @@ class OnlineKitNet:
       raise RuntimeError("PySAD KitNet not available. Install detector deps: `uv sync --extra detector`.")
     self._feature_names = sorted(features.keys())
     dim = len(self._feature_names)
-    effective_max_size_ae = min(dim, max(self.max_size_ae, _auto_kitnet_max_size_ae(dim)))
+    # Effective max_size_ae:
+    # - If config (self.max_size_ae) is non-zero, use it directly (clamped to dim).
+    # - If config is 0, fall back to auto mode based on input dim.
+    if self.max_size_ae:
+      effective_max_size_ae = min(dim, int(self.max_size_ae))
+    else:
+      effective_max_size_ae = min(dim, _auto_kitnet_max_size_ae(dim))
     self._effective_max_size_ae = effective_max_size_ae
     self._model = Pysad_KitNet(
       max_size_ae=effective_max_size_ae,
@@ -413,6 +423,7 @@ class OnlineKitNet:
     self._model = state["model"]
 
 
+
 class _AutoEncoder(torch.nn.Module):
   def __init__(self, input_dim: int, hidden_dim: int, latent_dim: int):
     super().__init__()
@@ -432,12 +443,9 @@ class _AutoEncoder(torch.nn.Module):
     recon = self.decoder(z)
     return z, recon
 
-
-
-
 class OnlineMemStream:
   """
-  Online MemStream-style detector using an autoencoder + latent memory.
+  Online MemStream-style detector using an autoencoder + latent memory. (Self-implementation)
 
   Reference design:
   - Paper: MemStream (WWW'22): https://arxiv.org/abs/2106.03837
@@ -687,7 +695,7 @@ class OnlineMemStream:
 
 
 class OnlineZScore:
-  """Simple online per-feature Z-score baseline."""
+  """Simple online per-feature Z-score baseline. (Self-implementation)"""
 
   def __init__(self, min_count: int, std_floor: float, model_device: str, seed: int):
     del seed  # deterministic, no RNG state required
@@ -793,8 +801,421 @@ class OnlineZScore:
     self._m2 = np.asarray(state["m2"], dtype=np.float64)
 
 
+class OnlineKNN:
+  """Online KNN anomaly detector with sliding memory. (Library-based wrapper)"""
+
+  def __init__(self, k: int, memory_size: int, metric: str, model_device: str, seed: int):
+    del seed  # deterministic, no RNG state required
+    self.algorithm = "knn"
+    requested_device = _resolve_torch_device(model_device)
+    self.device = "cpu"
+    if requested_device.type == "cuda":
+      logging.warning(
+        "algorithm=%s requested on CUDA, but KNN is CPU-only; using CPU",
+        self.algorithm,
+      )
+    self.k = int(max(1, k))
+    self.memory_size = int(max(8, memory_size))
+    self.metric = str(metric or "euclidean")
+    self._feature_names: Optional[List[str]] = None
+    self._memory: Optional[np.ndarray] = None
+    self._mem_index = 0
+    self._mem_filled = 0
+    logging.info(
+      "Initialized %s (k=%d, memory_size=%d, metric=%s)",
+      self.algorithm,
+      self.k,
+      self.memory_size,
+      self.metric,
+    )
+
+  def _init_from_features(self, features: Dict[str, float]) -> None:
+    if NearestNeighbors is None:
+      raise RuntimeError("scikit-learn not available. Install detector deps: `uv sync --extra detector`.")
+    self._feature_names = sorted(features.keys())
+    dim = len(self._feature_names)
+    self._memory = np.zeros((self.memory_size, dim), dtype=np.float64)
+    self._mem_index = 0
+    self._mem_filled = 0
+    logging.info("KNN input_dim=%d", dim)
+
+  def _vectorize(self, features: Dict[str, float]) -> np.ndarray:
+    if self._feature_names is None:
+      self._init_from_features(features)
+    if self._feature_names is None:
+      raise RuntimeError("KNN feature names not initialized")
+    return np.array([float(features[k]) for k in self._feature_names], dtype=np.float64)
+
+  def _raw_from_vector(self, x: np.ndarray) -> float:
+    if NearestNeighbors is None:
+      raise RuntimeError("scikit-learn not available. Install detector deps: `uv sync --extra detector`.")
+    if self._memory is None:
+      raise RuntimeError("KNN not initialized")
+    if self._mem_filled <= 0:
+      return 0.0
+    memory = self._memory[: self._mem_filled]
+    n_neighbors = min(self.k, self._mem_filled)
+    nn = NearestNeighbors(n_neighbors=n_neighbors, metric=self.metric)
+    nn.fit(memory)
+    dists, _ = nn.kneighbors(x.reshape(1, -1), n_neighbors=n_neighbors, return_distance=True)
+    raw = float(np.mean(dists))
+    if not np.isfinite(raw):
+      logging.warning("KNN produced non-finite score (%s); falling back to 0.0", raw)
+      return 0.0
+    return max(0.0, raw)
+
+  def _learn_vector(self, x: np.ndarray) -> None:
+    if self._memory is None:
+      raise RuntimeError("KNN not initialized")
+    if self._mem_filled < self.memory_size:
+      idx = self._mem_filled
+      self._mem_filled += 1
+    else:
+      idx = self._mem_index
+      self._mem_index = (self._mem_index + 1) % self.memory_size
+    self._memory[idx] = x
+
+  def score_only(self, features: Dict[str, float]) -> float:
+    raw = self.score_only_raw(features)
+    return 1.0 - float(np.exp(-max(0.0, raw)))
+
+  def score_only_raw(self, features: Dict[str, float]) -> float:
+    x = self._vectorize(features)
+    return self._raw_from_vector(x)
+
+  def score_and_learn(self, features: Dict[str, float]) -> float:
+    raw = self.score_and_learn_raw(features)
+    return 1.0 - float(np.exp(-max(0.0, raw)))
+
+  def score_and_learn_raw(self, features: Dict[str, float]) -> float:
+    """Return the underlying (unsquashed) score, learning from this instance."""
+    x = self._vectorize(features)
+    raw = self._raw_from_vector(x)
+    self._learn_vector(x)
+    return max(0.0, raw)
+
+  def get_state(self) -> Dict[str, Any]:
+    """Return picklable state for checkpointing."""
+    if self._feature_names is None or self._memory is None:
+      raise RuntimeError("KNN not initialized; cannot save empty state")
+    return {
+      "feature_names": list(self._feature_names),
+      "k": self.k,
+      "memory_size": self.memory_size,
+      "metric": self.metric,
+      "memory": self._memory,
+      "mem_index": self._mem_index,
+      "mem_filled": self._mem_filled,
+    }
+
+  def set_state(self, state: Dict[str, Any]) -> None:
+    """Restore from checkpoint state."""
+    self._feature_names = list(state["feature_names"])
+    self.k = int(state.get("k", self.k))
+    self.memory_size = int(state.get("memory_size", self.memory_size))
+    self.metric = str(state.get("metric", self.metric))
+    self._memory = np.asarray(state["memory"], dtype=np.float64)
+    self._mem_index = int(state["mem_index"])
+    self._mem_filled = int(state["mem_filled"])
+
+
+class OnlineFreq1D:
+  """
+  Simple frequency / rarity baseline using independent 1D marginals. (Self-implementation)
+
+  - Numeric features: fixed-bin histogram over [0, 1] (clamped).
+  - Categorical features: capped per-feature count tables for *_hash and binary flags.
+
+  Score (raw) = mean over features of excess surprisal:
+    max(0, -log p(x) - (-log p_uniform))
+  so cold-start produces score ~0 (uniform baseline).
+  """
+
+  _BINARY_FEATURES = frozenset({"return_success", "file_sensitive_path", "file_tmp_path", "process_is_execve", "process_is_fork"})
+
+  def __init__(
+    self,
+    bins: int,
+    alpha: float,
+    decay: float,
+    max_categories: int,
+    model_device: str,
+    seed: int,
+  ):
+    del seed  # deterministic, no RNG state required
+    self.algorithm = "freq1d"
+    requested_device = _resolve_torch_device(model_device)
+    self.device = "cpu"
+    if requested_device.type == "cuda":
+      logging.warning(
+        "algorithm=%s requested on CUDA, but freq1d is CPU-only; using CPU",
+        self.algorithm,
+      )
+
+    self.bins = int(max(2, bins))
+    self.alpha = float(alpha)
+    if not (self.alpha > 0.0):
+      raise ValueError("freq1d alpha must be > 0")
+    self.decay = float(decay)
+    if not (0.0 < self.decay <= 1.0):
+      raise ValueError("freq1d decay must be in (0, 1]")
+    self.max_categories = int(max(4, max_categories))
+
+    self._feature_names: Optional[List[str]] = None
+    self._kind: Optional[List[str]] = None  # "num" or "cat"
+    self._cat_mode: Optional[List[Optional[str]]] = None  # "hash" | "binary" | None
+
+    self._num_slot: Optional[List[int]] = None
+    self._num_counts: List[np.ndarray] = []
+    self._num_scale: List[float] = []
+
+    self._cat_slot: Optional[List[int]] = None
+    self._cat_counts: List[Dict[int, float]] = []
+    self._cat_other: List[float] = []
+    self._cat_scale: List[float] = []
+
+    logging.info(
+      "Initialized %s (bins=%d, alpha=%.3f, decay=%.4f, max_categories=%d)",
+      self.algorithm,
+      self.bins,
+      self.alpha,
+      self.decay,
+      self.max_categories,
+    )
+
+  def _is_categorical(self, name: str) -> tuple[bool, Optional[str]]:
+    if name.endswith("_hash"):
+      return True, "hash"
+    if name in self._BINARY_FEATURES:
+      return True, "binary"
+    return False, None
+
+  def _init_from_features(self, features: Dict[str, float]) -> None:
+    self._feature_names = sorted(features.keys())
+    kinds: List[str] = []
+    cat_modes: List[Optional[str]] = []
+    num_slot: List[int] = [-1] * len(self._feature_names)
+    cat_slot: List[int] = [-1] * len(self._feature_names)
+
+    for i, name in enumerate(self._feature_names):
+      is_cat, mode = self._is_categorical(name)
+      if is_cat:
+        kinds.append("cat")
+        cat_modes.append(mode)
+        cat_slot[i] = len(self._cat_counts)
+        self._cat_counts.append({})
+        self._cat_other.append(0.0)
+        self._cat_scale.append(1.0)
+      else:
+        kinds.append("num")
+        cat_modes.append(None)
+        num_slot[i] = len(self._num_counts)
+        self._num_counts.append(np.zeros(self.bins, dtype=np.float64))
+        self._num_scale.append(1.0)
+
+    self._kind = kinds
+    self._cat_mode = cat_modes
+    self._num_slot = num_slot
+    self._cat_slot = cat_slot
+    logging.info(
+      "Freq1D initialized with %d features (%d numeric, %d categorical)",
+      len(self._feature_names),
+      len(self._num_counts),
+      len(self._cat_counts),
+    )
+
+  def _maybe_rescale_numeric(self, slot: int) -> None:
+    scale = self._num_scale[slot]
+    if scale >= 1e-6:
+      return
+    self._num_counts[slot] *= scale
+    self._num_scale[slot] = 1.0
+
+  def _maybe_rescale_categorical(self, slot: int) -> None:
+    scale = self._cat_scale[slot]
+    if scale >= 1e-6:
+      return
+    if self._cat_counts[slot]:
+      for k in list(self._cat_counts[slot].keys()):
+        self._cat_counts[slot][k] *= scale
+    self._cat_other[slot] *= scale
+    self._cat_scale[slot] = 1.0
+
+  def _bin_numeric(self, x: float) -> int:
+    v = float(x)
+    if v <= 0.0:
+      return 0
+    if v >= 1.0:
+      return self.bins - 1
+    idx = int(v * self.bins)
+    if idx < 0:
+      return 0
+    if idx >= self.bins:
+      return self.bins - 1
+    return idx
+
+  def _cat_key(self, mode: str, x: float) -> int:
+    v = float(x)
+    if mode == "binary":
+      return 1 if v >= 0.5 else 0
+    # hash: _hash01 uses 4 decimal digits (0..9999)/10000. Treat as categorical ID.
+    if v <= 0.0:
+      return 0
+    if v >= 1.0:
+      return 9999
+    k = int(v * 10000.0 + 1e-6)
+    if k < 0:
+      return 0
+    if k > 9999:
+      return 9999
+    return k
+
+  def _score_numeric_slot(self, slot: int, x: float) -> float:
+    counts = self._num_counts[slot]
+    total = float(counts.sum())
+    idx = self._bin_numeric(x)
+    c = float(counts[idx])
+    p = (c + self.alpha) / (total + self.alpha * self.bins) if total >= 0.0 else 1.0 / float(self.bins)
+    p = max(1e-300, float(p))
+    baseline = math.log(float(self.bins))
+    return max(0.0, -math.log(p) - baseline)
+
+  def _learn_numeric_slot(self, slot: int, x: float) -> None:
+    self._num_scale[slot] *= self.decay
+    self._maybe_rescale_numeric(slot)
+    scale = self._num_scale[slot]
+    idx = self._bin_numeric(x)
+    self._num_counts[slot][idx] += 1.0 / max(scale, 1e-12)
+
+  def _score_cat_slot(self, slot: int, mode: str, x: float) -> float:
+    counts = self._cat_counts[slot]
+    other = float(self._cat_other[slot])
+    total = other + float(sum(counts.values()))
+    k = self._cat_key(mode, x)
+    c = float(counts.get(k, 0.0))
+    # K = tracked categories + OTHER bucket
+    alphabet = max(2, len(counts) + 1)
+    p = (c + self.alpha) / (total + self.alpha * alphabet) if total >= 0.0 else 1.0 / float(alphabet)
+    p = max(1e-300, float(p))
+    baseline = math.log(float(alphabet))
+    return max(0.0, -math.log(p) - baseline)
+
+  def _learn_cat_slot(self, slot: int, mode: str, x: float) -> None:
+    self._cat_scale[slot] *= self.decay
+    self._maybe_rescale_categorical(slot)
+    scale = self._cat_scale[slot]
+    k = self._cat_key(mode, x)
+    counts = self._cat_counts[slot]
+    if k in counts:
+      counts[k] = float(counts[k]) + (1.0 / max(scale, 1e-12))
+      return
+    if len(counts) < self.max_categories:
+      counts[k] = 1.0 / max(scale, 1e-12)
+      return
+    self._cat_other[slot] = float(self._cat_other[slot]) + (1.0 / max(scale, 1e-12))
+
+  def _ensure_init(self, features: Dict[str, float]) -> None:
+    if self._feature_names is None:
+      self._init_from_features(features)
+
+  def score_only(self, features: Dict[str, float]) -> float:
+    raw = self.score_only_raw(features)
+    return 1.0 - float(np.exp(-max(0.0, raw)))
+
+  def score_only_raw(self, features: Dict[str, float]) -> float:
+    self._ensure_init(features)
+    if self._feature_names is None or self._kind is None or self._num_slot is None or self._cat_slot is None or self._cat_mode is None:
+      raise RuntimeError("Freq1D not initialized")
+    total = 0.0
+    n = 0
+    for i, name in enumerate(self._feature_names):
+      x = float(features.get(name, 0.0))
+      if self._kind[i] == "num":
+        slot = self._num_slot[i]
+        if slot >= 0:
+          total += self._score_numeric_slot(slot, x)
+          n += 1
+      else:
+        slot = self._cat_slot[i]
+        mode = self._cat_mode[i] or "hash"
+        if slot >= 0:
+          total += self._score_cat_slot(slot, mode, x)
+          n += 1
+    return max(0.0, total / float(max(1, n)))
+
+  def score_and_learn(self, features: Dict[str, float]) -> float:
+    raw = self.score_and_learn_raw(features)
+    return 1.0 - float(np.exp(-max(0.0, raw)))
+
+  def score_and_learn_raw(self, features: Dict[str, float]) -> float:
+    self._ensure_init(features)
+    raw = self.score_only_raw(features)
+    if self._feature_names is None or self._kind is None or self._num_slot is None or self._cat_slot is None or self._cat_mode is None:
+      raise RuntimeError("Freq1D not initialized")
+    for i, name in enumerate(self._feature_names):
+      x = float(features.get(name, 0.0))
+      if self._kind[i] == "num":
+        slot = self._num_slot[i]
+        if slot >= 0:
+          self._learn_numeric_slot(slot, x)
+      else:
+        slot = self._cat_slot[i]
+        mode = self._cat_mode[i] or "hash"
+        if slot >= 0:
+          self._learn_cat_slot(slot, mode, x)
+    return max(0.0, float(raw))
+
+  def get_state(self) -> Dict[str, Any]:
+    if self._feature_names is None or self._kind is None or self._cat_mode is None or self._num_slot is None or self._cat_slot is None:
+      raise RuntimeError("Freq1D not initialized; cannot save empty state")
+    return {
+      "feature_names": list(self._feature_names),
+      "bins": self.bins,
+      "alpha": self.alpha,
+      "decay": self.decay,
+      "max_categories": self.max_categories,
+      "kind": list(self._kind),
+      "cat_mode": list(self._cat_mode),
+      "num_counts": [c for c in self._num_counts],
+      "num_scale": list(self._num_scale),
+      "cat_counts": [dict(d) for d in self._cat_counts],
+      "cat_other": list(self._cat_other),
+      "cat_scale": list(self._cat_scale),
+    }
+
+  def set_state(self, state: Dict[str, Any]) -> None:
+    self.bins = int(state.get("bins", self.bins))
+    self.alpha = float(state.get("alpha", self.alpha))
+    self.decay = float(state.get("decay", self.decay))
+    self.max_categories = int(state.get("max_categories", self.max_categories))
+    self._feature_names = list(state["feature_names"])
+    self._kind = list(state["kind"])
+    self._cat_mode = list(state["cat_mode"])
+
+    # Rebuild slot mappings and storage
+    self._num_counts = [np.asarray(c, dtype=np.float64) for c in state.get("num_counts", [])]
+    self._num_scale = [float(s) for s in state.get("num_scale", [])]
+    self._cat_counts = [dict(d) for d in state.get("cat_counts", [])]
+    self._cat_other = [float(v) for v in state.get("cat_other", [])]
+    self._cat_scale = [float(s) for s in state.get("cat_scale", [])]
+
+    num_slot: List[int] = [-1] * len(self._feature_names)
+    cat_slot: List[int] = [-1] * len(self._feature_names)
+    n_num = 0
+    n_cat = 0
+    for i, k in enumerate(self._kind):
+      if k == "num":
+        num_slot[i] = n_num
+        n_num += 1
+      else:
+        cat_slot[i] = n_cat
+        n_cat += 1
+    self._num_slot = num_slot
+    self._cat_slot = cat_slot
+
+
 class OnlineAnomalyDetector:
-  """Factory wrapper for online anomaly detectors."""
+  """Factory wrapper for online anomaly detectors. (Self-implementation)"""
 
   def __init__(
     self,
@@ -819,6 +1240,13 @@ class OnlineAnomalyDetector:
     mem_lr: float = 0.001,
     zscore_min_count: int = 20,
     zscore_std_floor: float = 1e-3,
+    knn_k: int = 5,
+    knn_memory_size: int = 1024,
+    knn_metric: str = "euclidean",
+    freq1d_bins: int = 64,
+    freq1d_alpha: float = 1.0,
+    freq1d_decay: float = 1.0,
+    freq1d_max_categories: int = 2048,
     model_device: str = "auto",
     seed: int = 42,
   ):
@@ -867,8 +1295,25 @@ class OnlineAnomalyDetector:
         model_device=model_device,
         seed=seed,
       )
+    elif algo == "knn":
+      self.impl = OnlineKNN(
+        k=knn_k,
+        memory_size=knn_memory_size,
+        metric=knn_metric,
+        model_device=model_device,
+        seed=seed,
+      )
+    elif algo == "freq1d":
+      self.impl = OnlineFreq1D(
+        bins=freq1d_bins,
+        alpha=freq1d_alpha,
+        decay=freq1d_decay,
+        max_categories=freq1d_max_categories,
+        model_device=model_device,
+        seed=seed,
+      )
     else:
-      raise ValueError("Unknown algorithm: %s. Choose from: halfspacetrees, loda, kitnet, memstream, zscore" % algorithm)
+      raise ValueError("Unknown algorithm: %s. Choose from: halfspacetrees, loda, kitnet, memstream, zscore, knn, freq1d" % algorithm)
     self.algorithm = self.impl.algorithm
 
   def score_only(self, features: Dict[str, float]) -> float:

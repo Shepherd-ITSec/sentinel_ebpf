@@ -225,6 +225,13 @@ class DeterministicScorer:
         mem_lr=self.cfg.mem_lr,
         zscore_min_count=self.cfg.zscore_min_count,
         zscore_std_floor=self.cfg.zscore_std_floor,
+        knn_k=self.cfg.knn_k,
+        knn_memory_size=self.cfg.knn_memory_size,
+        knn_metric=self.cfg.knn_metric,
+        freq1d_bins=self.cfg.freq1d_bins,
+        freq1d_alpha=self.cfg.freq1d_alpha,
+        freq1d_decay=self.cfg.freq1d_decay,
+        freq1d_max_categories=self.cfg.freq1d_max_categories,
         model_device=self.cfg.model_device,
         seed=self.cfg.model_seed,
       )
@@ -387,6 +394,10 @@ async def serve():
             "# HELP sentinel_ebpf_detector_info Detector metadata (algorithm name)",
             "# TYPE sentinel_ebpf_detector_info gauge",
             f'sentinel_ebpf_detector_info{{algorithm="{cfg.model_algorithm}"}} 1',
+            "",
+            "# HELP sentinel_ebpf_detector_threshold Anomaly score threshold (events with score >= this are flagged)",
+            "# TYPE sentinel_ebpf_detector_threshold gauge",
+            f"sentinel_ebpf_detector_threshold {cfg.threshold}",
           ]
           body = "\n".join(lines).encode("utf-8")
           self.send_response(200)

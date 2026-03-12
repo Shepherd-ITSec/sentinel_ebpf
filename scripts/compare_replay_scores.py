@@ -9,13 +9,15 @@ full slice with online score-and-learn; compare every event's scores.
 import argparse
 import gzip
 import json
-import math
-import statistics
 import logging
+import math
 import os
+import signal
+import statistics
 import subprocess
 import sys
 import time
+from dataclasses import asdict
 from pathlib import Path
 from typing import Dict, Iterator, Optional, Tuple
 
@@ -28,9 +30,15 @@ except ImportError:
   tqdm = None
 
 if __package__ is None or __package__ == "":
-  sys.path.insert(0, str(Path(__file__).resolve().parent))
+  here = Path(__file__).resolve()
+  scripts_dir = here.parent
+  repo_root = scripts_dir.parent
+  # Ensure both the scripts directory (for replay_logs) and repo root (for detector.*) are on sys.path.
+  sys.path.insert(0, str(repo_root))
+  sys.path.insert(0, str(scripts_dir))
 
 from replay_logs import replay
+from detector import config as detector_config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
 log = logging.getLogger(Path(__file__).stem)
@@ -160,31 +168,85 @@ def _wait_for_detector(target: str, timeout_s: float) -> None:
   raise RuntimeError(f"detector at {target} did not become ready: {last_error}")
 
 
+def _port_in_use(port: int) -> bool:
+  """Return True if something is already serving on the given port (e.g. leftover detector)."""
+  try:
+    channel = grpc.insecure_channel(f"localhost:{port}")
+    stub = health_pb2_grpc.HealthStub(channel)
+    stub.Check(health_pb2.HealthCheckRequest(service=""), timeout=1.0)
+    return True
+  except Exception:
+    return False
+
+
 def _start_detector(port: int, env_overrides: Optional[Dict[str, str]] = None) -> subprocess.Popen:
+  if _port_in_use(port):
+    raise RuntimeError(
+      f"Port {port} already in use (another detector?). Stop it or use --detector-port to pick a different port."
+    )
   env = os.environ.copy()
   env["DETECTOR_PORT"] = str(port)
   env["DETECTOR_QUIET"] = "1"
   if env_overrides:
     env.update(env_overrides)
   cmd = [sys.executable, "-m", "detector.server"]
+  # For replay/debug runs we want to see detector logs instead of discarding them,
+  # so send stdout/stderr to a file under test_data.
+  debug_log = Path(__file__).resolve().parent.parent / "test_data" / "detector_replay_debug.log"
+  debug_log.parent.mkdir(parents=True, exist_ok=True)
+  log_file = debug_log.open("a", encoding="utf-8")
   return subprocess.Popen(
     cmd,
     env=env,
     cwd=Path(__file__).resolve().parent.parent,
-    stdout=subprocess.DEVNULL,
-    stderr=subprocess.DEVNULL,
+    stdout=log_file,
+    stderr=log_file,
+    start_new_session=True,
   )
 
 
 def _stop_detector(proc: subprocess.Popen) -> None:
   if proc.poll() is not None:
     return
-  proc.terminate()
+  # Detector runs in its own process group (start_new_session=True). Kill the whole group
+  # so we don't leave orphaned children (e.g. if detector ever spawns subprocesses).
+  try:
+    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+  except (ProcessLookupError, OSError):
+    proc.terminate()
   try:
     proc.wait(timeout=10)
   except subprocess.TimeoutExpired:
-    proc.kill()
+    try:
+      os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, OSError):
+      proc.kill()
     proc.wait(timeout=5)
+
+
+def _build_detector_config(env_overrides: Dict[str, str], detector_port: int) -> Dict[str, object]:
+  """Return the effective DetectorConfig as a dict, given our env overrides.
+
+  We mirror what _start_detector() does by applying overrides on top of the
+  current environment, call detector.config.load_config(), then restore the
+  original environment.
+  """
+  # Mirror the env we pass to the detector process
+  cfg_env = {
+    "DETECTOR_PORT": str(detector_port),
+    "DETECTOR_QUIET": "1",
+  }
+  cfg_env.update(env_overrides)
+
+  orig_env = os.environ.copy()
+  try:
+    os.environ.update(cfg_env)
+    cfg = detector_config.load_config()
+  finally:
+    os.environ.clear()
+    os.environ.update(orig_env)
+
+  return asdict(cfg)
 
 
 def main() -> None:
@@ -196,8 +258,14 @@ def main() -> None:
   ap.add_argument("--detector-port", type=int, default=50051, help="Detector gRPC port")
   ap.add_argument("--pace", choices=["fast", "realtime"], default="fast", help="Replay pace")
   ap.add_argument("--startup-timeout", type=float, default=30.0, help="Seconds to wait for detector")
-  ap.add_argument("--algorithm", default=None, help="Model algorithm (kitnet, loda, halfspacetrees, memstream, zscore)")
+  ap.add_argument("--algorithm", default=None, help="Model algorithm (kitnet, loda, halfspacetrees, memstream, zscore, knn, freq1d)")
   ap.add_argument("--threshold", default=None, help="Anomaly threshold (e.g. 0.7)")
+  ap.add_argument(
+    "--score-mode",
+    choices=["raw", "scaled"],
+    default="raw",
+    help="Detector score space: raw (model.score_*_raw) or scaled (bounded [0,1] scores). Default: raw.",
+  )
   ap.add_argument("--limit", type=int, default=0, help="Cap total events in slice for quick testing (0=all)")
   ap.add_argument("--start-event", type=int, default=0, help="Skip first N events; replay slice from there")
   ap.add_argument("--start-ms", type=int, default=None, help="Start from timestamp (ms since epoch); overrides --start-event")
@@ -224,11 +292,13 @@ def main() -> None:
   skip = args.start_event if args.start_ms is None else 0
   log.info("Slice: %d events (cold from start), replay with online score-and-learn", total)
 
-  env_overrides: Dict[str, str] = {"EVENT_DUMP_PATH": str(dump_path)}
+  env_overrides: Dict[str, str] = {"EVENT_DUMP_PATH": str(dump_path), "DETECTOR_SCORE_MODE": args.score_mode}
   if args.algorithm:
     env_overrides["DETECTOR_MODEL_ALGORITHM"] = args.algorithm
   if args.threshold:
     env_overrides["DETECTOR_THRESHOLD"] = args.threshold
+
+  detector_cfg = _build_detector_config(env_overrides, args.detector_port)
 
   log.info("Starting detector (EVENT_DUMP_PATH=%s)...", dump_path)
   detector = _start_detector(args.detector_port, env_overrides=env_overrides)
@@ -286,6 +356,7 @@ def main() -> None:
     "correlation": round(corr, 6) if not math.isnan(corr) else None,
     "algorithm": args.algorithm or "default",
     "threshold": args.threshold or "default",
+    "detector_config": detector_cfg,
   }
   report_path = out_dir / "compare_report.json"
   report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

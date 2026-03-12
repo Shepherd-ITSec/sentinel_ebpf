@@ -40,7 +40,7 @@ echo ""
 # Sensitive file accesses (should trigger anomalies)
 echo "[2/2] Generating suspicious file activity..."
 # Use a space-separated list instead of bash array for POSIX compatibility
-SENSITIVE_FILES="/etc/passwd /etc/shadow /etc/group /etc/sudoers /etc/hosts /etc/ssh/sshd_config /root/.ssh/id_rsa /etc/ssl/private"
+SENSITIVE_FILES="  /etc/shadow /etc/group /etc/sudoers /etc/hosts /etc/ssh/sshd_config /root/.ssh/id_rsa /etc/ssl/private"
 
 count=0
 for file in ${SENSITIVE_FILES}; do

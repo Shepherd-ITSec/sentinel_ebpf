@@ -152,6 +152,55 @@ class TestDetector:
     assert 0.0 <= resp.score <= 1.0
 
   @pytest.mark.asyncio
+  async def test_score_event_freq1d(self):
+    """Test Freq1D scoring path."""
+    cfg = DetectorConfig(
+      model_algorithm="freq1d",
+      freq1d_bins=32,
+      freq1d_alpha=1.0,
+      freq1d_decay=1.0,
+      freq1d_max_categories=128,
+      score_mode="scaled",
+    )
+    detector = RuleBasedDetector(cfg)
+
+    evt = events_pb2.EventEnvelope(
+      event_id="test-freq1d",
+      event_name="openat",
+      event_type="",
+      ts_unix_nano=1234567890000000000,
+      data=["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
+    )
+
+    resp = detector._score_event(evt)
+    assert resp.event_id == "test-freq1d"
+    assert 0.0 <= resp.score <= 1.0
+
+  @pytest.mark.asyncio
+  async def test_score_event_knn(self):
+    """Test KNN scoring path."""
+    cfg = DetectorConfig(
+      model_algorithm="knn",
+      knn_k=3,
+      knn_memory_size=64,
+      knn_metric="euclidean",
+      score_mode="scaled",
+    )
+    detector = RuleBasedDetector(cfg)
+
+    evt = events_pb2.EventEnvelope(
+      event_id="test-knn",
+      event_name="openat",
+      event_type="",
+      ts_unix_nano=1234567890000000000,
+      data=["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
+    )
+
+    resp = detector._score_event(evt)
+    assert resp.event_id == "test-knn"
+    assert 0.0 <= resp.score <= 1.0
+
+  @pytest.mark.asyncio
   async def test_report_anomaly(self):
     """Test ReportAnomaly method."""
     cfg = DetectorConfig()

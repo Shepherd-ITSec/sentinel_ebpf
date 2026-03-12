@@ -8,11 +8,13 @@ tqdm>=4.66.0
 [detector]
 numpy<2.0.0,>=1.24.0
 river>=0.21.0
+scikit-learn>=1.3.0
 torch>=2.2.0
 
 [detector-cuda]
 numpy<2.0.0,>=1.24.0
 river>=0.21.0
+scikit-learn>=1.3.0
 torch>=2.2.0
 
 [detector-cuda:python_version >= "3.10"]

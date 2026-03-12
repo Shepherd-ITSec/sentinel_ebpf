@@ -21,8 +21,9 @@ from bcc import BPF
 import events_pb2
 import events_pb2_grpc
 from probe.config import AppConfig, load_config
-from probe.events import EVENT_ID_TO_NAME
+from probe.events import EVENT_ID_TO_NAME, EVENT_IDS_WITH_RETURN_VALUE
 from probe.open_flags import decode_open_flags
+from probe.bpf_build import build_bpf_program, enabled_event_ids_from_rules
 from probe.rules import RuleEngine
 
 # Fast UUID generation using counter + timestamp (much faster than uuid.uuid4())
@@ -60,19 +61,6 @@ class BpfRule(ctypes.Structure):
   ]
 
 
-def _load_bpf_program() -> str:
-  """Load BPF program from separate file."""
-  bpffile = Path(__file__).parent / "probe.bpf.c"
-  if not bpffile.exists():
-    raise FileNotFoundError(f"BPF program file not found: {bpffile}")
-  return bpffile.read_text(encoding="utf-8")
-
-
-def _build_bpf_program(ring_buffer_pages: int) -> str:
-  """Load and build BPF program with ring buffer pages substitution."""
-  pages = max(1, int(ring_buffer_pages))
-  program = _load_bpf_program()
-  return program.replace("__RINGBUF_PAGES__", str(pages))
 
 
 def _mtime_or_zero(path: str) -> float:
@@ -643,13 +631,17 @@ def start_health_server(port: int, probe_runner=None) -> HTTPServer:
 class ProbeRunner:
   def __init__(self, cfg: AppConfig):
     self.cfg = cfg
-    self.bpf = BPF(text=_build_bpf_program(cfg.stream.ring_buffer_pages))
+    self.rule_engine = RuleEngine(cfg.rules_file)
+    compiled, _ = self.rule_engine.compile_kernel_rules()
+    enabled_ids = enabled_event_ids_from_rules(compiled)
+    self.bpf = BPF(
+      text=build_bpf_program(cfg.stream.ring_buffer_pages, enabled_event_ids=enabled_ids)
+    )
     self.streamer = GrpcStreamer(cfg)
     self.filesink: Optional[FileSink] = None
     self._stop = threading.Event()
     self._metadata = _hostname_metadata()
     self.host_metrics = HostMetricsSampler()
-    self.rule_engine = RuleEngine(cfg.rules_file)
     self._compiled_rule_count = 0
     self._loaded_rule_count = 0
     self._kernel_compiled_predicates = 0
@@ -770,6 +762,9 @@ class ProbeRunner:
     attributes["event_id"] = str(event_id)
     attributes["arg0"] = str(int(event.arg0))
     attributes["arg1"] = str(int(event.arg1))
+    return_val = int(getattr(event, "return_value", 0) or 0)
+    if event_id in EVENT_IDS_WITH_RETURN_VALUE:
+      attributes["return_value"] = str(return_val)
 
     flags_str = ""
     if event_id in (2, 257, 437):
@@ -789,7 +784,7 @@ class ProbeRunner:
         "arg0": int(event.arg0),
         "arg1": int(event.arg1),
         "arg_flags": attributes.get("open_flags", ""),
-        "return_value": None,
+        "return_value": return_val if event_id in EVENT_IDS_WITH_RETURN_VALUE else None,
         "hostname": self._metadata["hostname"],
         "namespace": self._metadata["namespace"],
       }

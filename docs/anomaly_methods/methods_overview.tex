@@ -1,0 +1,132 @@
+\documentclass[a4paper,11pt]{article}
+
+\usepackage[margin=2.5cm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{hyperref}
+
+\title{Streaming Anomaly Detection Methods: Practical Considerations}
+\author{sentinel-ebpf notes}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\section{Possible Models}
+The first half of the methods are univariant, and cannot be use for our multivariant features.
+Form the remaining half of them are supervised and cannot be used for our unsupervised setting.
+
+remaining are:
+\begin{itemize}
+  \item k-Means [151]
+  \item KNN [110]
+  \item Torsk [60]
+  \item EIF [58]
+  \item iForest [83]
+  \item HBOS [47]
+  \item DBStream [55]
+  \item CBLOF [59]
+  \item COPOD [80]
+  \item IF-LOF [36]
+  \item LOF [22]
+  \item COF [130]
+  \item PCC [121]
+\end{itemize}
+
+\section{Context and constraints}
+After this initial pre-filter (dropping univariate and supervised approaches), we further restrict ourselves to methods that:
+\begin{itemize}
+  \item operate on a \emph{very large, continuous event stream} (syscall-level events),
+  \item tolerate an effectively huge ``window'' of normal behaviour,
+  \item can be updated online with \emph{bounded state} and \emph{no constant full reconstruction},
+  \item are reasonably simple to implement and maintain in production.
+\end{itemize}
+
+Below we group these remaining candidate methods into seven broad categories:
+
+
+\section{Deep learning methods}
+none of the remaining unsupervised multivariate candidates fall into this group.
+\begin{itemize}
+  \item Most are designed for batch or mini-batch training.
+  \item Many focus on fixed-length time-series windows per entity (e.g. multivariate KPIs).
+  \item Too complex for a baseline
+\end{itemize}
+
+\section{Local density / outlier detection methods}
+Representative remaining methods: LOF, COF, IF-LOF, DBStream, CBLOF, COPOD, HBOS, iForest, EIF, KNN.
+
+\subsection*{Neighbour-based local methods}
+These methods fundamentally rely on \textbf{k-nearest neighbours} or small local neighbourhoods in the current window. For a large sliding window and high-dimensional features:
+\begin{itemize}
+  \item Exact kNN or LOF-style density requires either:
+  \begin{itemize}
+    \item full neighbour search over the window (too slow), or
+    \item sophisticated \textbf{kNN and reverse-kNN indexes} that retain good performance in high dimensions.
+  \end{itemize}
+  \item Maintaining those indexes incrementally for hundreds of thousands of points per event type is a substantial engineering effort and still suffers from the curse of dimensionality.
+  \item Even incremental variants (ILOF, DILOF, MCOD, DBStream) depend critically on such indexes and non-trivial incremental neighbourhood bookkeeping.
+\end{itemize}
+
+\subsection*{Closed-form / histogram-based variants}
+Representative remaining methods: HBOS, COPOD, CBLOF/BLOF:
+\begin{itemize}
+  \item We already implement this flavour via our \textbf{Freq1D} baseline (per-feature histograms with decay and categorical handling).
+\end{itemize}
+
+\subsection*{Isolation Forest and variants}
+Representative remaining methods:Isolation Forest (IF), Extended Isolation Forest (EIF):
+\begin{itemize}
+  \item Basic Isolation Forest variants are \emph{batch} methods in common libraries: they do not support true online updates and instead require periodic full or partial forest rebuilds to track drift.
+  \item There are Incremental variants, but we already implement this flavour via our  Half-Space Trees (already implemented via River), 
+  \item Subsequence-oriented variants (Subsequence IF/LOF) additionally target fixed-length time-series segments rather than per-syscall feature vectors.
+\end{itemize}
+
+\section{Data mining / subsequence methods}
+none of the remaining unsupervised multivariate candidates fall into this group.
+
+\section{Classic machine learning}
+Representative remaining methods: k-Means, PCC.
+
+\subsection*{Global projection and boundary methods}
+
+k-Means and PCC are classic ML methods that optimise global objectives or low-rank structure. In a non-stationary stream:
+\begin{itemize}
+  \item Must adept to distribution drift, which typically means retraining or complicated incremental updates (or decaying the model).
+  \item Online variants exist (e.g. incremental PCA, online SVM)
+\end{itemize}
+
+\subsection*{Clustering and tree ensembles}
+Representative methods: Streaming k-Means
+\begin{itemize}
+  \item Cluster structure can become misaligned under complex non-stationary behaviour
+  \item Assumes roughly spherical clusters
+  \item Hard to tune over time.
+\end{itemize}
+
+\subsection*{Batch tree ensembles}
+none of the remaining unsupervised multivariate candidates fall into this group.
+\begin{itemize}
+  \item primarily designed for batch training, no support for true streaming updates
+  \item Expensive to rebuild
+  \item Track drift
+\end{itemize}
+
+
+\section{Signal analysis methods}
+Representative methods: Torsk.
+
+\subsection*{Why they do not match our event model}
+\begin{itemize}
+  \item These methods assume a small number of well-structured continuous signals (e.g. KPI time-series), not sparse, heterogeneous event streams of high-dimensional feature vectors.
+  \item They work on fixed-length windows per signal and require repeated transforms (FFT/DWT) over sliding windows, which is itself a form of constant state reconstruction for large windows.
+  \item Applying them at syscall level would require defining and maintaining many per-entity time-series and transform states, adding significant complexity without clear benefit over our existing models.
+\end{itemize}
+
+
+\section{Stochastic sequence models}
+none of the shortlisted methods are HMM/DBN-style sequence models
+
+\end{document}

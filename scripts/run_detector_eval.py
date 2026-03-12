@@ -135,8 +135,8 @@ def _count_labels(path: Path) -> int:
 
 
 def _run_all_matrix(single_stream: bool = False) -> List[tuple]:
-  """Yield (run_id, label_mode, env_overrides). BETH: 24 runs (both label_modes). Single-stream (e.g. synthetic): 12 runs (evil_only only)."""
-  algorithms = ["kitnet", "halfspacetrees", "loda", "memstream", "zscore"]
+  """Yield (run_id, label_mode, env_overrides). BETH: 28 runs (both label_modes). Single-stream (e.g. synthetic): 14 runs (evil_only only)."""
+  algorithms = ["kitnet", "halfspacetrees", "loda", "memstream", "zscore", "knn", "freq1d"]
   thresholds = [0.7, 0.5, 0.3]
   label_modes = ["evil_only"] if single_stream else ["evil_only", "sus_or_evil"]
   runs: List[tuple] = []
@@ -169,6 +169,12 @@ def main() -> None:
   ap.add_argument("--startup-timeout", type=float, default=30.0, help="Seconds to wait for detector readiness")
   ap.add_argument("--train-limit", type=int, default=0, help="Optional row cap for train conversion (0=all)")
   ap.add_argument("--test-limit", type=int, default=0, help="Optional row cap for test conversion (0=all)")
+  ap.add_argument(
+    "--score-mode",
+    choices=["raw", "scaled"],
+    default="raw",
+    help="Detector score space: raw (model.score_*_raw) or scaled (bounded [0,1] scores). Default: raw.",
+  )
   ap.add_argument(
     "--label-mode",
     choices=["evil_only", "sus_or_evil"],
@@ -223,6 +229,9 @@ def main() -> None:
     matrix = _run_all_matrix(single_stream=single_stream)
     manifest: List[Dict] = []
     for i, (run_id, label_mode, env_overrides) in enumerate(matrix):
+      # Ensure score_mode is propagated for every run
+      env_overrides = dict(env_overrides)
+      env_overrides["DETECTOR_SCORE_MODE"] = args.score_mode
       run_dir = run_all_dir / run_id
       run_dir.mkdir(parents=True, exist_ok=True)
       log.info("[%d/%d] Run: %s (label_mode=%s)", i + 1, len(matrix), run_id, label_mode)
@@ -310,7 +319,7 @@ def main() -> None:
     detector_port=args.detector_port,
     startup_timeout=args.startup_timeout,
     label_mode=args.label_mode,
-    env_overrides=None,
+    env_overrides={"DETECTOR_SCORE_MODE": args.score_mode},
     quiet=False,
     train_evt=train_evt,
     train_count=train_count,

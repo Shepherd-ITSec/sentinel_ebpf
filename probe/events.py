@@ -2,9 +2,14 @@
 
 from typing import Dict
 
+# Placeholder for rows with missing or unrecognized event names (not a syscall number).
+UNKNOWN_EVENT_ID = 9999
+
 # Curated events captured with enriched args/path.
 # IDs follow Linux x86_64 syscall numbers where applicable.
 EVENT_NAME_TO_ID: Dict[str, int] = {
+  "read": 0,
+  "write": 1,
   "open": 2,
   "close": 3,
   "stat": 4,
@@ -19,6 +24,7 @@ EVENT_NAME_TO_ID: Dict[str, int] = {
   "listen": 50,
   "getsockname": 51,
   "clone": 56,
+  "fork": 57,
   "connect": 42,
   "execve": 59,
   "kill": 62,
@@ -59,9 +65,13 @@ EVENT_NAME_TO_ID: Dict[str, int] = {
   "security_inode_unlink": 1006,
   "mem_prot_alert": 1009,
   "sched_process_exit": 1010,
-  # Placeholder for rows with missing event names.
-  "unknown": 0,
+  "unknown": UNKNOWN_EVENT_ID,
 }
 
 EVENT_ID_TO_NAME: Dict[int, str] = {v: k for k, v in EVENT_NAME_TO_ID.items()}
+
+# Syscalls instrumented at sys_exit with meaningful return value (fd, errno, etc.).
+EVENT_IDS_WITH_RETURN_VALUE: frozenset[int] = frozenset({
+    0, 1, 2, 3, 41, 42, 43, 49, 50, 57, 59, 257, 288, 437,
+})
 

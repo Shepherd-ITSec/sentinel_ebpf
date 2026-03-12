@@ -292,6 +292,25 @@
       .logs-full-width {
         width: 100%;
       }
+      .watch-filter-row {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 12px;
+        align-items: center;
+      }
+      .watch-filter-input {
+        flex: 1;
+        min-width: 0;
+        padding: 8px 12px;
+        font-size: 0.875rem;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--bg);
+        color: var(--text);
+      }
+      .watch-filter-input::placeholder {
+        color: var(--text-muted);
+      }
       @media (max-width: 1200px) {
         .main-layout {
           grid-template-columns: 1fr;
@@ -345,12 +364,33 @@
             </div>
           </div>
         </div>
+        <div class="section" data-widget-id="score-chart">
+          <h3>Anomaly Score (per poll)</h3>
+          <div class="section-inner">
+            <div class="map-note" style="margin-bottom:8px;">Scores can exceed 1 when detector uses <code>score_mode=raw</code> (default). Use <code>scaled</code> for 0–1 range.</div>
+            <div class="chart-container score-chart-container">
+              <div class="chart-wrapper">
+                <canvas id="scoreChart"></canvas>
+              </div>
+            </div>
+          </div>
+        </div>
         <div class="section" data-widget-id="anomalies">
           <h3>Anomalies</h3>
           <div class="section-inner" id="anomalies"></div>
         </div>
       </div>
       <div class="dashboard-column dashboard-full-width" id="bottom-column">
+        <div class="section logs-full-width" data-widget-id="watch">
+          <h3>Watch for</h3>
+          <div class="section-inner">
+            <div class="watch-filter-row">
+              <input type="text" id="watchFilterInput" placeholder="e.g. comm=cat path=/etc  or  event=openat  (space = AND)" class="watch-filter-input" />
+              <button type="button" class="toggle-btn" id="watchClearBtn">Clear table</button>
+            </div>
+            <div id="watchTable"></div>
+          </div>
+        </div>
         <div class="section logs-full-width" data-widget-id="logs">
           <h3>Logs (tail)</h3>
           <div class="section-inner" id="logs"></div>
@@ -503,15 +543,81 @@
         if (isNaN(date.getTime())) return "—";
         return formatTimestampLocal(date);
       }
-      function applyTheme(theme) {
+      function applyTheme(theme, skipChartUpdate) {
         html.setAttribute("data-theme", theme === "light" ? "light" : "");
         themeBtn.textContent = theme === "light" ? "Dark" : "Light";
         try { localStorage.setItem("sentinel-ui-theme", theme); } catch (e) {}
+        if (!skipChartUpdate) updateChartThemeColors();
+      }
+      function updateChartThemeColors() {
+        const isDark = document.documentElement.getAttribute("data-theme") !== "light";
+        const textColor = isDark ? "#e6edf3" : "#1f2328";
+        const gridColor = isDark ? "#2d3a4f" : "#d0d7de";
+        const eventTypeColors = [
+          isDark ? "#58a6ff" : "#0969da", isDark ? "#f85149" : "#cf222e",
+          isDark ? "#3fb950" : "#1a7f37", isDark ? "#d29922" : "#9a6700",
+          isDark ? "#a371f7" : "#8250df", isDark ? "#79c0ff" : "#0969da",
+          isDark ? "#ff7b72" : "#cf222e", isDark ? "#7ee787" : "#1a7f37"
+        ];
+        const meanColor = isDark ? "#58a6ff" : "#0969da";
+        const maxColor = isDark ? "#f85149" : "#cf222e";
+        const cpuColor = isDark ? "#79c0ff" : "#0969da";
+        function applyOptions(chart) {
+          if (!chart?.options) return;
+          const opts = chart.options;
+          if (opts.scales) {
+            ["x", "y"].forEach(axis => {
+              const scale = opts.scales[axis];
+              if (scale) {
+                if (scale.ticks) scale.ticks.color = textColor;
+                if (scale.grid) scale.grid.color = gridColor;
+                if (scale.title) scale.title.color = textColor;
+              }
+            });
+          }
+          if (opts.plugins?.legend?.labels) opts.plugins.legend.labels.color = textColor;
+        }
+        try {
+          if (chartInstance) {
+            applyOptions(chartInstance);
+            chartInstance.data.datasets?.forEach((ds, i) => {
+              const c = eventTypeColors[i % eventTypeColors.length];
+              ds.borderColor = c;
+              ds.backgroundColor = c + "80";
+            });
+            chartInstance.update("none");
+          }
+        } catch (e) {}
+        try {
+          if (scoreChartInstance) {
+            applyOptions(scoreChartInstance);
+            const ds = scoreChartInstance.data.datasets;
+            const thresholdColor = isDark ? "#d29922" : "#9a6700";
+            if (ds?.[0]) { ds[0].borderColor = meanColor; ds[0].backgroundColor = meanColor + "20"; }
+            if (ds?.[1]) { ds[1].borderColor = maxColor; ds[1].backgroundColor = maxColor + "20"; }
+            if (ds?.[2]) { ds[2].borderColor = thresholdColor; }
+            scoreChartInstance.update("none");
+          }
+        } catch (e) {}
+        try {
+          if (scoreMapInstance) {
+            applyOptions(scoreMapInstance);
+            scoreMapInstance.update("none");
+          }
+        } catch (e) {}
+        try {
+          if (cpuChartInstance) {
+            applyOptions(cpuChartInstance);
+            const d = cpuChartInstance.data.datasets?.[0];
+            if (d) { d.borderColor = cpuColor; d.backgroundColor = cpuColor + "33"; }
+            cpuChartInstance.update("none");
+          }
+        } catch (e) {}
       }
       let saved = null;
       try { saved = localStorage.getItem("sentinel-ui-theme"); } catch (e) {}
-      if (saved === "light") applyTheme("light");
-      else applyTheme("dark");
+      if (saved === "light") applyTheme("light", true);
+      else applyTheme("dark", true);
       themeBtn.addEventListener("click", function() {
         applyTheme(html.getAttribute("data-theme") === "light" ? "dark" : "light");
       });
@@ -957,6 +1063,148 @@
         div.textContent = s;
         return div.innerHTML;
       }
+      const maxWatchedEvents = 300;
+      let watchedEvents = [];
+      const seenEventKeys = new Set();
+      function getWatchEventFields(entry) {
+        const d = Array.isArray(entry?.data) ? entry.data : [];
+        return {
+          syscall: entry.event_name ?? "",
+          comm: d.length > 2 ? d[2] : "",
+          pid: d.length > 3 ? d[3] : "",
+          tid: d.length > 4 ? d[4] : "",
+          uid: d.length > 5 ? d[5] : "",
+          path: d.length > 8 ? d[8] : "",
+        };
+      }
+      function getWatchEventKey(entry) {
+        const f = getWatchEventFields(entry);
+        return `${entry.ts_unix_nano || 0}-${entry.event_id || ""}-${f.path}-${f.comm}`;
+      }
+      function eventMatchesFilter(entry, filter) {
+        if (!filter || !filter.trim()) return false;
+        const f = getWatchEventFields(entry);
+        const eventName = (entry.event_name || "").toLowerCase();
+        const path = (f.path || "").toLowerCase();
+        const comm = (f.comm || "").toLowerCase();
+        const hostname = (entry.hostname || "").toLowerCase();
+        const eventType = (entry.event_type || "").toLowerCase();
+        const parts = filter.trim().split(/\s+/);
+        for (const part of parts) {
+          const m = part.match(/^(\w+)=(.+)$/);
+          if (m) {
+            const field = m[1].toLowerCase();
+            const value = m[2].toLowerCase();
+            let match = false;
+            if (field === "comm" && comm.includes(value)) match = true;
+            else if ((field === "path" || field === "file") && path.includes(value)) match = true;
+            else if ((field === "event" || field === "event_name" || field === "syscall") && eventName.includes(value)) match = true;
+            else if (field === "hostname" && hostname.includes(value)) match = true;
+            else if (field === "type" && eventType.includes(value)) match = true;
+            if (!match) return false;
+          } else if (part.length > 0) {
+            const haystack = [eventName, comm, path, hostname, eventType, (entry.data || []).join(" ")].join(" ").toLowerCase();
+            if (!haystack.includes(part.toLowerCase())) return false;
+          }
+        }
+        return true;
+      }
+      function getWatchCell(entry, key) {
+        const fields = getWatchEventFields(entry);
+        if (key === "ts_unix_nano") return formatTimestampNs(entry.ts_unix_nano);
+        if (key === "event_name") return fields.syscall;
+        if (key === "comm") return fields.comm;
+        if (key === "path") return fields.path;
+        if (key === "pid_tid_uid") return `${fields.pid}/${fields.tid}/${fields.uid}`;
+        const v = entry[key];
+        if (v === true || v === false) return v ? "Yes" : "No";
+        return v != null ? String(v) : "";
+      }
+      const watchHeaders = [
+        { key: "ts_unix_nano", label: "Time" },
+        { key: "event_type", label: "Type" },
+        { key: "event_name", label: "Syscall" },
+        { key: "hostname", label: "Host" },
+        { key: "comm", label: "Comm" },
+        { key: "path", label: "Path" },
+        { key: "pid_tid_uid", label: "PID/TID/UID" },
+        { key: "anomaly", label: "Anomaly" },
+        { key: "score", label: "Score" },
+        { key: "reason", label: "Reason" },
+      ];
+      function renderWatchTable() {
+        const el = document.getElementById("watchTable");
+        if (!el) return;
+        const filter = (document.getElementById("watchFilterInput") || {}).value || "";
+        if (!filter.trim()) {
+          el.innerHTML = "<p class=\"metrics-empty\">Enter a filter above to watch for matching events.</p>";
+          return;
+        }
+        if (watchedEvents.length === 0) {
+          el.innerHTML = "<p class=\"metrics-empty\">No matching events yet. Matching events will appear here as they occur.</p>";
+          return;
+        }
+        const rows = watchedEvents.slice().reverse().map(entry => {
+          let row = "<tr>";
+          watchHeaders.forEach(h => {
+            let cell = getWatchCell(entry, h.key);
+            if (h.key === "anomaly" && (entry.anomaly === true || cell === "Yes")) {
+              cell = "<span class=\"badge badge-anomaly\">Yes</span>";
+            } else if (h.key === "anomaly" && (entry.anomaly === false || cell === "No")) {
+              cell = "<span class=\"badge badge-ok\">No</span>";
+            } else {
+              cell = escapeHtml(cell);
+            }
+            row += "<td>" + cell + "</td>";
+          });
+          return row + "</tr>";
+        });
+        const colWidths = ["10%", "7%", "8%", "8%", "7%", "22%", "12%", "6%", "6%", "14%"];
+        el.innerHTML = "<div class=\"table-wrap\"><table class=\"logs-table\"><colgroup>" +
+          colWidths.map(w => "<col style=\"width:" + w + "\">").join("") +
+          "</colgroup><thead><tr>" +
+          watchHeaders.map(h => "<th>" + escapeHtml(h.label) + "</th>").join("") +
+          "</tr></thead><tbody>" + rows.join("") + "</tbody></table></div>";
+      }
+      function processWatchEntries(logsData) {
+        const filter = (document.getElementById("watchFilterInput") || {}).value || "";
+        if (!filter.trim()) {
+          renderWatchTable();
+          return;
+        }
+        const entries = Array.isArray(logsData?.entries) ? logsData.entries : [];
+        let added = 0;
+        for (const entry of entries) {
+          if (!eventMatchesFilter(entry, filter)) continue;
+          const key = getWatchEventKey(entry);
+          if (seenEventKeys.has(key)) continue;
+          seenEventKeys.add(key);
+          watchedEvents.push(entry);
+          added++;
+          if (watchedEvents.length > maxWatchedEvents) {
+            const removed = watchedEvents.shift();
+            seenEventKeys.delete(getWatchEventKey(removed));
+          }
+        }
+        if (added > 0) renderWatchTable();
+      }
+      document.getElementById("watchClearBtn")?.addEventListener("click", function() {
+        watchedEvents = [];
+        seenEventKeys.clear();
+        renderWatchTable();
+      });
+      let lastWatchFilter = "";
+      document.getElementById("watchFilterInput")?.addEventListener("input", function() {
+        const filter = (document.getElementById("watchFilterInput") || {}).value || "";
+        if (filter.trim() !== lastWatchFilter.trim()) {
+          watchedEvents = [];
+          seenEventKeys.clear();
+          lastWatchFilter = filter.trim();
+        }
+        renderWatchTable();
+        if (lastLogsData) processWatchEntries(lastLogsData);
+      });
+      renderWatchTable();
       let scoreMapInstance = null;
       let scoreMapLastSignature = "";
       let scoreMapHasRendered = false;
@@ -1273,6 +1521,127 @@
         }
       }
 
+      let scoreChartInstance = null;
+      let scoreChartLastSignature = "";
+      let scoreChartHasRendered = false;
+      function renderScoreChart(data) {
+        const container = document.querySelector(".score-chart-container");
+        if (!container) return;
+        if (typeof Chart === "undefined") return;
+        let canvas = document.getElementById("scoreChart");
+        let wrapper = canvas ? canvas.closest(".chart-wrapper") : null;
+        if (!canvas || !wrapper) return;
+        if (typeof data !== "object" || data === null || !data.time_buckets) {
+          if (scoreChartInstance) {
+            scoreChartInstance.destroy();
+            scoreChartInstance = null;
+          }
+          return;
+        }
+        const timeBuckets = data.time_buckets || [];
+        const timeLabels = timeBuckets.map(bucket => {
+          const ts = bucket.timestamp != null ? bucket.timestamp * 1000 : null;
+          if (ts != null && Number.isFinite(ts)) {
+            const d = new Date(ts);
+            return formatTimestampLocal(d).split(" ")[1] || bucket.time;
+          }
+          return bucket.time || "";
+        });
+        const meanScores = timeBuckets.map(bucket => {
+          const s = bucket.mean_score;
+          return s != null && Number.isFinite(s) ? s : null;
+        });
+        const maxScores = timeBuckets.map(bucket => {
+          const s = bucket.max_score;
+          return s != null && Number.isFinite(s) ? s : null;
+        });
+        const threshold = (data.threshold != null && Number.isFinite(data.threshold)) ? data.threshold : 0.7;
+        const scoreChartSignature = JSON.stringify({ labels: timeLabels, mean: meanScores, max: maxScores, threshold });
+        if (scoreChartInstance && scoreChartLastSignature === scoreChartSignature) return;
+        const isDark = document.documentElement.getAttribute("data-theme") !== "light";
+        const textColor = isDark ? "#e6edf3" : "#1f2328";
+        const gridColor = isDark ? "#2d3a4f" : "#d0d7de";
+        const meanColor = isDark ? "#58a6ff" : "#0969da";
+        const maxColor = isDark ? "#f85149" : "#cf222e";
+        const thresholdColor = isDark ? "#d29922" : "#9a6700";
+        const thresholdData = timeLabels.map(() => threshold);
+        const datasets = [
+          {
+            label: "Mean",
+            data: meanScores,
+            borderColor: meanColor,
+            backgroundColor: meanColor + "20",
+            borderWidth: 2,
+            fill: true,
+            tension: 0.2,
+            spanGaps: true
+          },
+          {
+            label: "Max",
+            data: maxScores,
+            borderColor: maxColor,
+            backgroundColor: maxColor + "20",
+            borderWidth: 2,
+            fill: false,
+            tension: 0.2,
+            spanGaps: true
+          },
+          {
+            label: "Threshold",
+            data: thresholdData,
+            borderColor: thresholdColor,
+            borderWidth: 1.5,
+            borderDash: [4, 4],
+            fill: false,
+            pointRadius: 0,
+            pointHoverRadius: 0,
+            spanGaps: true
+          }
+        ];
+        try {
+          if (scoreChartInstance) {
+            scoreChartInstance.data.labels = timeLabels;
+            scoreChartInstance.data.datasets = datasets;
+            scoreChartInstance.update(scoreChartHasRendered ? "none" : undefined);
+          } else {
+            scoreChartInstance = new Chart(canvas, {
+              type: "line",
+              data: { labels: timeLabels, datasets: datasets },
+              options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: { duration: 350 },
+                plugins: {
+                  legend: {
+                    display: true,
+                    position: "top",
+                    labels: { color: textColor, usePointStyle: true }
+                  },
+                  tooltip: { enabled: true, mode: "index", intersect: false }
+                },
+                scales: {
+                  y: {
+                    beginAtZero: true,
+                    min: 0,
+                    suggestedMax: 1,
+                    ticks: { color: textColor, precision: 3 },
+                    grid: { color: gridColor }
+                  },
+                  x: {
+                    ticks: { color: textColor },
+                    grid: { color: gridColor }
+                  }
+                }
+              }
+            });
+            scoreChartHasRendered = true;
+          }
+          scoreChartLastSignature = scoreChartSignature;
+        } catch (e) {
+          console.error("Error rendering score chart:", e);
+        }
+      }
+
       let lastAnomaliesSignature = "";
       function renderAnomalies(data) {
         const el = document.getElementById("anomalies");
@@ -1359,6 +1728,7 @@
         try {
           const chart = await fetchJson("/api/calls_chart");
           renderChart(chart);
+          renderScoreChart(chart);
         } catch (e) {
           const container = document.querySelector(".chart-container");
           if (container) {
@@ -1377,6 +1747,7 @@
         try {
           const logs = await fetchJson("/api/logs?limit=" + logLimit);
           renderLogs(logs);
+          processWatchEntries(logs);
         } catch (e) {
           const logsEl = document.getElementById("logs");
           if (logsEl) {

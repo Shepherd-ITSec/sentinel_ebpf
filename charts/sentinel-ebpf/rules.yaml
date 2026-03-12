@@ -1,33 +1,34 @@
 # Falco-like building blocks (phase-1 subset):
 # - lists: reusable value sets
 # - macros: reusable condition fragments
-# - rules: condition expressions with and/or/not, in, startswith, contains, =
+# - rules: condition expressions with and/or/not, in, startswith, startswithin, contains, =
 lists:
-  file_events: [open, openat, openat2, unlink, unlinkat, rename, renameat, chmod, chown]
-  process_events: [execve]
+  file_events: [open, openat, openat2, unlink, unlinkat, rename, renameat, chmod, chown, read, write]
+  process_events: [execve, fork]
   net_events: [socket, connect, bind, listen, accept, accept4]
-  shell_comms: [bash, sh, zsh]
+  shell_events: [bash, sh, zsh]
+  noisy_paths: [/proc, /sys, /dev, /run, /var/run, /tmp, /var/log]
 
 macros:
   file_evt: "event_name in (file_events)"
   process_evt: "event_name in (process_events)"
   net_evt: "event_name in (net_events)"
-  sensitive_path: "path startswith /etc or path startswith /root"
-  noisy_path: "path startswith /proc or path startswith /sys or path startswith /dev or path startswith /run or path startswith /var/run or path startswith /tmp"
-  shell_proc: "comm in (shell_comms)"
+  noisy_path: "path startswithin (noisy_paths)"
+  shell_proc: "comm in (shell_events)"
+  filterable_path: not (event_name in (read, write) and path = \"\")"
 
 rules:
-  - name: capture-sensitive-file-events
+  - name: capture-file-events
     enabled: true
     type: file
-    condition: "file_evt and sensitive_path and not noisy_path"
+    condition: "file_evt and not noisy_path and filterable_path"
 
-  - name: capture-shell-execve
+  - name: capture-shell-process-events
     enabled: false
     type: process
     condition: "process_evt and shell_proc"
 
-  - name: capture-network-connectivity
+  - name: capture-network-events
     enabled: false
     type: network
     condition: "net_evt"

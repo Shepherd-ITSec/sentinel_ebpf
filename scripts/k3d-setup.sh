@@ -101,7 +101,7 @@ if [[ "${PURGE_CLUSTER}" == "true" ]]; then
   fi
   info "Creating fresh k3d cluster ${CLUSTER_NAME}"
   k3d cluster create "${CLUSTER_NAME}" \
-    --agents 1 \
+    --agents 0 \
     --servers 1 \
     --k3s-arg "--disable=traefik@server:0" \
     --volume /lib/modules:/lib/modules:ro@all \
@@ -109,7 +109,7 @@ if [[ "${PURGE_CLUSTER}" == "true" ]]; then
 elif [[ "${CLUSTER_EXISTS}" == "false" ]]; then
   info "Creating k3d cluster ${CLUSTER_NAME}"
   k3d cluster create "${CLUSTER_NAME}" \
-    --agents 1 \
+    --agents 0 \
     --servers 1 \
     --k3s-arg "--disable=traefik@server:0" \
     --volume /lib/modules:/lib/modules:ro@all \

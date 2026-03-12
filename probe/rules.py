@@ -3,7 +3,11 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
-from probe.events import EVENT_NAME_TO_ID
+from probe.events import EVENT_NAME_TO_ID, UNKNOWN_EVENT_ID
+
+# Sentinel for "match any" in kernel rules; must match probe.bpf.c WILDCARD (0xFFFFFFFF).
+# Avoids collision with event_id 0 (read), uid 0 (root), pid/tid 0.
+WILDCARD = 0xFFFFFFFF
 
 SUPPORTED_FIELDS = {
   "event_name",
@@ -183,6 +187,11 @@ class _ConditionParser:
         values = list(self.lists.get(tok, [_strip_quotes(tok)]))
       return Predicate(field=field, op="in", value=values)
 
+    if op_tok == "startswithin":
+      self._consume("(")
+      values = self._parse_list_items()
+      return Predicate(field=field, op="startswithin", value=values)
+
     raise ValueError(f"Unsupported operator '{op_tok}' in condition")
 
 
@@ -317,6 +326,8 @@ class RuleEngine:
       return value_str == str(pred.value)
     if op == "startswith":
       return value_str.startswith(str(pred.value))
+    if op == "startswithin":
+      return any(value_str.startswith(str(p)) for p in pred.value)
     if op == "contains":
       return str(pred.value) in value_str
     if op == "in":
@@ -339,7 +350,7 @@ class RuleEngine:
     return self.allow_event(
       {
         "event_name": event_name,
-        "event_id": EVENT_NAME_TO_ID.get(event_name, 0),
+        "event_id": EVENT_NAME_TO_ID.get(event_name, UNKNOWN_EVENT_ID),
         "path": filename,
         "filename": filename,
         "comm": comm,
@@ -465,8 +476,8 @@ class RuleEngine:
               possible = False
               break
             compiled_here += 1
-          elif field == "path" and op == "startswith":
-            pset = {str(val)}
+          elif field == "path" and op in ("startswith", "startswithin"):
+            pset = {str(val)} if op == "startswith" else {str(v) for v in val}
             prefixes = pset if prefixes is None else {p for p in prefixes if any(p.startswith(x) or x.startswith(p) for x in pset)}
             if prefixes is not None and len(prefixes) == 0:
               possible = False
@@ -510,12 +521,12 @@ class RuleEngine:
           stats.branches_impossible += 1
           continue
 
-        event_vals = list(event_ids) if event_ids else [0]
+        event_vals = list(event_ids) if event_ids else [WILDCARD]
         prefix_vals = list(prefixes) if prefixes else [""]
         comm_vals = list(comms) if comms else [""]
-        pid_vals = list(pids) if pids else [0]
-        tid_vals = list(tids) if tids else [0]
-        uid_vals = list(uids) if uids else [0]
+        pid_vals = list(pids) if pids else [WILDCARD]
+        tid_vals = list(tids) if tids else [WILDCARD]
+        uid_vals = list(uids) if uids else [WILDCARD]
         for event_id in event_vals:
           for prefix in prefix_vals:
             for comm in comm_vals:

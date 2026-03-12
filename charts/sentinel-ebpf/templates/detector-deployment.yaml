@@ -67,6 +67,14 @@ spec:
               value: {{ .Values.detector.model.zscore_min_count | quote }}
             - name: DETECTOR_ZSCORE_STD_FLOOR
               value: {{ .Values.detector.model.zscore_std_floor | quote }}
+            - name: DETECTOR_FREQ1D_BINS
+              value: {{ .Values.detector.model.freq1d_bins | quote }}
+            - name: DETECTOR_FREQ1D_ALPHA
+              value: {{ .Values.detector.model.freq1d_alpha | quote }}
+            - name: DETECTOR_FREQ1D_DECAY
+              value: {{ .Values.detector.model.freq1d_decay | quote }}
+            - name: DETECTOR_FREQ1D_MAX_CATEGORIES
+              value: {{ .Values.detector.model.freq1d_max_categories | quote }}
             - name: DETECTOR_KITNET_MAX_SIZE_AE
               value: {{ .Values.detector.model.kitnet_max_size_ae | quote }}
             - name: DETECTOR_KITNET_GRACE_FEATURE_MAPPING

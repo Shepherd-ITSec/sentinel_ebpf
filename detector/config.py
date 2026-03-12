@@ -8,7 +8,7 @@ class DetectorConfig:
   events_http_port: int = 50052  # 0 to disable; serves GET /recent_events for UI log tail in gRPC mode
   recent_events_buffer_size: int = 10000  # Size of recent events ring buffer for UI (default: 10000)
   # River model configuration
-  model_algorithm: str = "halfspacetrees"  # halfspacetrees | loda | kitnet | memstream | zscore
+  model_algorithm: str = "freq1d"  # halfspacetrees | loda | kitnet | memstream | zscore | knn | freq1d
   threshold: float = 0.7  # Anomaly score threshold (0-1). Lower (e.g. 0.3) to flag more events when scores are mostly low.
   hst_n_trees: int = 25
   hst_height: int = 15
@@ -29,6 +29,13 @@ class DetectorConfig:
   mem_lr: float = 0.001
   zscore_min_count: int = 20
   zscore_std_floor: float = 1e-3
+  knn_k: int = 5
+  knn_memory_size: int = 1024
+  knn_metric: str = "euclidean"
+  freq1d_bins: int = 65536
+  freq1d_alpha: float = 1.0
+  freq1d_decay: float = 1.0
+  freq1d_max_categories: int = 65536
   # score_mode: raw = use model.score_*_raw() and emit raw scores; scaled = use bounded [0,1] scores.
   score_mode: str = "raw"  # raw | scaled
   # auto: use CUDA when available, else CPU for torch-backed models (LODA, MemStream)
@@ -69,6 +76,13 @@ def load_config() -> DetectorConfig:
   mem_lr = float(os.environ.get("DETECTOR_MEMSTREAM_LR", str(defaults.mem_lr)))
   zscore_min_count = int(os.environ.get("DETECTOR_ZSCORE_MIN_COUNT", str(defaults.zscore_min_count)))
   zscore_std_floor = float(os.environ.get("DETECTOR_ZSCORE_STD_FLOOR", str(defaults.zscore_std_floor)))
+  knn_k = int(os.environ.get("DETECTOR_KNN_K", str(defaults.knn_k)))
+  knn_memory_size = int(os.environ.get("DETECTOR_KNN_MEMORY_SIZE", str(defaults.knn_memory_size)))
+  knn_metric = os.environ.get("DETECTOR_KNN_METRIC", defaults.knn_metric)
+  freq1d_bins = int(os.environ.get("DETECTOR_FREQ1D_BINS", str(defaults.freq1d_bins)))
+  freq1d_alpha = float(os.environ.get("DETECTOR_FREQ1D_ALPHA", str(defaults.freq1d_alpha)))
+  freq1d_decay = float(os.environ.get("DETECTOR_FREQ1D_DECAY", str(defaults.freq1d_decay)))
+  freq1d_max_categories = int(os.environ.get("DETECTOR_FREQ1D_MAX_CATEGORIES", str(defaults.freq1d_max_categories)))
   score_mode = os.environ.get("DETECTOR_SCORE_MODE", defaults.score_mode).strip().lower()
   if score_mode not in ("raw", "scaled"):
     raise ValueError(f"Invalid DETECTOR_SCORE_MODE={score_mode!r}; must be 'raw' or 'scaled'")
@@ -100,6 +114,13 @@ def load_config() -> DetectorConfig:
     mem_lr=mem_lr,
     zscore_min_count=zscore_min_count,
     zscore_std_floor=zscore_std_floor,
+    knn_k=knn_k,
+    knn_memory_size=knn_memory_size,
+    knn_metric=knn_metric,
+    freq1d_bins=freq1d_bins,
+    freq1d_alpha=freq1d_alpha,
+    freq1d_decay=freq1d_decay,
+    freq1d_max_categories=freq1d_max_categories,
     score_mode=score_mode,
     model_device=model_device,
     model_seed=model_seed,

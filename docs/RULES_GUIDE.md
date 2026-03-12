@@ -2,6 +2,43 @@
 
 This guide explains how Sentinel eBPF rules are authored and how they execute across kernel and userspace.
 
+## Supported syscalls
+
+The probe traces the following syscalls with dedicated tracepoints. These are the `event_name` values you can use in rules. The full registry lives in `probe/events.py` (`EVENT_NAME_TO_ID`).
+
+| event_name | event_id | path | arg0 | arg1 | notes |
+|------------|----------|------|------|------|-------|
+| **File I/O** |
+| `read` | 0 | ✓ (from fd cache) | fd | count | Path from fd cache; `return_value` = bytes read |
+| `write` | 1 | ✓ (from fd cache) | fd | count | Path from fd cache; `return_value` = bytes written |
+| `open` | 2 | ✓ | flags | — | Legacy; most programs use `openat`; `return_value` = fd or -errno |
+| `openat` | 257 | ✓ | dfd | flags | Primary file-open syscall; `return_value` = fd or -errno |
+| `openat2` | 437 | ✓ | dfd | usize | Extended open flags; `return_value` = fd or -errno |
+| `close` | 3 | — | fd | — | Removes fd from path cache; `return_value` = 0 or -errno |
+| **File metadata / deletion** |
+| `unlink` | 87 | ✓ | — | — | |
+| `unlinkat` | 263 | ✓ | dfd | flag | |
+| `rename` | 82 | ✓ (old) | — | — | |
+| `renameat` | 264 | ✓ (old) | olddfd | newdfd | |
+| `chmod` | 90 | ✓ | mode | — | |
+| `fchmod` | 91 | — | fd | mode | |
+| `chown` | 92 | ✓ | user | group | |
+| `fchown` | 93 | — | fd | user | |
+| **Process** |
+| `execve` | 59 | ✓ | — | — | Program path; `return_value` = -errno on failure |
+| `fork` | 57 | — | — | — | Process creation; `return_value` = child pid or -errno |
+| **Network** |
+| `socket` | 41 | — | family | type | `return_value` = fd or -errno |
+| `connect` | 42 | — | fd | addrlen | `return_value` = 0 or -errno |
+| `bind` | 49 | — | fd | addrlen | `return_value` = 0 or -errno |
+| `listen` | 50 | — | fd | backlog | `return_value` = 0 or -errno |
+| `accept` | 43 | — | fd | — | addrlen is pointer; `return_value` = fd or -errno |
+| `accept4` | 288 | — | fd | flags | `return_value` = fd or -errno |
+
+Other event names in `probe/events.py` (e.g. `stat`, `access`) may be used in rules but are not traced by dedicated tracepoints; they would only appear if routed through the generic raw syscall path, with minimal data (arg0/arg1 only, no path).
+
+**Source:** `probe/events.py` (registry), `probe/probe.bpf.c` (tracepoints).
+
 ## Source of truth
 
 - Chart deployments read rules from `charts/sentinel-ebpf/rules.yaml`.
@@ -15,6 +52,10 @@ Rules are boolean expressions over event fields.
 - **Supported operators:** `=`, `in`, `startswith`, `contains`, `and`, `or`, `not`, parentheses
 - **Supported fields:** `event_name`, `event_id`, `path`, `comm`, `pid`, `tid`, `uid`, `open_flags`, `arg0`, `arg1`, `arg_flags`, `return_value`, `hostname`, `namespace`
 - `arg_flags` is evaluated as an alias of `open_flags`.
+
+## Selective probe attachment
+
+At startup, the probe compiles rules and extracts the set of `event_id`s needed. Only tracepoints for those syscalls are attached (via preprocessor `#if ENABLE_*`). For example, if rules only reference `openat`, the read/write/execve probes are not attached, reducing kernel overhead. Rules with wildcard `event_id` enable all probes.
 
 ## Execution model: kernel prefilter + userspace final decision
 

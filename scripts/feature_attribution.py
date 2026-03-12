@@ -306,7 +306,7 @@ def main():
   ap.add_argument(
     "--algorithm",
     default="kitnet",
-    choices=["kitnet", "memstream", "loda", "halfspacetrees", "zscore"],
+    choices=["kitnet", "memstream", "loda", "halfspacetrees", "zscore", "knn", "freq1d"],
     help="Detector algorithm (default: kitnet). KitNet needs ~50k events to exit grace.",
   )
   g = ap.add_mutually_exclusive_group()

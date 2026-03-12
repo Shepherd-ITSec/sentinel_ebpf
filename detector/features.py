@@ -426,8 +426,10 @@ def _extract_process_features(evt: events_pb2.EventEnvelope) -> Dict[str, float]
   """Type-specific features for event_type == 'process' (exec/spawn)."""
   event_name = (evt.event_name or "") or (evt.data[0] if len(evt.data) > 0 else "")
   process_is_execve = 1.0 if event_name == "execve" else 0.0
+  process_is_fork = 1.0 if event_name == "fork" else 0.0
   return {
     "process_is_execve": process_is_execve,
+    "process_is_fork": process_is_fork,
   }
 
 

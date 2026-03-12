@@ -134,8 +134,8 @@ Missing or invalid fields use safe defaults (0.0, empty hash). Each per-event_ty
 
 **Public API:**
 
-- `DetectorConfig`: dataclass of default values (port, events_http_port, recent_events_buffer_size, model_algorithm, threshold, score_mode, and all HST/LODA/KitNet/MemStream/ZScore parameters).
-- `load_config() -> DetectorConfig`: builds a `DetectorConfig` from the environment. Environment variables override defaults (e.g. `DETECTOR_PORT`, `DETECTOR_MODEL_ALGORITHM`, `DETECTOR_THRESHOLD`, `DETECTOR_SCORE_MODE`, `DETECTOR_KITNET_*`, `DETECTOR_MEMSTREAM_*`, `DETECTOR_ZSCORE_*`, etc.).
+- `DetectorConfig`: dataclass of default values (port, events_http_port, recent_events_buffer_size, model_algorithm, threshold, score_mode, and all HST/LODA/KitNet/MemStream/ZScore/KNN/Freq1D parameters).
+- `load_config() -> DetectorConfig`: builds a `DetectorConfig` from the environment. Environment variables override defaults (e.g. `DETECTOR_PORT`, `DETECTOR_MODEL_ALGORITHM`, `DETECTOR_THRESHOLD`, `DETECTOR_SCORE_MODE`, `DETECTOR_KITNET_*`, `DETECTOR_MEMSTREAM_*`, `DETECTOR_ZSCORE_*`, `DETECTOR_KNN_*`, `DETECTOR_FREQ1D_*`, etc.).
 
 No config file is read; configuration is env-only so it works well in containers and eval runs.
 
@@ -145,7 +145,7 @@ No config file is read; configuration is env-only so it works well in containers
 
 **Role:** Online anomaly detection models that consume the feature dict from `features.py`, update their internal state (learn), and return an anomaly score per event. All implement the same interface: `score_and_learn(features: Dict[str, float]) -> float`.
 
-**Public API:** `OnlineAnomalyDetector` is a factory. You pass `algorithm` (`"halfspacetrees"`, `"loda"`, `"kitnet"`, `"memstream"`, `"zscore"`) plus optional hyperparameters; it instantiates the corresponding implementation and exposes `score_and_learn(features)`.
+**Public API:** `OnlineAnomalyDetector` is a factory. You pass `algorithm` (`"halfspacetrees"`, `"loda"`, `"kitnet"`, `"memstream"`, `"zscore"`, `"knn"`, `"freq1d"`) plus optional hyperparameters; it instantiates the corresponding implementation and exposes `score_and_learn(features)`.
 
 **Algorithms:**
 
@@ -154,6 +154,8 @@ No config file is read; configuration is env-only so it works well in containers
 3. **KitNet (PySAD)** – Ensemble of small autoencoders; learns a mapping then an anomaly detector in two grace phases. PyTorch, CPU/CUDA.
 4. **MemStream** – Autoencoder + latent memory; memory updated only when the score is below an adaptive threshold to limit poisoning. PyTorch, CPU/CUDA.
 5. **ZScore** – Per-feature online running mean/std with event score `mean(abs(z_i))`. Intentionally simple baseline; CPU-only.
+6. **KNN (scikit-learn)** – Sliding-memory nearest-neighbor detector; score is mean distance to k nearest historical events. CPU-only.
+7. **Freq1D** – Per-feature 1D frequency baseline: numeric features use fixed-bin histograms, categorical/hash features use capped count tables. Scores by average excess surprisal (rarity). CPU-only.
 
 Device selection is via config (`model_device`: `auto` / `cpu` / `cuda`). The server uses one model per event_type and calls `score_and_learn` under a lock so only one thread updates any model per event.
 

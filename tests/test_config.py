@@ -139,6 +139,13 @@ class TestDetectorConfig:
     os.environ["DETECTOR_MEMSTREAM_LR"] = "0.005"
     os.environ["DETECTOR_ZSCORE_MIN_COUNT"] = "15"
     os.environ["DETECTOR_ZSCORE_STD_FLOOR"] = "0.002"
+    os.environ["DETECTOR_KNN_K"] = "7"
+    os.environ["DETECTOR_KNN_MEMORY_SIZE"] = "2048"
+    os.environ["DETECTOR_KNN_METRIC"] = "manhattan"
+    os.environ["DETECTOR_FREQ1D_BINS"] = "33"
+    os.environ["DETECTOR_FREQ1D_ALPHA"] = "0.75"
+    os.environ["DETECTOR_FREQ1D_DECAY"] = "0.97"
+    os.environ["DETECTOR_FREQ1D_MAX_CATEGORIES"] = "321"
     os.environ["DETECTOR_SCORE_MODE"] = "scaled"
     os.environ["DETECTOR_MODEL_DEVICE"] = "cpu"
     os.environ["DETECTOR_MODEL_SEED"] = "7"
@@ -161,6 +168,13 @@ class TestDetectorConfig:
       assert cfg.mem_lr == 0.005
       assert cfg.zscore_min_count == 15
       assert cfg.zscore_std_floor == 0.002
+      assert cfg.knn_k == 7
+      assert cfg.knn_memory_size == 2048
+      assert cfg.knn_metric == "manhattan"
+      assert cfg.freq1d_bins == 33
+      assert cfg.freq1d_alpha == 0.75
+      assert cfg.freq1d_decay == 0.97
+      assert cfg.freq1d_max_categories == 321
       assert cfg.score_mode == "scaled"
       assert cfg.model_device == "cpu"
       assert cfg.model_seed == 7
@@ -183,6 +197,13 @@ class TestDetectorConfig:
         "DETECTOR_MEMSTREAM_LR",
         "DETECTOR_ZSCORE_MIN_COUNT",
         "DETECTOR_ZSCORE_STD_FLOOR",
+        "DETECTOR_KNN_K",
+        "DETECTOR_KNN_MEMORY_SIZE",
+        "DETECTOR_KNN_METRIC",
+        "DETECTOR_FREQ1D_BINS",
+        "DETECTOR_FREQ1D_ALPHA",
+        "DETECTOR_FREQ1D_DECAY",
+        "DETECTOR_FREQ1D_MAX_CATEGORIES",
         "DETECTOR_SCORE_MODE",
         "DETECTOR_MODEL_DEVICE",
         "DETECTOR_MODEL_SEED",

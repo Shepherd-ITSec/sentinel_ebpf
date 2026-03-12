@@ -258,6 +258,8 @@ def test_extract_feature_dict_adds_process_features_when_event_type_process():
   values = extract_feature_dict(evt)
   assert "process_is_execve" in values
   assert values["process_is_execve"] == 1.0
-  assert len(values) == 18 + 5 * 4 + 1
+  assert "process_is_fork" in values
+  assert values["process_is_fork"] == 0.0  # execve, not fork
+  assert len(values) == 18 + 5 * 4 + 2  # +2 for process_is_execve, process_is_fork
 
 

@@ -26,12 +26,14 @@ detector = [
   "numpy>=1.24.0,<2.0.0",
   "pysad>=0.3.0; python_version >= '3.10'",
   "river>=0.21.0",
+  "scikit-learn>=1.3.0",
   "torch>=2.2.0",
 ]
 detector-cuda = [
   "numpy>=1.24.0,<2.0.0",
   "pysad>=0.3.0; python_version >= '3.10'",
   "river>=0.21.0",
+  "scikit-learn>=1.3.0",
   "torch>=2.2.0",
 ]
 

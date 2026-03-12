@@ -37,3 +37,5 @@ kubeconfig
 
 # Big data / event dumps (avoid re-adding; use LFS only if needed)
 /test_data
+# Root-level event dumps >2GB (GitHub LFS limit); keep local only
+events_*.jsonl

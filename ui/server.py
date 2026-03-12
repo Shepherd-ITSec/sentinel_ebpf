@@ -444,8 +444,9 @@ class Handler(BaseHTTPRequestHandler):
 
               # Fall back to a short time window when metric counters are unavailable
               # or after detector restarts/counter resets.
-              def count_recent_window() -> dict:
+              def count_recent_window() -> tuple[dict, float | None, float | None]:
                 window_counts = {}
+                scores = []
                 recent_window_seconds = 30
                 threshold_ns = int(current_time * 1e9) - (recent_window_seconds * 1_000_000_000)
                 for entry in entries:
@@ -453,23 +454,36 @@ class Handler(BaseHTTPRequestHandler):
                   if event_ts_ns > threshold_ns:
                     event_name = entry.get("event_name", "unknown")
                     window_counts[event_name] = window_counts.get(event_name, 0) + 1
-                return window_counts
+                    s = entry.get("score")
+                    if s is not None and isinstance(s, (int, float)):
+                      scores.append(float(s))
+                mean_score = sum(scores) / len(scores) if scores else None
+                max_score = max(scores) if scores else None
+                return window_counts, mean_score, max_score
 
+              mean_score: float | None = None
+              max_score: float | None = None
               if current_total_events is None:
-                counts = count_recent_window()
+                counts, mean_score, max_score = count_recent_window()
               elif last_total_events == 0:
-                counts = count_recent_window()
+                counts, mean_score, max_score = count_recent_window()
               elif current_total_events < last_total_events:
                 # Detector restarted or metrics counter reset.
-                counts = count_recent_window()
+                counts, mean_score, max_score = count_recent_window()
               else:
                 new_events_count = current_total_events - last_total_events
                 if new_events_count > 0:
                   # Entries are oldest-first, so the newest events are at the end.
                   new_entries = entries[-new_events_count:] if new_events_count <= len(entries) else entries
+                  scores = []
                   for entry in new_entries:
                     event_name = entry.get("event_name", "unknown")
                     counts[event_name] = counts.get(event_name, 0) + 1
+                    s = entry.get("score")
+                    if s is not None and isinstance(s, (int, float)):
+                      scores.append(float(s))
+                  mean_score = sum(scores) / len(scores) if scores else None
+                  max_score = max(scores) if scores else None
 
               # Update baseline counter after processing this poll.
               if current_total_events is not None:
@@ -480,7 +494,9 @@ class Handler(BaseHTTPRequestHandler):
               with _poll_history_lock:
                 _poll_history.append({
                   "time": poll_time,
-                  "counts": counts.copy() if counts else {}
+                  "counts": counts.copy() if counts else {},
+                  "mean_score": mean_score,
+                  "max_score": max_score,
                 })
             except json.JSONDecodeError as e:
               logging.error(f"Failed to parse JSON from detector: {e}, raw={raw[:200]}")
@@ -492,17 +508,32 @@ class Handler(BaseHTTPRequestHandler):
       with _poll_history_lock:
         history = list(_poll_history)
       
-      # Format data for chart: time buckets with counts per event type
+      # Fetch threshold from detector metrics for chart
+      threshold = None
+      if detector_metrics_url:
+        try:
+          metrics_text = _http_get(detector_metrics_url, timeout=2.0)
+          for line in metrics_text.split("\n"):
+            if line.startswith("sentinel_ebpf_detector_threshold"):
+              parts = line.split()
+              if len(parts) >= 2:
+                threshold = float(parts[1])
+                break
+        except Exception:
+          pass
+      # Format data for chart: time buckets with counts per event type and mean anomaly score
       time_buckets = []
       for poll_data in history:
         poll_time_iso = datetime.fromtimestamp(poll_data["time"], tz=timezone.utc).strftime("%H:%M:%S")
         time_buckets.append({
           "time": poll_time_iso,
           "timestamp": poll_data["time"],
-          "counts": poll_data["counts"]
+          "counts": poll_data["counts"],
+          "mean_score": poll_data.get("mean_score"),
+          "max_score": poll_data.get("max_score"),
         })
       
-      self._json({"time_buckets": time_buckets})
+      self._json({"time_buckets": time_buckets, "threshold": threshold})
       return
 
     self.send_response(404)

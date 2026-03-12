@@ -34,14 +34,23 @@ def _record_without(obj: dict, exclude: tuple[str, ...]) -> dict:
   return {k: v for k, v in obj.items() if k not in exclude}
 
 
-def count_duplicates(records: list[dict], fields: list[str], max_diffs: int) -> tuple[int | None, int | None, int | None, int | None]:
+def count_duplicates(
+  records: list[dict], fields: list[str], max_diffs: int
+) -> tuple[
+  int | None, int | None, int | None, int | None,
+  list[str] | None, set[str] | None, set[str] | None, set[str] | None, set[str] | None,
+]:
   """
   Count duplicates: exact (0), 1-field diff, 2-field diff, 3-field diff.
-  Returns (exact, one_field, two_fields, three_fields); None for levels not computed.
+  Returns (exact_count, one_field_count, two_fields_count, three_fields_count,
+           full_hashes, exact_dup_hashes, one_field_hashes, two_field_hashes, three_field_hashes).
+  full_hashes[i] is the hash of records[i], so list index = event/record index.
+  *_hashes sets contain those hashes; event i is a duplicate at a level if full_hashes[i] is in the set.
+  None for levels not computed. full_hashes and *_hashes are None when max_diffs <= 0.
   max_diffs: 0=skip all, 1=exact only, 2=exact+1-field, 3=exact+1+2-field, 4=all.
   """
   if max_diffs <= 0:
-    return (None, None, None, None)
+    return (None, None, None, None, None, None, None, None, None)
 
   exact_count = one_count = two_count = three_count = None
   rec_iter = tqdm(records, desc="Full hash", unit=" rec") if tqdm else records
@@ -50,11 +59,13 @@ def count_duplicates(records: list[dict], fields: list[str], max_diffs: int) -> 
   for h in full_hashes:
     full_counts[h] = full_counts.get(h, 0) + 1
 
+  exact_dup_hashes: set[str] = {h for h, c in full_counts.items() if c > 1}
   if max_diffs >= 1:
     exact_count = sum(c - 1 for c in full_counts.values() if c > 1)
 
   if max_diffs < 2:
-    return (exact_count, one_count, two_count, three_count)
+    return (exact_count, one_count, two_count, three_count,
+            full_hashes, exact_dup_hashes, None, None, None)
 
   one_field_recs: set[str] = set()
   field_list = [f for f in fields if records and f in records[0]]
@@ -70,7 +81,8 @@ def count_duplicates(records: list[dict], fields: list[str], max_diffs: int) -> 
   one_count = sum(1 for h in full_hashes if h in one_field_recs)
 
   if max_diffs < 3:
-    return (exact_count, one_count, two_count, three_count)
+    return (exact_count, one_count, two_count, three_count,
+            full_hashes, exact_dup_hashes, one_field_recs, None, None)
 
   two_field_recs: set[str] = set()
   pairs = [(f1, f2) for f1, f2 in itertools.combinations(fields, 2)
@@ -87,7 +99,8 @@ def count_duplicates(records: list[dict], fields: list[str], max_diffs: int) -> 
   two_count = sum(1 for h in full_hashes if h in two_field_recs)
 
   if max_diffs < 4:
-    return (exact_count, one_count, two_count, three_count)
+    return (exact_count, one_count, two_count, three_count,
+            full_hashes, exact_dup_hashes, one_field_recs, two_field_recs, None)
 
   three_field_recs: set[str] = set()
   triples = [(f1, f2, f3) for f1, f2, f3 in itertools.combinations(fields, 3)
@@ -103,7 +116,8 @@ def count_duplicates(records: list[dict], fields: list[str], max_diffs: int) -> 
         three_field_recs.update(members)
   three_count = sum(1 for h in full_hashes if h in three_field_recs)
 
-  return (exact_count, one_count, two_count, three_count)
+  return (exact_count, one_count, two_count, three_count,
+          full_hashes, exact_dup_hashes, one_field_recs, two_field_recs, three_field_recs)
 
 
 def load_records(path: Path, max_events: int | None = None) -> tuple[list[dict], list[float]]:
@@ -164,6 +178,29 @@ def main():
     metavar="N",
     help="Field-diff levels to compute: 0=none, 1=exact, 2=+1-field, 3=+2-field, 4=all (default: 4)",
   )
+  ap.add_argument(
+    "--y-max-percentile",
+    type=float,
+    default=100.0,
+    help=(
+      "Clip Y axis to this score percentile so huge spikes do not squash the rest. "
+      "100.0 = no clipping (default). Example: 99.9."
+    ),
+  )
+  ap.add_argument(
+    "--y-min-percentile",
+    type=float,
+    default=0.0,
+    help=(
+      "Optional lower clip for Y axis as a percentile. "
+      "0.0 = no lower clipping (default). Example: 0.1."
+    ),
+  )
+  ap.add_argument(
+    "--y-log",
+    action="store_true",
+    help="Use log-scale on Y axis (helps when a few scores are much larger than the rest).",
+  )
   args = ap.parse_args()
 
   path = Path(args.logfile)
@@ -183,9 +220,12 @@ def main():
   if args.diffs > 0:
     print("Counting duplicates (all records)...", file=sys.stderr)
     fields = list(records[0].keys()) if records else []
-    exact_dup, one_field, two_fields, three_fields = count_duplicates(records, fields, args.diffs)
+    exact_dup, one_field, two_fields, three_fields, full_hashes, exact_hashes, one_hashes, two_hashes, three_hashes = count_duplicates(
+      records, fields, args.diffs
+    )
   else:
     exact_dup = one_field = two_fields = three_fields = None
+    full_hashes = exact_hashes = one_hashes = two_hashes = three_hashes = None
 
   try:
     import matplotlib.pyplot as plt
@@ -195,13 +235,57 @@ def main():
 
   args.out.parent.mkdir(parents=True, exist_ok=True)
   fig, ax = plt.subplots(figsize=(24, 10))
-  ax.plot(range(len(scores)), scores, linewidth=0.3, alpha=0.9)
+  ax.plot(range(len(scores)), scores, linewidth=0.3, alpha=0.9, color="gray", label="score")
   ax.set_xlabel("Sample index")
   ax.set_ylabel("Loss (anomaly score)")
   ax.set_title(f"Loss over samples ({n_events} events)")
   ax.grid(True, alpha=0.3, which="major")
   ax.minorticks_on()
   ax.grid(True, alpha=0.15, which="minor", linestyle=":")
+
+  # Mark duplicate events (order: least to most strict so exact dupes are on top)
+  if full_hashes is not None:
+    indices = range(len(scores))
+    if three_hashes is not None:
+      idx_3 = [i for i in indices if full_hashes[i] in three_hashes]
+      if idx_3:
+        ax.scatter(idx_3, [scores[i] for i in idx_3], s=8, alpha=0.7, color="plum", label="3-field dup", zorder=4)
+    if two_hashes is not None:
+      idx_2 = [i for i in indices if full_hashes[i] in two_hashes]
+      if idx_2:
+        ax.scatter(idx_2, [scores[i] for i in idx_2], s=10, alpha=0.8, color="orange", label="2-field dup", zorder=5)
+    if one_hashes is not None:
+      idx_1 = [i for i in indices if full_hashes[i] in one_hashes]
+      if idx_1:
+        ax.scatter(idx_1, [scores[i] for i in idx_1], s=12, alpha=0.85, color="green", label="1-field dup", zorder=6)
+    if exact_hashes is not None:
+      idx_exact = [i for i in indices if full_hashes[i] in exact_hashes]
+      if idx_exact:
+        ax.scatter(idx_exact, [scores[i] for i in idx_exact], s=14, alpha=0.9, color="red", label="exact dup", zorder=7)
+    ax.legend(loc="upper right", fontsize=8)
+
+  # Optionally clip the Y axis to a percentile and/or use log scale so one huge spike
+  # does not make everything else look flat.
+  if (0.0 < args.y_min_percentile < 100.0) or (0.0 < args.y_max_percentile < 100.0):
+    sorted_scores = sorted(scores)
+    n = len(sorted_scores)
+    y_min, y_max = None, None
+    if 0.0 < args.y_min_percentile < 100.0:
+      r_min = int((args.y_min_percentile / 100.0) * (n - 1))
+      r_min = max(0, min(n - 1, r_min))
+      y_min = sorted_scores[r_min]
+    if 0.0 < args.y_max_percentile < 100.0:
+      r_max = int((args.y_max_percentile / 100.0) * (n - 1))
+      r_max = max(0, min(n - 1, r_max))
+      y_max = sorted_scores[r_max]
+    if y_min is not None or y_max is not None:
+      ax.set_ylim(bottom=y_min if y_min is not None else None,
+                  top=y_max if y_max is not None else None)
+
+  if args.y_log:
+    # Avoid errors if scores contain non-positive values; Matplotlib log scale needs >0.
+    if any(s > 0 for s in scores):
+      ax.set_yscale("log")
 
   stats_lines = [
     f"Events: {n_events:,}",
