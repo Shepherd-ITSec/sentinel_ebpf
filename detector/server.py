@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import threading
 import time
 from collections import deque
@@ -402,6 +403,84 @@ async def serve():
           body = "\n".join(lines).encode("utf-8")
           self.send_response(200)
           self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+          self.send_header("Content-Length", str(len(body)))
+          self.end_headers()
+          self.wfile.write(body)
+        elif parsed.path == "/events_dump":
+          # Search or tail the event dump file (when EVENT_DUMP_PATH is set).
+          # ?search=cat+shells - server-side search, returns only matching events (scans last N lines).
+          # ?limit=N (no search) - returns last N events.
+          limit = 50000
+          search = ""
+          try:
+            qs = parse_qs(parsed.query)
+            if "limit" in qs:
+              limit = max(1, min(100000, int(qs["limit"][0])))
+            if "search" in qs and qs["search"]:
+              search = (qs["search"][0] or "").strip()
+          except (ValueError, IndexError):
+            pass
+
+          def _event_matches_search(obj: dict, query: str) -> bool:
+            """Match event against search query (same logic as UI eventMatchesFilter)."""
+            if not query:
+              return True
+            data = obj.get("data") or []
+            comm = (data[2] if len(data) > 2 else "") or obj.get("attributes", {}).get("comm", "")
+            path = (data[8] if len(data) > 8 else "") or obj.get("attributes", {}).get("path", "") or obj.get("attributes", {}).get("filename", "")
+            event_name = (obj.get("event_name") or "").lower()
+            path_s = (path or "").lower()
+            comm_s = (comm or "").lower()
+            hostname = (obj.get("hostname") or "").lower()
+            event_type = (obj.get("event_type") or "").lower()
+            data_joined = " ".join(str(x) for x in data).lower()
+            haystack = f"{event_name} {comm_s} {path_s} {hostname} {event_type} {data_joined}"
+            parts = query.strip().split()
+            for part in parts:
+              if not part:
+                continue
+              m = re.match(r"^(\w+)=(.+)$", part)
+              if m:
+                field, value = m.group(1).lower(), m.group(2).lower()
+                if field == "comm" and value not in comm_s:
+                  return False
+                if field in ("path", "file") and value not in path_s:
+                  return False
+                if field in ("event", "event_name", "syscall") and value not in event_name:
+                  return False
+                if field == "hostname" and value not in hostname:
+                  return False
+                if field == "type" and value not in event_type:
+                  return False
+              elif part.lower() not in haystack:
+                return False
+            return True
+
+          entries = []
+          if _event_dump_path and _event_dump_path.exists():
+            try:
+              with _event_dump_path.open("r", encoding="utf-8") as f:
+                lines = deque(f, maxlen=limit)
+              for line in lines:
+                line = line.strip()
+                if not line:
+                  continue
+                try:
+                  obj = json.loads(line)
+                  if obj.get("_meta"):
+                    continue
+                  if "event_id" not in obj:
+                    continue
+                  if search and not _event_matches_search(obj, search):
+                    continue
+                  entries.append(obj)
+                except json.JSONDecodeError:
+                  continue
+            except Exception as e:
+              logging.warning("events_dump read failed: %s", e)
+          body = json.dumps({"entries": entries}).encode("utf-8")
+          self.send_response(200)
+          self.send_header("Content-Type", "application/json")
           self.send_header("Content-Length", str(len(body)))
           self.end_headers()
           self.wfile.write(body)

@@ -15,7 +15,7 @@ macros:
   net_evt: "event_name in (net_events)"
   noisy_path: "path startswithin (noisy_paths)"
   shell_proc: "comm in (shell_events)"
-  filterable_path: not (event_name in (read, write) and path = \"\")"
+  filterable_path: "not (event_name in (read, write) and path = \"\")"
 
 rules:
   - name: capture-file-events

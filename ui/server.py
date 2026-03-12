@@ -10,7 +10,7 @@ from collections import deque
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 from urllib.request import Request, urlopen
 
 import grpc
@@ -106,6 +106,22 @@ def _fetch_recent_events_from_detector(events_url: str, limit: int):
   try:
     url = f"{events_url}?limit={limit}" if "?" not in events_url else f"{events_url}&limit={limit}"
     raw = _http_get(url, timeout=3.0)
+    if raw.startswith("error:"):
+      return None
+    data = json.loads(raw)
+    return data.get("entries", [])
+  except Exception:  # noqa: BLE001
+    return None
+
+
+def _fetch_events_search(events_url: str, search: str):
+  """Search event dump in detector (server-side). Returns only matching events."""
+  if not events_url or not search or not search.strip():
+    return None
+  dump_url = events_url.replace("/recent_events", "/events_dump")
+  try:
+    url = f"{dump_url}?search={quote(search.strip())}"
+    raw = _http_get(url, timeout=15.0)
     if raw.startswith("error:"):
       return None
     data = json.loads(raw)
@@ -219,11 +235,11 @@ def _compute_capacity_summary(probe_metrics: dict, detector_metrics: dict) -> di
 
 
 def _read_logs(path_str: str, limit: int):
+  """Fetch log tail - always from ring buffer (/recent_events) or local file."""
   if not path_str:
     return {"message": "LOG_PATH not set", "entries": []}
   path = Path(path_str)
   if not path.exists():
-    # gRPC mode: try detector recent-events API
     events_url = os.environ.get("DETECTOR_EVENTS_URL", "")
     entries = _fetch_recent_events_from_detector(events_url, limit) if events_url else None
     if entries is not None:
@@ -314,9 +330,17 @@ class Handler(BaseHTTPRequestHandler):
     if self.path.startswith("/api/logs"):
       query = parse_qs(urlparse(self.path).query)
       limit = int(query.get("limit", [os.environ.get("UI_LOG_LIMIT", "50")])[0])
-      limit = max(1, min(limit, 500))
+      limit = max(1, min(limit, 10000))
       log_path = os.environ.get("LOG_PATH", "")
       self._json(_read_logs(log_path, limit))
+      return
+
+    if self.path.startswith("/api/watch_search"):
+      query = parse_qs(urlparse(self.path).query)
+      search = (query.get("search", [""])[0] or "").strip()
+      events_url = os.environ.get("DETECTOR_EVENTS_URL", "")
+      entries = _fetch_events_search(events_url, search) if (search and events_url) else []
+      self._json({"entries": entries if entries is not None else []})
       return
 
     if self.path.startswith("/api/score_map"):

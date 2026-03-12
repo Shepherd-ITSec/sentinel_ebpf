@@ -1066,15 +1066,17 @@
       const maxWatchedEvents = 300;
       let watchedEvents = [];
       const seenEventKeys = new Set();
+      let lastScanCount = 0;
       function getWatchEventFields(entry) {
         const d = Array.isArray(entry?.data) ? entry.data : [];
+        const attrs = entry?.attributes || {};
         return {
-          syscall: entry.event_name ?? "",
-          comm: d.length > 2 ? d[2] : "",
+          syscall: entry?.event_name ?? "",
+          comm: (d.length > 2 ? d[2] : "") || attrs.comm || entry?.comm || "",
           pid: d.length > 3 ? d[3] : "",
           tid: d.length > 4 ? d[4] : "",
           uid: d.length > 5 ? d[5] : "",
-          path: d.length > 8 ? d[8] : "",
+          path: (d.length > 8 ? d[8] : "") || attrs.path || attrs.filename || entry?.path || "",
         };
       }
       function getWatchEventKey(entry) {
@@ -1141,7 +1143,10 @@
           return;
         }
         if (watchedEvents.length === 0) {
-          el.innerHTML = "<p class=\"metrics-empty\">No matching events yet. Matching events will appear here as they occur.</p>";
+          const hint = lastScanCount > 0
+            ? `Scanned ${lastScanCount} events, no matches. Try <code>path=/path</code> or <code>comm=name</code>`
+            : "No events received yet. Check that probe and detector are running and connected.";
+          el.innerHTML = "<p class=\"metrics-empty\">No matching events yet. " + hint + "</p>";
           return;
         }
         const rows = watchedEvents.slice().reverse().map(entry => {
@@ -1168,11 +1173,12 @@
       }
       function processWatchEntries(logsData) {
         const filter = (document.getElementById("watchFilterInput") || {}).value || "";
+        const entries = Array.isArray(logsData?.entries) ? logsData.entries : [];
+        lastScanCount = entries.length;
         if (!filter.trim()) {
           renderWatchTable();
           return;
         }
-        const entries = Array.isArray(logsData?.entries) ? logsData.entries : [];
         let added = 0;
         for (const entry of entries) {
           if (!eventMatchesFilter(entry, filter)) continue;
@@ -1745,9 +1751,13 @@
           }
         }
         try {
+          const watchFilter = (document.getElementById("watchFilterInput") || {}).value || "";
           const logs = await fetchJson("/api/logs?limit=" + logLimit);
           renderLogs(logs);
-          processWatchEntries(logs);
+          const watchData = watchFilter.trim()
+            ? await fetchJson("/api/watch_search?search=" + encodeURIComponent(watchFilter.trim()))
+            : { entries: [] };
+          processWatchEntries(watchData);
         } catch (e) {
           const logsEl = document.getElementById("logs");
           if (logsEl) {
