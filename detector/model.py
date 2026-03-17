@@ -8,15 +8,19 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+from fenwick import FenwickTree
 import torch
+from scipy.stats import norm as scipy_norm
 try:
   from river import anomaly as River_Anomaly
 except ImportError:
   River_Anomaly = None
 try:
   from pysad.models import KitNet as Pysad_KitNet
+  from pysad.models import LODA as Pysad_LODA
 except ImportError:
   Pysad_KitNet = None
+  Pysad_LODA = None
 try:
   from sklearn.neighbors import NearestNeighbors
 except ImportError:
@@ -41,6 +45,25 @@ def _auto_mem_latent_dim(hidden_dim: int) -> int:
 def _auto_kitnet_max_size_ae(input_dim: int) -> int:
   # Kitsune sub-autoencoders should not exceed input size.
   return max(2, min(32, int(np.ceil(np.sqrt(max(1, input_dim))))))
+
+
+def _fenwick_prefix_sum(tree: Any, i: int) -> float:
+  """Prefix sum [0..i] inclusive. fenwick uses exclusive stop, so prefix_sum(i+1)."""
+  return float(tree.prefix_sum(i + 1))
+
+
+class _BothScoresMixin:
+  """Mixin for impls that use 1-exp(-max(0,raw)) squash. Used when impl is instantiated directly (e.g. tests)."""
+
+  def score_only(self, features: Dict[str, float]) -> tuple[float, float]:
+    raw = self.score_only_raw(features)
+    scaled = 1.0 - float(np.exp(-max(0.0, raw)))
+    return (float(raw), scaled)
+
+  def score_and_learn(self, features: Dict[str, float]) -> tuple[float, float]:
+    raw = self.score_and_learn_raw(features)
+    scaled = 1.0 - float(np.exp(-max(0.0, raw)))
+    return (float(raw), scaled)
 
 
 def _resolve_torch_device(preference: str) -> torch.device:
@@ -89,22 +112,23 @@ class OnlineHalfSpaceTrees:
       window_size,
     )
 
-  def score_only(self, features: Dict[str, float]) -> float:
-    """Return anomaly score without updating model state (read-only)."""
-    return self.score_only_raw(features)
-
   def score_only_raw(self, features: Dict[str, float]) -> float:
     """Return the underlying (unsquashed) score."""
     return float(self.model.score_one(features))
 
-  def score_and_learn(self, features: Dict[str, float]) -> float:
-    return self.score_and_learn_raw(features)
+  def score_only(self, features: Dict[str, float]) -> tuple[float, float]:
+    raw = self.score_only_raw(features)
+    return (float(raw), float(raw))
 
   def score_and_learn_raw(self, features: Dict[str, float]) -> float:
     """Return the underlying (unsquashed) score, learning from this instance."""
     score = self.model.score_one(features)
     self.model.learn_one(features)  # in-place; learn_one returns None
     return float(score)
+
+  def score_and_learn(self, features: Dict[str, float]) -> tuple[float, float]:
+    raw = self.score_and_learn_raw(features)
+    return (float(raw), float(raw))
 
   def get_state(self) -> Dict[str, Any]:
     """Return picklable state for checkpointing."""
@@ -115,16 +139,11 @@ class OnlineHalfSpaceTrees:
     self.model = state["model"]
 
 
-class OnlineLODA:
+class OnlineLODAEMA(_BothScoresMixin):
   """
-  Online LODA-style anomaly detector for streaming vectors. (Self-implementation)
-  Uses sparse random projections + online histograms to estimate 1D densities.
-
-  Reference design:
-  - Paper: LODA (MLJ 2016): https://doi.org/10.1007/s10994-015-5521-0
-  - Practical references:
-    - PyOD LODA: https://pyod.readthedocs.io/en/latest/_modules/pyod/models/loda.html
-    - PySAD LODA: https://pysad.readthedocs.io/en/latest/_modules/pysad/models/loda.html
+  LODA-style anomaly detector with EMA-based adaptive normalization. (Self-implementation)
+  Uses sparse random projections + online histograms; streaming from first event.
+  EMA for mean/var normalization; optional hist_decay for forgetting.
   """
 
   def __init__(
@@ -137,7 +156,7 @@ class OnlineLODA:
     model_device: str,
     seed: int,
   ):
-    self.algorithm = "loda"
+    self.algorithm = "loda_ema"
     self.n_projections = n_projections
     self.bins = bins
     self.proj_range = proj_range
@@ -192,11 +211,6 @@ class OnlineLODA:
     vec = np.array([float(features[k]) for k in self._feature_names], dtype=np.float32)
     return torch.from_numpy(vec).to(self._device)
 
-  def score_only(self, features: Dict[str, float]) -> float:
-    """Return anomaly score without updating model state (read-only)."""
-    score_raw = self.score_only_raw(features)
-    return 1.0 - float(np.exp(-max(0.0, score_raw)))
-
   def score_only_raw(self, features: Dict[str, float]) -> float:
     """Return the underlying (unsquashed) score."""
     if self._weights is None:
@@ -221,12 +235,11 @@ class OnlineLODA:
     smoothing = 1.0
     totals = effective_counts.sum(dim=1) + smoothing * self.bins
     probs = (effective_counts[row_idx, bin_idx] + smoothing) / totals
-    score = float(torch.mean(-torch.log(probs)).item())
+    surprisal = -torch.log(probs)
+    baseline = math.log(float(self.bins))
+    excess = torch.clamp(surprisal - baseline, min=0.0)
+    score = float(torch.mean(excess).item())
     return score
-
-  def score_and_learn(self, features: Dict[str, float]) -> float:
-    score_raw = self.score_and_learn_raw(features)
-    return 1.0 - float(np.exp(-max(0.0, score_raw)))
 
   def score_and_learn_raw(self, features: Dict[str, float]) -> float:
     """Return the underlying (unsquashed) score, learning from this instance."""
@@ -255,7 +268,10 @@ class OnlineLODA:
     smoothing = 1.0
     totals = counts.sum(dim=1) + smoothing * self.bins
     probs = (counts[row_idx, bin_idx] + smoothing) / totals
-    score = float(torch.mean(-torch.log(probs)).item())
+    surprisal = -torch.log(probs)
+    baseline = math.log(float(self.bins))
+    excess = torch.clamp(surprisal - baseline, min=0.0)
+    score = float(torch.mean(excess).item())
 
     # Learn after scoring so the current event doesn't lower its own anomaly score.
     counts[row_idx, bin_idx] += 1.0
@@ -288,7 +304,104 @@ class OnlineLODA:
     self._counts = torch.from_numpy(np.asarray(state["counts"], dtype=np.float32)).to(self._device)
 
 
-class OnlineKitNet:
+class OnlinePysadLODA(_BothScoresMixin):
+  """Online anomaly detector using PySAD LODA. (Library-based wrapper, paper-faithful)"""
+
+  def __init__(
+    self,
+    num_bins: int,
+    num_random_cuts: int,
+    model_device: str,
+    seed: int,
+  ):
+    self.algorithm = "loda"
+    self.num_bins = num_bins
+    self.num_random_cuts = num_random_cuts
+    self.seed = seed
+    self._feature_names: Optional[List[str]] = None
+    self._model = None
+    logging.info(
+      "Initialized %s (PySAD, bins=%d, cuts=%d)",
+      self.algorithm,
+      num_bins,
+      num_random_cuts,
+    )
+
+  def _init_from_features(self, features: Dict[str, float]) -> None:
+    if Pysad_LODA is None:
+      raise RuntimeError("PySAD LODA not available. Install detector deps: `uv sync --extra detector`.")
+    self._feature_names = sorted(features.keys())
+    self._model = Pysad_LODA(num_bins=self.num_bins, num_random_cuts=self.num_random_cuts)
+    logging.info("PySAD LODA input_dim=%d", len(self._feature_names))
+
+  def _vectorize(self, features: Dict[str, float]) -> np.ndarray:
+    if self._feature_names is None:
+      self._init_from_features(features)
+    if self._feature_names is None:
+      raise RuntimeError("PySAD LODA feature names not initialized")
+    return np.array([float(features[k]) for k in self._feature_names], dtype=np.float64)
+
+  def score_only_raw(self, features: Dict[str, float]) -> float:
+    """Return the underlying (unsquashed) score."""
+    x = self._vectorize(features)
+    if self._model is None:
+      raise RuntimeError("PySAD LODA not initialized")
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+      try:
+        raw_val = self._model.score_partial(x)
+        raw = float(np.asarray(raw_val).flat[0]) if raw_val is not None else 0.0
+      except AttributeError as exc:
+        exc_str = str(exc).lower()
+        if "projections" not in exc_str and "model" not in exc_str and "histogram" not in exc_str:
+          raise
+        logging.debug("PySAD LODA cold-start before fit; using raw score 0.0")
+        raw = 0.0
+    if not np.isfinite(raw):
+      logging.warning("PySAD LODA produced non-finite score (%s); falling back to 0.0", raw)
+      raw = 0.0
+    return max(0.0, float(raw))
+
+  def score_and_learn_raw(self, features: Dict[str, float]) -> float:
+    """Return the underlying (unsquashed) score, learning from this instance."""
+    x = self._vectorize(features)
+    if self._model is None:
+      raise RuntimeError("PySAD LODA not initialized")
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+      try:
+        raw_val = self._model.score_partial(x)
+        raw = float(np.asarray(raw_val).flat[0]) if raw_val is not None else 0.0
+        need_fit = True
+      except AttributeError as exc:
+        exc_str = str(exc).lower()
+        if "projections" not in exc_str and "model" not in exc_str and "histogram" not in exc_str:
+          raise
+        logging.debug("PySAD LODA cold-start before fit; fitting first, using raw score 0.0")
+        self._model.fit_partial(x)
+        raw = 0.0
+        need_fit = False
+      if need_fit:
+        self._model.fit_partial(x)
+    if not np.isfinite(raw):
+      logging.warning("PySAD LODA produced non-finite score (%s); falling back to 0.0", raw)
+      raw = 0.0
+    return max(0.0, float(raw))
+
+  def get_state(self) -> Dict[str, Any]:
+    """Return picklable state for checkpointing."""
+    if self._model is None:
+      raise RuntimeError("PySAD LODA not initialized; cannot save empty state")
+    return {
+      "feature_names": list(self._feature_names),
+      "model": self._model,
+    }
+
+  def set_state(self, state: Dict[str, Any]) -> None:
+    """Restore from checkpoint state."""
+    self._feature_names = list(state["feature_names"])
+    self._model = state["model"]
+
+
+class OnlineKitNet(_BothScoresMixin):
   """Online anomaly detector using PySAD KitNet. (Library-based wrapper)"""
 
   def __init__(
@@ -357,11 +470,6 @@ class OnlineKitNet:
       raise RuntimeError("KitNet feature names not initialized")
     return np.array([float(features[k]) for k in self._feature_names], dtype=np.float64)
 
-  def score_only(self, features: Dict[str, float]) -> float:
-    """Return anomaly score without updating model state (read-only)."""
-    raw = self.score_only_raw(features)
-    return 1.0 - float(np.exp(-max(0.0, raw)))
-
   def score_only_raw(self, features: Dict[str, float]) -> float:
     """Return the underlying (unsquashed) score."""
     x = self._vectorize(features)
@@ -379,10 +487,6 @@ class OnlineKitNet:
       logging.warning("KitNet produced non-finite score (%s); falling back to 0.0", raw)
       raw = 0.0
     return max(0.0, float(raw))
-
-  def score_and_learn(self, features: Dict[str, float]) -> float:
-    raw = self.score_and_learn_raw(features)
-    return 1.0 - float(np.exp(-max(0.0, raw)))
 
   def score_and_learn_raw(self, features: Dict[str, float]) -> float:
     """Return the underlying (unsquashed) score, learning from this instance."""
@@ -443,7 +547,7 @@ class _AutoEncoder(torch.nn.Module):
     recon = self.decoder(z)
     return z, recon
 
-class OnlineMemStream:
+class OnlineMemStream(_BothScoresMixin):
   """
   Online MemStream-style detector using an autoencoder + latent memory. (Self-implementation)
 
@@ -592,11 +696,6 @@ class OnlineMemStream:
     self._memory_input[idx] = x.detach()
     self._refresh_norm_from_memory()
 
-  def score_only(self, features: Dict[str, float]) -> float:
-    """Return anomaly score without updating model state (read-only)."""
-    score_raw = self.score_only_raw(features)
-    return 1.0 - float(np.exp(-max(0.0, score_raw)))
-
   def score_only_raw(self, features: Dict[str, float]) -> float:
     """Return the underlying (unsquashed) score."""
     if self._model is None or self._optimizer is None:
@@ -614,10 +713,6 @@ class OnlineMemStream:
       memory_error = self._memory_distance(z_eval, k=3)
       score_raw = (0.8 * memory_error) + (0.2 * recon_error)
     return max(0.0, float(score_raw))
-
-  def score_and_learn(self, features: Dict[str, float]) -> float:
-    score_raw = self.score_and_learn_raw(features)
-    return 1.0 - float(np.exp(-max(0.0, score_raw)))
 
   def score_and_learn_raw(self, features: Dict[str, float]) -> float:
     """Return the underlying (unsquashed) score, learning from this instance."""
@@ -694,7 +789,7 @@ class OnlineMemStream:
     self._score_var_ema = float(state.get("score_var_ema", 0.0))
 
 
-class OnlineZScore:
+class OnlineZScore(_BothScoresMixin):
   """Simple online per-feature Z-score baseline. (Self-implementation)"""
 
   def __init__(self, min_count: int, std_floor: float, model_device: str, seed: int):
@@ -759,17 +854,9 @@ class OnlineZScore:
     delta2 = x - mean
     m2 += delta * delta2
 
-  def score_only(self, features: Dict[str, float]) -> float:
-    raw = self.score_only_raw(features)
-    return 1.0 - float(np.exp(-max(0.0, raw)))
-
   def score_only_raw(self, features: Dict[str, float]) -> float:
     x = self._vectorize(features)
     return max(0.0, self._raw_from_vector(x))
-
-  def score_and_learn(self, features: Dict[str, float]) -> float:
-    raw = self.score_and_learn_raw(features)
-    return 1.0 - float(np.exp(-max(0.0, raw)))
 
   def score_and_learn_raw(self, features: Dict[str, float]) -> float:
     """Return the underlying (unsquashed) score, learning from this instance."""
@@ -801,7 +888,7 @@ class OnlineZScore:
     self._m2 = np.asarray(state["m2"], dtype=np.float64)
 
 
-class OnlineKNN:
+class OnlineKNN(_BothScoresMixin):
   """Online KNN anomaly detector with sliding memory. (Library-based wrapper)"""
 
   def __init__(self, k: int, memory_size: int, metric: str, model_device: str, seed: int):
@@ -875,17 +962,9 @@ class OnlineKNN:
       self._mem_index = (self._mem_index + 1) % self.memory_size
     self._memory[idx] = x
 
-  def score_only(self, features: Dict[str, float]) -> float:
-    raw = self.score_only_raw(features)
-    return 1.0 - float(np.exp(-max(0.0, raw)))
-
   def score_only_raw(self, features: Dict[str, float]) -> float:
     x = self._vectorize(features)
     return self._raw_from_vector(x)
-
-  def score_and_learn(self, features: Dict[str, float]) -> float:
-    raw = self.score_and_learn_raw(features)
-    return 1.0 - float(np.exp(-max(0.0, raw)))
 
   def score_and_learn_raw(self, features: Dict[str, float]) -> float:
     """Return the underlying (unsquashed) score, learning from this instance."""
@@ -919,19 +998,20 @@ class OnlineKNN:
     self._mem_filled = int(state["mem_filled"])
 
 
-class OnlineFreq1D:
+class OnlineFreq1D(_BothScoresMixin):
   """
   Simple frequency / rarity baseline using independent 1D marginals. (Self-implementation)
 
   - Numeric features: fixed-bin histogram over [0, 1] (clamped).
   - Categorical features: capped per-feature count tables for *_hash and binary flags.
 
-  Score (raw) = mean over features of excess surprisal:
+  Score (raw) = configurable aggregation over features of excess surprisal:
     max(0, -log p(x) - (-log p_uniform))
   so cold-start produces score ~0 (uniform baseline).
   """
 
   _BINARY_FEATURES = frozenset({"return_success", "file_sensitive_path", "file_tmp_path", "process_is_execve", "process_is_fork"})
+  _HASH_KEY_SPACE = 10000  # hash mode keys are 0..9999
 
   def __init__(
     self,
@@ -939,6 +1019,9 @@ class OnlineFreq1D:
     alpha: float,
     decay: float,
     max_categories: int,
+    aggregation: str,
+    topk: int,
+    soft_topk_temperature: float,
     model_device: str,
     seed: int,
   ):
@@ -960,6 +1043,15 @@ class OnlineFreq1D:
     if not (0.0 < self.decay <= 1.0):
       raise ValueError("freq1d decay must be in (0, 1]")
     self.max_categories = int(max(4, max_categories))
+    self.aggregation = str(aggregation).strip().lower()
+    if self.aggregation not in ("sum", "mean", "topk_mean", "soft_topk_mean"):
+      raise ValueError("freq1d aggregation must be one of: sum, mean, topk_mean, soft_topk_mean")
+    self.topk = int(topk)
+    if self.topk <= 0:
+      raise ValueError("freq1d topk must be > 0")
+    self.soft_topk_temperature = float(soft_topk_temperature)
+    if not (self.soft_topk_temperature > 0.0):
+      raise ValueError("freq1d soft_topk_temperature must be > 0")
 
     self._feature_names: Optional[List[str]] = None
     self._kind: Optional[List[str]] = None  # "num" or "cat"
@@ -967,21 +1059,56 @@ class OnlineFreq1D:
 
     self._num_slot: Optional[List[int]] = None
     self._num_counts: List[np.ndarray] = []
+    self._num_fenwick: List[FenwickTree] = []
     self._num_scale: List[float] = []
 
     self._cat_slot: Optional[List[int]] = None
-    self._cat_counts: List[Dict[int, float]] = []
+    self._cat_counts: List[Any] = []  # dict for binary/hash-small, np.ndarray for hash-large
+    self._cat_hash_fenwick: List[Optional[FenwickTree]] = []  # only for hash with max_categories >= 10000
     self._cat_other: List[float] = []
     self._cat_scale: List[float] = []
 
     logging.info(
-      "Initialized %s (bins=%d, alpha=%.3f, decay=%.4f, max_categories=%d)",
+      "Initialized %s (bins=%d, alpha=%.3f, decay=%.4f, max_categories=%d, aggregation=%s, topk=%d, soft_temp=%.4f)",
       self.algorithm,
       self.bins,
       self.alpha,
       self.decay,
       self.max_categories,
+      self.aggregation,
+      self.topk,
+      self.soft_topk_temperature,
     )
+
+  def _aggregate(self, scores: List[float]) -> float:
+    if not scores:
+      return 0.0
+    if self.aggregation == "sum":
+      return float(sum(scores))
+    if self.aggregation == "mean":
+      return float(sum(scores) / float(len(scores)))
+    if self.aggregation == "topk_mean":
+      k = min(len(scores), self.topk)
+      if k <= 0:
+        return 0.0
+      arr = np.asarray(scores, dtype=np.float64)
+      # partial select top-k without full sort
+      topk = np.partition(arr, -k)[-k:]
+      return float(np.mean(topk))
+    # soft_topk_mean
+    arr = np.asarray(scores, dtype=np.float64)
+    k = min(len(arr), self.topk)
+    if k <= 0:
+      return 0.0
+    # Focus on top-k for stability/perf, then softmax within that set.
+    topk = np.partition(arr, -k)[-k:]
+    temp = float(self.soft_topk_temperature)
+    m = float(np.max(topk))
+    w = np.exp((topk - m) / temp)
+    denom = float(np.sum(w))
+    if denom <= 0.0 or not np.isfinite(denom):
+      return float(np.mean(topk))
+    return float(np.sum(w * topk) / denom)
 
   def _is_categorical(self, name: str) -> tuple[bool, Optional[str]]:
     if name.endswith("_hash"):
@@ -1003,7 +1130,13 @@ class OnlineFreq1D:
         kinds.append("cat")
         cat_modes.append(mode)
         cat_slot[i] = len(self._cat_counts)
-        self._cat_counts.append({})
+        if mode == "hash" and self.max_categories >= self._HASH_KEY_SPACE:
+          arr = np.zeros(self._HASH_KEY_SPACE, dtype=np.float64)
+          self._cat_counts.append(arr)
+          self._cat_hash_fenwick.append(FenwickTree(self._HASH_KEY_SPACE))
+        else:
+          self._cat_counts.append({})
+          self._cat_hash_fenwick.append(None)
         self._cat_other.append(0.0)
         self._cat_scale.append(1.0)
       else:
@@ -1011,6 +1144,7 @@ class OnlineFreq1D:
         cat_modes.append(None)
         num_slot[i] = len(self._num_counts)
         self._num_counts.append(np.zeros(self.bins, dtype=np.float64))
+        self._num_fenwick.append(FenwickTree(self.bins))
         self._num_scale.append(1.0)
 
     self._kind = kinds
@@ -1029,15 +1163,20 @@ class OnlineFreq1D:
     if scale >= 1e-6:
       return
     self._num_counts[slot] *= scale
+    self._num_fenwick[slot].init(list(self._num_counts[slot]))
     self._num_scale[slot] = 1.0
 
   def _maybe_rescale_categorical(self, slot: int) -> None:
     scale = self._cat_scale[slot]
     if scale >= 1e-6:
       return
-    if self._cat_counts[slot]:
-      for k in list(self._cat_counts[slot].keys()):
-        self._cat_counts[slot][k] *= scale
+    counts = self._cat_counts[slot]
+    if isinstance(counts, np.ndarray):
+      counts *= scale
+      self._cat_hash_fenwick[slot].init(list(counts))
+    elif counts:
+      for k in list(counts.keys()):
+        counts[k] *= scale
     self._cat_other[slot] *= scale
     self._cat_scale[slot] = 1.0
 
@@ -1072,7 +1211,8 @@ class OnlineFreq1D:
 
   def _score_numeric_slot(self, slot: int, x: float) -> float:
     counts = self._num_counts[slot]
-    total = float(counts.sum())
+    fenwick = self._num_fenwick[slot]
+    total = _fenwick_prefix_sum(fenwick, self.bins - 1)
     idx = self._bin_numeric(x)
     c = float(counts[idx])
     p = (c + self.alpha) / (total + self.alpha * self.bins) if total >= 0.0 else 1.0 / float(self.bins)
@@ -1085,71 +1225,121 @@ class OnlineFreq1D:
     self._maybe_rescale_numeric(slot)
     scale = self._num_scale[slot]
     idx = self._bin_numeric(x)
-    self._num_counts[slot][idx] += 1.0 / max(scale, 1e-12)
+    delta = 1.0 / max(scale, 1e-12)
+    self._num_counts[slot][idx] += delta
+    self._num_fenwick[slot].add(idx, delta)
 
   def _score_cat_slot(self, slot: int, mode: str, x: float) -> float:
     counts = self._cat_counts[slot]
-    other = float(self._cat_other[slot])
-    total = other + float(sum(counts.values()))
     k = self._cat_key(mode, x)
-    c = float(counts.get(k, 0.0))
-    # K = tracked categories + OTHER bucket
-    alphabet = max(2, len(counts) + 1)
+    if isinstance(counts, np.ndarray):
+      fenwick = self._cat_hash_fenwick[slot]
+      total = _fenwick_prefix_sum(fenwick, self._HASH_KEY_SPACE - 1)
+      c = float(counts[k])
+      alphabet = max(2, int(np.count_nonzero(counts)) + 1)
+    else:
+      other = float(self._cat_other[slot])
+      total = other + float(sum(counts.values()))
+      c = float(counts.get(k, 0.0))
+      alphabet = max(2, len(counts) + 1)
     p = (c + self.alpha) / (total + self.alpha * alphabet) if total >= 0.0 else 1.0 / float(alphabet)
     p = max(1e-300, float(p))
     baseline = math.log(float(alphabet))
     return max(0.0, -math.log(p) - baseline)
+
+  def _cdf_numeric_slot(self, slot: int, x: float) -> float:
+    """CDF F(x) = P(X <= x) from histogram, clamped to (0, 1)."""
+    fenwick = self._num_fenwick[slot]
+    total = _fenwick_prefix_sum(fenwick, self.bins - 1)
+    idx = self._bin_numeric(x)
+    cum = _fenwick_prefix_sum(fenwick, idx)
+    cdf = (cum + self.alpha) / (total + self.alpha * self.bins) if total >= 0.0 else (idx + 1) / float(self.bins)
+    return float(np.clip(cdf, 1e-12, 1.0 - 1e-12))
+
+  def _cdf_cat_slot(self, slot: int, mode: str, x: float) -> float:
+    """CDF F(x) = P(X <= k) from count table for keys <= bin(x), clamped to (0, 1)."""
+    counts = self._cat_counts[slot]
+    k = self._cat_key(mode, x)
+    if isinstance(counts, np.ndarray):
+      fenwick = self._cat_hash_fenwick[slot]
+      total = _fenwick_prefix_sum(fenwick, self._HASH_KEY_SPACE - 1)
+      cum = _fenwick_prefix_sum(fenwick, k)
+      alphabet = max(2, int(np.count_nonzero(counts)) + 1)
+    else:
+      other = float(self._cat_other[slot])
+      total = other + float(sum(counts.values()))
+      cum = float(sum(c for key, c in counts.items() if key <= k))
+      alphabet = max(2, len(counts) + 1)
+    cdf = (cum + self.alpha) / (total + self.alpha * alphabet) if total >= 0.0 else 0.5
+    return float(np.clip(cdf, 1e-12, 1.0 - 1e-12))
+
+  def get_cdf_vector(self, features: Dict[str, float]) -> np.ndarray:
+    """Return u_i = F_i(x_i) for each feature in _feature_names order."""
+    self._ensure_init(features)
+    if self._feature_names is None or self._kind is None or self._num_slot is None or self._cat_slot is None or self._cat_mode is None:
+      raise RuntimeError("Freq1D not initialized")
+    out = np.zeros(len(self._feature_names), dtype=np.float64)
+    for i, name in enumerate(self._feature_names):
+      x = float(features.get(name, 0.0))
+      if self._kind[i] == "num":
+        slot = self._num_slot[i]
+        if slot >= 0:
+          out[i] = self._cdf_numeric_slot(slot, x)
+        else:
+          out[i] = 0.5
+      else:
+        slot = self._cat_slot[i]
+        mode = self._cat_mode[i] or "hash"
+        if slot >= 0:
+          out[i] = self._cdf_cat_slot(slot, mode, x)
+        else:
+          out[i] = 0.5
+    return out
 
   def _learn_cat_slot(self, slot: int, mode: str, x: float) -> None:
     self._cat_scale[slot] *= self.decay
     self._maybe_rescale_categorical(slot)
     scale = self._cat_scale[slot]
     k = self._cat_key(mode, x)
+    delta = 1.0 / max(scale, 1e-12)
     counts = self._cat_counts[slot]
-    if k in counts:
-      counts[k] = float(counts[k]) + (1.0 / max(scale, 1e-12))
-      return
-    if len(counts) < self.max_categories:
-      counts[k] = 1.0 / max(scale, 1e-12)
-      return
-    self._cat_other[slot] = float(self._cat_other[slot]) + (1.0 / max(scale, 1e-12))
+    if isinstance(counts, np.ndarray):
+      counts[k] += delta
+      self._cat_hash_fenwick[slot].add(k, delta)
+    else:
+      if k in counts:
+        counts[k] = float(counts[k]) + delta
+        return
+      if len(counts) < self.max_categories:
+        counts[k] = delta
+        return
+      self._cat_other[slot] = float(self._cat_other[slot]) + delta
 
   def _ensure_init(self, features: Dict[str, float]) -> None:
     if self._feature_names is None:
       self._init_from_features(features)
 
-  def score_only(self, features: Dict[str, float]) -> float:
-    raw = self.score_only_raw(features)
-    return 1.0 - float(np.exp(-max(0.0, raw)))
-
   def score_only_raw(self, features: Dict[str, float]) -> float:
     self._ensure_init(features)
     if self._feature_names is None or self._kind is None or self._num_slot is None or self._cat_slot is None or self._cat_mode is None:
       raise RuntimeError("Freq1D not initialized")
-    total = 0.0
-    n = 0
+    scores: List[float] = []
     for i, name in enumerate(self._feature_names):
       x = float(features.get(name, 0.0))
       if self._kind[i] == "num":
         slot = self._num_slot[i]
         if slot >= 0:
-          total += self._score_numeric_slot(slot, x)
-          n += 1
+          scores.append(self._score_numeric_slot(slot, x))
       else:
         slot = self._cat_slot[i]
         mode = self._cat_mode[i] or "hash"
         if slot >= 0:
-          total += self._score_cat_slot(slot, mode, x)
-          n += 1
-    return max(0.0, total / float(max(1, n)))
+          scores.append(self._score_cat_slot(slot, mode, x))
+    return max(0.0, float(self._aggregate(scores)))
 
-  def score_and_learn(self, features: Dict[str, float]) -> float:
-    raw = self.score_and_learn_raw(features)
-    return 1.0 - float(np.exp(-max(0.0, raw)))
-
-  def score_and_learn_raw(self, features: Dict[str, float]) -> float:
+  def learn_only(self, features: Dict[str, float]) -> None:
+    """Update marginals from features without computing score. Use when caller only needs CDF/learn."""
     self._ensure_init(features)
-    raw = self.score_only_raw(features)
     if self._feature_names is None or self._kind is None or self._num_slot is None or self._cat_slot is None or self._cat_mode is None:
       raise RuntimeError("Freq1D not initialized")
     for i, name in enumerate(self._feature_names):
@@ -1163,6 +1353,11 @@ class OnlineFreq1D:
         mode = self._cat_mode[i] or "hash"
         if slot >= 0:
           self._learn_cat_slot(slot, mode, x)
+
+  def score_and_learn_raw(self, features: Dict[str, float]) -> float:
+    self._ensure_init(features)
+    raw = self.score_only_raw(features)
+    self.learn_only(features)
     return max(0.0, float(raw))
 
   def get_state(self) -> Dict[str, Any]:
@@ -1174,11 +1369,16 @@ class OnlineFreq1D:
       "alpha": self.alpha,
       "decay": self.decay,
       "max_categories": self.max_categories,
+      "aggregation": self.aggregation,
+      "topk": self.topk,
+      "soft_topk_temperature": self.soft_topk_temperature,
       "kind": list(self._kind),
       "cat_mode": list(self._cat_mode),
       "num_counts": [c for c in self._num_counts],
       "num_scale": list(self._num_scale),
-      "cat_counts": [dict(d) for d in self._cat_counts],
+      "cat_counts": [
+        d.tolist() if isinstance(d, np.ndarray) else dict(d) for d in self._cat_counts
+      ],
       "cat_other": list(self._cat_other),
       "cat_scale": list(self._cat_scale),
     }
@@ -1188,14 +1388,33 @@ class OnlineFreq1D:
     self.alpha = float(state.get("alpha", self.alpha))
     self.decay = float(state.get("decay", self.decay))
     self.max_categories = int(state.get("max_categories", self.max_categories))
+    self.aggregation = str(state.get("aggregation", self.aggregation)).strip().lower()
+    self.topk = int(state.get("topk", self.topk))
+    self.soft_topk_temperature = float(state.get("soft_topk_temperature", self.soft_topk_temperature))
     self._feature_names = list(state["feature_names"])
     self._kind = list(state["kind"])
     self._cat_mode = list(state["cat_mode"])
 
     # Rebuild slot mappings and storage
     self._num_counts = [np.asarray(c, dtype=np.float64) for c in state.get("num_counts", [])]
+    self._num_fenwick = [FenwickTree(len(c)) for c in self._num_counts]
+    for i, c in enumerate(self._num_counts):
+      self._num_fenwick[i].init(list(c))
     self._num_scale = [float(s) for s in state.get("num_scale", [])]
-    self._cat_counts = [dict(d) for d in state.get("cat_counts", [])]
+
+    raw_cat = state.get("cat_counts", [])
+    self._cat_counts = []
+    self._cat_hash_fenwick = []
+    for i, d in enumerate(raw_cat):
+      if isinstance(d, list) and len(d) == self._HASH_KEY_SPACE:
+        arr = np.asarray(d, dtype=np.float64)
+        self._cat_counts.append(arr)
+        fw = FenwickTree(self._HASH_KEY_SPACE)
+        fw.init(list(arr))
+        self._cat_hash_fenwick.append(fw)
+      else:
+        self._cat_counts.append(dict(d))
+        self._cat_hash_fenwick.append(None)
     self._cat_other = [float(v) for v in state.get("cat_other", [])]
     self._cat_scale = [float(s) for s in state.get("cat_scale", [])]
 
@@ -1212,6 +1431,735 @@ class OnlineFreq1D:
         n_cat += 1
     self._num_slot = num_slot
     self._cat_slot = cat_slot
+
+
+class OnlineGaussCop(_BothScoresMixin):
+  """
+  Online Gaussian copula anomaly detector. Composes OnlineFreq1D for marginals,
+  maintains correlation matrix incrementally, scores via joint density.
+  """
+
+  def __init__(
+    self,
+    bins: int,
+    alpha: float,
+    decay: float,
+    max_categories: int,
+    reg: float,
+    u_clamp: float,
+    model_device: str,
+    seed: int,
+    max_features: int = 0,
+    importance_window: int = 500,
+  ):
+    del seed
+    self.algorithm = "gausscop"
+    self._max_features = max_features
+    self._importance_window = importance_window
+    self._importance: Optional[np.ndarray] = None
+    self._importance_ema_alpha = 1.0 - 1.0 / max(importance_window, 1)
+    self._selected_indices: Optional[np.ndarray] = None
+    self._events_since_selection = 0
+    requested_device = _resolve_torch_device(model_device)
+    self.device = "cpu"
+    if requested_device.type == "cuda":
+      logging.warning(
+        "algorithm=%s requested on CUDA, but gausscop is CPU-only; using CPU",
+        self.algorithm,
+      )
+    self.reg = float(reg)
+    self.u_clamp = float(u_clamp)
+    self._marginals = OnlineFreq1D(
+      bins=bins,
+      alpha=alpha,
+      decay=decay,
+      max_categories=max_categories,
+      aggregation="mean",
+      topk=1,
+      soft_topk_temperature=1.0,
+      model_device="cpu",
+      seed=0,
+    )
+    self._n = 0
+    self._z_outer_sum: Optional[np.ndarray] = None
+    self._sigma_inv: Optional[np.ndarray] = None
+    self._sigma_inv_n: int = -1
+    self._sigma_inv_log_det: float = 0.0
+    self._solve_recompute_interval: int = 10  # recompute inverse every N events
+    logging.info(
+      "Initialized %s (bins=%d, alpha=%.3f, decay=%.4f, max_categories=%d, reg=%.4f)",
+      self.algorithm,
+      bins,
+      alpha,
+      decay,
+      max_categories,
+      self.reg,
+    )
+
+  def _ensure_z_dim(self, d: int) -> None:
+    if self._z_outer_sum is None or self._z_outer_sum.shape[0] != d:
+      self._z_outer_sum = np.zeros((d, d), dtype=np.float64)
+
+  def _score_from_z(self, z: np.ndarray) -> float:
+    """Score using precomputed z vector; avoids redundant get_cdf_vector."""
+    d = len(z)
+    self._ensure_z_dim(d)
+
+    if self._n < 2:
+      return 0.0
+
+    n = float(self._n)
+    # Adaptive reg: when n < d, empirical R is rank-deficient; increase reg to avoid
+    # ill-conditioned Sigma and quad explosion (which saturates scaled to 1).
+    reg = min(1.0, max(self.reg, 0.5 * d / max(n, 1.0)))
+
+    # Recompute Sigma_inv only every _solve_recompute_interval events to avoid O(d³) solve per event.
+    n_int = int(self._n)
+    recompute = (
+      self._sigma_inv is None
+      or self._sigma_inv.shape[0] != d
+      or n_int <= self._sigma_inv_n
+      or (n_int - self._sigma_inv_n) >= self._solve_recompute_interval
+    )
+    if recompute:
+      R = self._z_outer_sum / n
+      diag = np.sqrt(np.diag(R) + 1e-12)
+      R = R / np.outer(diag, diag)
+      np.fill_diagonal(R, 1.0)
+      Sigma = (1.0 - reg) * R + reg * np.eye(d)
+      try:
+        sign, log_det = np.linalg.slogdet(Sigma)
+        if sign <= 0:
+          return 0.0
+        self._sigma_inv = np.linalg.inv(Sigma)
+        self._sigma_inv_n = n_int
+        self._sigma_inv_log_det = float(log_det)
+      except np.linalg.LinAlgError:
+        return 0.0
+
+    try:
+      x = self._sigma_inv @ z
+      quad = float(z @ x - z @ z)
+      return max(0.0, 0.5 * self._sigma_inv_log_det + 0.5 * quad)
+    except Exception:
+      return 0.0
+
+  def _maybe_select_and_get_z(self, z: np.ndarray, do_learn: bool) -> np.ndarray:
+    """Update importance, optionally reselect, return z (full or selected) for copula."""
+    d = len(z)
+    past_warmup = self._selected_indices is not None or self._n >= self._importance_window
+    use_selection = (
+      self._max_features > 0
+      and self._max_features < d
+      and past_warmup
+    )
+
+    if self._importance is None or len(self._importance) != d:
+      self._importance = np.zeros(d, dtype=np.float64)
+
+    if do_learn:
+      self._importance = (
+        self._importance_ema_alpha * self._importance
+        + (1.0 - self._importance_ema_alpha) * np.abs(z)
+      )
+      self._events_since_selection += 1
+
+    if use_selection:
+      if self._events_since_selection >= self._importance_window and do_learn:
+        self._events_since_selection = 0
+        new_indices = np.argsort(-self._importance)[: self._max_features]
+        if self._selected_indices is None or not np.array_equal(
+          self._selected_indices, new_indices
+        ):
+          self._selected_indices = new_indices
+          self._z_outer_sum = None
+          self._n = 0
+          self._sigma_inv = None
+          self._sigma_inv_n = -1
+      if self._selected_indices is not None:
+        return z[self._selected_indices]
+    else:
+      self._selected_indices = None
+
+    return z
+
+  def score_only_raw(self, features: Dict[str, float]) -> float:
+    u = self._marginals.get_cdf_vector(features)
+    u = np.clip(u, self.u_clamp, 1.0 - self.u_clamp)
+    z = scipy_norm.ppf(u).astype(np.float64)
+    z_copula = self._maybe_select_and_get_z(z, do_learn=False)
+    return self._score_from_z(z_copula)
+
+  def score_and_learn_raw(self, features: Dict[str, float]) -> float:
+    u = self._marginals.get_cdf_vector(features)
+    u = np.clip(u, self.u_clamp, 1.0 - self.u_clamp)
+    z = scipy_norm.ppf(u).astype(np.float64)
+    z_copula = self._maybe_select_and_get_z(z, do_learn=True)
+    self._ensure_z_dim(len(z_copula))
+
+    raw = self._score_from_z(z_copula)
+
+    self._marginals.learn_only(features)
+    self._n += 1
+    self._z_outer_sum += np.outer(z_copula, z_copula)
+
+    return max(0.0, float(raw))
+
+  def get_state(self) -> Dict[str, Any]:
+    return {
+      "marginals_state": self._marginals.get_state(),
+      "_n": self._n,
+      "_z_outer_sum": self._z_outer_sum.copy() if self._z_outer_sum is not None else None,
+      "reg": self.reg,
+      "u_clamp": self.u_clamp,
+      "_importance": self._importance.copy() if self._importance is not None else None,
+      "_selected_indices": (
+        self._selected_indices.copy() if self._selected_indices is not None else None
+      ),
+      "_events_since_selection": self._events_since_selection,
+    }
+
+  def set_state(self, state: Dict[str, Any]) -> None:
+    self._marginals.set_state(state["marginals_state"])
+    self._n = int(state["_n"])
+    zos = state.get("_z_outer_sum")
+    if zos is not None:
+      self._z_outer_sum = np.asarray(zos, dtype=np.float64)
+    else:
+      self._z_outer_sum = None
+    self.reg = float(state.get("reg", self.reg))
+    self.u_clamp = float(state.get("u_clamp", self.u_clamp))
+    imp = state.get("_importance")
+    self._importance = np.asarray(imp, dtype=np.float64) if imp is not None else None
+    sel = state.get("_selected_indices")
+    self._selected_indices = (
+      np.asarray(sel, dtype=np.int64) if sel is not None else None
+    )
+    self._events_since_selection = int(state.get("_events_since_selection", 0))
+    self._sigma_inv = None
+    self._sigma_inv_n = -1
+
+
+class OnlineCopulaTree(_BothScoresMixin):
+  """
+  Streaming copula-tree detector on top of Freq1D marginals.
+
+  Inspired by:
+  - Gábor Horváth, Edith Kovács, Roland Molontay, Szabolcs Nováczki,
+    "Copula-based anomaly scoring and localization for large-scale, high-dimensional continuous data"
+    (arXiv:1912.02166) https://arxiv.org/abs/1912.02166
+
+  The implementation follows the paper's sparse-tree idea, but keeps the repo's
+  online contract by:
+  - learning marginals with OnlineFreq1D
+  - tracking pairwise dependence with EMA outer products in Gaussianized space
+  - rebuilding a maximum-spanning tree periodically
+  - scoring with Gaussian pair-copula edge surprisal aggregated over the tree
+  """
+
+  def __init__(
+    self,
+    bins: int,
+    alpha: float,
+    decay: float,
+    max_categories: int,
+    u_clamp: float,
+    reg: float,
+    max_features: int,
+    importance_window: int,
+    tree_update_interval: int,
+    edge_score_aggregation: str,
+    edge_score_topk: int,
+    model_device: str,
+    seed: int,
+  ):
+    del seed
+    self.algorithm = "copulatree"
+    requested_device = _resolve_torch_device(model_device)
+    self.device = "cpu"
+    if requested_device.type == "cuda":
+      logging.warning(
+        "algorithm=%s requested on CUDA, but copulatree is CPU-only; using CPU",
+        self.algorithm,
+      )
+    self.u_clamp = float(u_clamp)
+    if not (0.0 < self.u_clamp < 0.5):
+      raise ValueError("copulatree u_clamp must be in (0, 0.5)")
+    self.reg = float(reg)
+    if not (self.reg > 0.0):
+      raise ValueError("copulatree reg must be > 0")
+    self._max_features = int(max_features)
+    if self._max_features < 0:
+      raise ValueError("copulatree max_features must be >= 0")
+    self._importance_window = int(importance_window)
+    if self._importance_window <= 0:
+      raise ValueError("copulatree importance_window must be > 0")
+    self._tree_update_interval = int(tree_update_interval)
+    if self._tree_update_interval <= 0:
+      raise ValueError("copulatree tree_update_interval must be > 0")
+    self.edge_score_aggregation = str(edge_score_aggregation).strip().lower()
+    if self.edge_score_aggregation not in ("sum", "mean", "topk_mean"):
+      raise ValueError("copulatree edge_score_aggregation must be one of: sum, mean, topk_mean")
+    self.edge_score_topk = int(edge_score_topk)
+    if self.edge_score_topk <= 0:
+      raise ValueError("copulatree edge_score_topk must be > 0")
+    self._importance_ema_alpha = 1.0 - 1.0 / max(self._importance_window, 1)
+    self._pair_ema_alpha = 1.0 - 1.0 / max(self._tree_update_interval, 1)
+
+    self._marginals = OnlineFreq1D(
+      bins=bins,
+      alpha=alpha,
+      decay=decay,
+      max_categories=max_categories,
+      aggregation="mean",
+      topk=1,
+      soft_topk_temperature=1.0,
+      model_device="cpu",
+      seed=0,
+    )
+    self._n = 0
+    self._pair_outer_ema: Optional[np.ndarray] = None
+    self._importance: Optional[np.ndarray] = None
+    self._selected_indices: Optional[np.ndarray] = None
+    self._events_since_selection = 0
+    self._tree_edges: List[Tuple[int, int]] = []
+    self._events_since_tree = 0
+    logging.info(
+      "Initialized %s (u_clamp=%.2e, reg=%.4f, max_features=%d, importance_window=%d, tree_update_interval=%d, aggregation=%s, topk=%d)",
+      self.algorithm,
+      self.u_clamp,
+      self.reg,
+      self._max_features,
+      self._importance_window,
+      self._tree_update_interval,
+      self.edge_score_aggregation,
+      self.edge_score_topk,
+    )
+
+  def _to_z(self, features: Dict[str, float]) -> np.ndarray:
+    u = self._marginals.get_cdf_vector(features)
+    u = np.clip(u, self.u_clamp, 1.0 - self.u_clamp)
+    return scipy_norm.ppf(u).astype(np.float64)
+
+  def _aggregate_edge_scores(self, scores: List[float]) -> float:
+    if not scores:
+      return 0.0
+    if self.edge_score_aggregation == "sum":
+      return float(sum(scores))
+    if self.edge_score_aggregation == "mean":
+      return float(sum(scores) / float(len(scores)))
+    k = min(len(scores), self.edge_score_topk)
+    if k <= 0:
+      return 0.0
+    arr = np.asarray(scores, dtype=np.float64)
+    topk = np.partition(arr, -k)[-k:]
+    return float(np.mean(topk))
+
+  def _ensure_pair_dim(self, d: int) -> None:
+    if self._pair_outer_ema is not None and self._pair_outer_ema.shape[0] == d:
+      return
+    self._pair_outer_ema = np.zeros((d, d), dtype=np.float64)
+    self._tree_edges = []
+    self._events_since_tree = 0
+
+  def _reset_dependence_state(self) -> None:
+    self._pair_outer_ema = None
+    self._tree_edges = []
+    self._events_since_tree = 0
+    self._n = 0
+
+  def _corr_matrix(self) -> Optional[np.ndarray]:
+    if self._pair_outer_ema is None:
+      return None
+    diag = np.maximum(np.diag(self._pair_outer_ema), self.reg)
+    scale = np.sqrt(np.outer(diag, diag))
+    corr = self._pair_outer_ema / np.maximum(scale, 1e-12)
+    corr = np.clip(corr, -0.995, 0.995)
+    np.fill_diagonal(corr, 1.0)
+    return corr
+
+  def _max_spanning_tree(self, weights: np.ndarray) -> List[Tuple[int, int]]:
+    d = int(weights.shape[0])
+    if d <= 1:
+      return []
+    in_tree = np.zeros(d, dtype=bool)
+    parent = np.zeros(d, dtype=np.int64)
+    best = np.full(d, -np.inf, dtype=np.float64)
+    in_tree[0] = True
+    best[:] = weights[0]
+    parent[:] = 0
+    edges: List[Tuple[int, int]] = []
+    for _ in range(d - 1):
+      remaining = np.where(~in_tree)[0]
+      if remaining.size == 0:
+        break
+      idx = int(remaining[np.argmax(best[remaining])])
+      if not np.isfinite(best[idx]):
+        idx = int(remaining[0])
+      edges.append((int(parent[idx]), idx))
+      in_tree[idx] = True
+      for j in np.where(~in_tree)[0]:
+        w = float(weights[idx, j])
+        if w > best[j]:
+          best[j] = w
+          parent[j] = idx
+    return edges
+
+  def _refresh_tree(self) -> None:
+    corr = self._corr_matrix()
+    if corr is None:
+      self._tree_edges = []
+      return
+    weights = np.abs(corr)
+    np.fill_diagonal(weights, -np.inf)
+    self._tree_edges = self._max_spanning_tree(weights)
+
+  def _pair_score(self, zi: float, zj: float, rho: float) -> float:
+    rho = float(np.clip(rho, -0.995, 0.995))
+    denom = max(1e-6, 1.0 - rho * rho)
+    quad = ((rho * rho) * (zi * zi + zj * zj) - 2.0 * rho * zi * zj) / denom
+    neg_log_c = 0.5 * math.log(denom) + 0.5 * quad
+    return max(0.0, float(neg_log_c))
+
+  def _score_selected_z(self, z: np.ndarray) -> float:
+    if self._n < 2 or len(z) <= 1 or not self._tree_edges:
+      return 0.0
+    corr = self._corr_matrix()
+    if corr is None:
+      return 0.0
+    scores: List[float] = []
+    for i, j in self._tree_edges:
+      if i >= len(z) or j >= len(z):
+        continue
+      scores.append(self._pair_score(float(z[i]), float(z[j]), float(corr[i, j])))
+    return max(0.0, float(self._aggregate_edge_scores(scores)))
+
+  def _maybe_select_and_get_z(self, z: np.ndarray, do_learn: bool) -> np.ndarray:
+    d = len(z)
+    past_warmup = self._selected_indices is not None or self._n >= self._importance_window
+    use_selection = (
+      self._max_features > 0
+      and self._max_features < d
+      and past_warmup
+    )
+
+    if self._importance is None or len(self._importance) != d:
+      self._importance = np.zeros(d, dtype=np.float64)
+
+    if do_learn:
+      self._importance = (
+        self._importance_ema_alpha * self._importance
+        + (1.0 - self._importance_ema_alpha) * np.abs(z)
+      )
+      self._events_since_selection += 1
+
+    if use_selection:
+      if self._events_since_selection >= self._importance_window and do_learn:
+        self._events_since_selection = 0
+        new_indices = np.argsort(-self._importance)[: self._max_features]
+        if self._selected_indices is None or not np.array_equal(self._selected_indices, new_indices):
+          self._selected_indices = new_indices
+          self._reset_dependence_state()
+      if self._selected_indices is not None:
+        return z[self._selected_indices]
+    else:
+      if self._selected_indices is not None:
+        self._selected_indices = None
+        self._reset_dependence_state()
+
+    return z
+
+  def score_only_raw(self, features: Dict[str, float]) -> float:
+    z = self._to_z(features)
+    z_tree = self._maybe_select_and_get_z(z, do_learn=False)
+    return self._score_selected_z(z_tree)
+
+  def score_and_learn_raw(self, features: Dict[str, float]) -> float:
+    z = self._to_z(features)
+    z_tree = self._maybe_select_and_get_z(z, do_learn=True)
+    self._ensure_pair_dim(len(z_tree))
+
+    raw = self._score_selected_z(z_tree)
+
+    self._marginals.learn_only(features)
+    outer = np.outer(z_tree, z_tree)
+    if self._pair_outer_ema is None:
+      self._pair_outer_ema = outer.astype(np.float64)
+    else:
+      self._pair_outer_ema = (
+        self._pair_ema_alpha * self._pair_outer_ema
+        + (1.0 - self._pair_ema_alpha) * outer
+      )
+    self._n += 1
+    self._events_since_tree += 1
+    if not self._tree_edges or self._events_since_tree >= self._tree_update_interval:
+      self._refresh_tree()
+      self._events_since_tree = 0
+    return max(0.0, float(raw))
+
+  def get_state(self) -> Dict[str, Any]:
+    return {
+      "marginals_state": self._marginals.get_state(),
+      "_n": self._n,
+      "u_clamp": self.u_clamp,
+      "reg": self.reg,
+      "max_features": self._max_features,
+      "importance_window": self._importance_window,
+      "tree_update_interval": self._tree_update_interval,
+      "edge_score_aggregation": self.edge_score_aggregation,
+      "edge_score_topk": self.edge_score_topk,
+      "_pair_outer_ema": self._pair_outer_ema.copy() if self._pair_outer_ema is not None else None,
+      "_importance": self._importance.copy() if self._importance is not None else None,
+      "_selected_indices": self._selected_indices.copy() if self._selected_indices is not None else None,
+      "_events_since_selection": self._events_since_selection,
+      "_tree_edges": [tuple(map(int, edge)) for edge in self._tree_edges],
+      "_events_since_tree": self._events_since_tree,
+    }
+
+  def set_state(self, state: Dict[str, Any]) -> None:
+    self._marginals.set_state(state["marginals_state"])
+    self._n = int(state.get("_n", 0))
+    self.u_clamp = float(state.get("u_clamp", self.u_clamp))
+    self.reg = float(state.get("reg", self.reg))
+    self._max_features = int(state.get("max_features", self._max_features))
+    self._importance_window = int(state.get("importance_window", self._importance_window))
+    self._tree_update_interval = int(state.get("tree_update_interval", self._tree_update_interval))
+    self.edge_score_aggregation = str(state.get("edge_score_aggregation", self.edge_score_aggregation))
+    self.edge_score_topk = int(state.get("edge_score_topk", self.edge_score_topk))
+    self._importance_ema_alpha = 1.0 - 1.0 / max(self._importance_window, 1)
+    self._pair_ema_alpha = 1.0 - 1.0 / max(self._tree_update_interval, 1)
+    pair_outer = state.get("_pair_outer_ema")
+    self._pair_outer_ema = np.asarray(pair_outer, dtype=np.float64) if pair_outer is not None else None
+    importance = state.get("_importance")
+    self._importance = np.asarray(importance, dtype=np.float64) if importance is not None else None
+    selected = state.get("_selected_indices")
+    self._selected_indices = np.asarray(selected, dtype=np.int64) if selected is not None else None
+    self._events_since_selection = int(state.get("_events_since_selection", 0))
+    self._tree_edges = [tuple(map(int, edge)) for edge in state.get("_tree_edges", [])]
+    self._events_since_tree = int(state.get("_events_since_tree", 0))
+
+
+class OnlineLatentCluster(_BothScoresMixin):
+  """
+  Online latent-clustering detector on top of Freq1D-normalized marginals.
+
+  Pipeline:
+  - Reuse OnlineFreq1D to learn per-feature marginals online.
+  - Convert event features to CDF coordinates u_i and Gaussianized z_i.
+  - Maintain a small bank of latent cluster centers with diagonal variances.
+  - Score by the best standardized distance to an existing cluster.
+  - Update clusters only for likely-normal points; spawn a new cluster when an
+    event is consistently far from all existing clusters and capacity remains.
+  """
+
+  def __init__(
+    self,
+    bins: int,
+    alpha: float,
+    decay: float,
+    max_categories: int,
+    max_clusters: int,
+    u_clamp: float,
+    reg: float,
+    update_alpha: float,
+    spawn_threshold: float,
+    model_device: str,
+    seed: int,
+  ):
+    del seed
+    self.algorithm = "latentcluster"
+    requested_device = _resolve_torch_device(model_device)
+    self.device = "cpu"
+    if requested_device.type == "cuda":
+      logging.warning(
+        "algorithm=%s requested on CUDA, but latentcluster is CPU-only; using CPU",
+        self.algorithm,
+      )
+    self.max_clusters = int(max(1, max_clusters))
+    self.u_clamp = float(u_clamp)
+    if not (0.0 < self.u_clamp < 0.5):
+      raise ValueError("latentcluster u_clamp must be in (0, 0.5)")
+    self.reg = float(reg)
+    if not (self.reg > 0.0):
+      raise ValueError("latentcluster reg must be > 0")
+    self.update_alpha = float(update_alpha)
+    if not (0.0 < self.update_alpha <= 1.0):
+      raise ValueError("latentcluster update_alpha must be in (0, 1]")
+    self.spawn_threshold = float(spawn_threshold)
+    if not (self.spawn_threshold > 0.0):
+      raise ValueError("latentcluster spawn_threshold must be > 0")
+
+    self._marginals = OnlineFreq1D(
+      bins=bins,
+      alpha=alpha,
+      decay=decay,
+      max_categories=max_categories,
+      aggregation="mean",
+      topk=1,
+      soft_topk_temperature=1.0,
+      model_device="cpu",
+      seed=0,
+    )
+    self._centers: Optional[np.ndarray] = None
+    self._vars: Optional[np.ndarray] = None
+    self._weights: Optional[np.ndarray] = None
+    self._active_clusters = 0
+    self._score_ema: Optional[float] = None
+    self._score_var_ema: float = 0.0
+    self._ema_alpha = 0.05
+    self._beta_floor = 1.5
+    self._beta_sigma = 2.5
+    self._warmup_accept = max(16, 4 * self.max_clusters)
+    self._accepted_updates = 0
+    logging.info(
+      "Initialized %s (max_clusters=%d, u_clamp=%.2e, reg=%.4f, update_alpha=%.3f, spawn_threshold=%.3f)",
+      self.algorithm,
+      self.max_clusters,
+      self.u_clamp,
+      self.reg,
+      self.update_alpha,
+      self.spawn_threshold,
+    )
+
+  def _to_z(self, features: Dict[str, float]) -> np.ndarray:
+    u = self._marginals.get_cdf_vector(features)
+    u = np.clip(u, self.u_clamp, 1.0 - self.u_clamp)
+    return scipy_norm.ppf(u).astype(np.float64)
+
+  def _ensure_cluster_arrays(self, d: int) -> None:
+    if self._centers is not None and self._centers.shape[1] == d:
+      return
+    self._centers = np.zeros((self.max_clusters, d), dtype=np.float64)
+    self._vars = np.ones((self.max_clusters, d), dtype=np.float64)
+    self._weights = np.zeros(self.max_clusters, dtype=np.float64)
+    self._active_clusters = 0
+
+  def _cluster_scores(self, z: np.ndarray) -> np.ndarray:
+    if self._centers is None or self._vars is None or self._active_clusters <= 0:
+      return np.zeros(0, dtype=np.float64)
+    centers = self._centers[: self._active_clusters]
+    vars_ = np.maximum(self._vars[: self._active_clusters], self.reg)
+    diff = centers - z[np.newaxis, :]
+    return np.sum((diff * diff) / vars_, axis=1)
+
+  def _best_cluster(self, z: np.ndarray) -> tuple[Optional[int], float]:
+    scores = self._cluster_scores(z)
+    if scores.size == 0:
+      return None, 0.0
+    idx = int(np.argmin(scores))
+    return idx, float(scores[idx])
+
+  def _adaptive_beta(self) -> float:
+    if self._score_ema is None:
+      return self._beta_floor
+    sigma = float(np.sqrt(max(0.0, self._score_var_ema)))
+    return max(self._beta_floor, self._score_ema + self._beta_sigma * sigma)
+
+  def _update_score_stats(self, score_raw: float) -> None:
+    if self._score_ema is None:
+      self._score_ema = score_raw
+      self._score_var_ema = 0.0
+      return
+    alpha = self._ema_alpha
+    prev = self._score_ema
+    self._score_ema = (1.0 - alpha) * self._score_ema + alpha * score_raw
+    delta = score_raw - prev
+    self._score_var_ema = max(0.0, (1.0 - alpha) * self._score_var_ema + alpha * (delta * delta))
+
+  def _should_update(self, score_raw: float) -> bool:
+    if self._accepted_updates < self._warmup_accept:
+      return True
+    return score_raw <= self._adaptive_beta()
+
+  def _spawn_cluster(self, z: np.ndarray) -> None:
+    if self._centers is None or self._vars is None or self._weights is None:
+      self._ensure_cluster_arrays(len(z))
+    if self._centers is None or self._vars is None or self._weights is None:
+      raise RuntimeError("latentcluster arrays not initialized")
+    if self._active_clusters < self.max_clusters:
+      idx = self._active_clusters
+      self._active_clusters += 1
+    else:
+      idx = int(np.argmin(self._weights))
+    self._centers[idx] = z
+    self._vars[idx] = np.ones_like(z, dtype=np.float64)
+    self._weights[idx] = 1.0
+
+  def _update_cluster(self, idx: int, z: np.ndarray) -> None:
+    if self._centers is None or self._vars is None or self._weights is None:
+      raise RuntimeError("latentcluster arrays not initialized")
+    weight = float(self._weights[idx])
+    eta = max(self.update_alpha, 1.0 / max(1.0, weight + 1.0))
+    center_old = self._centers[idx].copy()
+    center_new = (1.0 - eta) * center_old + eta * z
+    resid = z - center_new
+    var_new = (1.0 - eta) * self._vars[idx] + eta * (resid * resid)
+    self._centers[idx] = center_new
+    self._vars[idx] = np.maximum(self.reg, var_new)
+    self._weights[idx] = weight + 1.0
+
+  def score_only_raw(self, features: Dict[str, float]) -> float:
+    z = self._to_z(features)
+    self._ensure_cluster_arrays(len(z))
+    _, best = self._best_cluster(z)
+    return max(0.0, float(best))
+
+  def score_and_learn_raw(self, features: Dict[str, float]) -> float:
+    z = self._to_z(features)
+    self._ensure_cluster_arrays(len(z))
+    best_idx, best = self._best_cluster(z)
+    raw = max(0.0, float(best))
+    self._update_score_stats(raw)
+    should_spawn = best_idx is None or (
+      raw > self.spawn_threshold and self._active_clusters < self.max_clusters
+    )
+
+    if should_spawn:
+      self._spawn_cluster(z)
+      self._marginals.learn_only(features)
+      self._accepted_updates += 1
+      return raw
+
+    if self._should_update(raw):
+      self._update_cluster(best_idx, z)
+      self._marginals.learn_only(features)
+      self._accepted_updates += 1
+    return raw
+
+  def get_state(self) -> Dict[str, Any]:
+    return {
+      "marginals_state": self._marginals.get_state(),
+      "max_clusters": self.max_clusters,
+      "u_clamp": self.u_clamp,
+      "reg": self.reg,
+      "update_alpha": self.update_alpha,
+      "spawn_threshold": self.spawn_threshold,
+      "centers": self._centers.copy() if self._centers is not None else None,
+      "vars": self._vars.copy() if self._vars is not None else None,
+      "weights": self._weights.copy() if self._weights is not None else None,
+      "active_clusters": self._active_clusters,
+      "score_ema": self._score_ema,
+      "score_var_ema": self._score_var_ema,
+      "accepted_updates": self._accepted_updates,
+    }
+
+  def set_state(self, state: Dict[str, Any]) -> None:
+    self._marginals.set_state(state["marginals_state"])
+    self.max_clusters = int(state.get("max_clusters", self.max_clusters))
+    self.u_clamp = float(state.get("u_clamp", self.u_clamp))
+    self.reg = float(state.get("reg", self.reg))
+    self.update_alpha = float(state.get("update_alpha", self.update_alpha))
+    self.spawn_threshold = float(state.get("spawn_threshold", self.spawn_threshold))
+    centers = state.get("centers")
+    vars_ = state.get("vars")
+    weights = state.get("weights")
+    self._centers = np.asarray(centers, dtype=np.float64) if centers is not None else None
+    self._vars = np.asarray(vars_, dtype=np.float64) if vars_ is not None else None
+    self._weights = np.asarray(weights, dtype=np.float64) if weights is not None else None
+    self._active_clusters = int(state.get("active_clusters", 0))
+    self._score_ema = state.get("score_ema")
+    self._score_var_ema = float(state.get("score_var_ema", 0.0))
+    self._accepted_updates = int(state.get("accepted_updates", 0))
 
 
 class OnlineAnomalyDetector:
@@ -1247,6 +2195,29 @@ class OnlineAnomalyDetector:
     freq1d_alpha: float = 1.0,
     freq1d_decay: float = 1.0,
     freq1d_max_categories: int = 2048,
+    freq1d_aggregation: str = "mean",
+    freq1d_topk: int = 8,
+    freq1d_soft_topk_temperature: float = 0.25,
+    gausscop_bins: int = 64,
+    gausscop_alpha: float = 1.0,
+    gausscop_decay: float = 1.0,
+    gausscop_max_categories: int = 2048,
+    gausscop_reg: float = 0.01,
+    gausscop_u_clamp: float = 1e-6,
+    gausscop_max_features: int = 0,
+    gausscop_importance_window: int = 500,
+    copulatree_u_clamp: float = 1e-6,
+    copulatree_reg: float = 0.05,
+    copulatree_max_features: int = 30,
+    copulatree_importance_window: int = 500,
+    copulatree_tree_update_interval: int = 100,
+    copulatree_edge_score_aggregation: str = "mean",
+    copulatree_edge_score_topk: int = 8,
+    latentcluster_max_clusters: int = 8,
+    latentcluster_u_clamp: float = 1e-6,
+    latentcluster_reg: float = 0.25,
+    latentcluster_update_alpha: float = 0.05,
+    latentcluster_spawn_threshold: float = 6.0,
     model_device: str = "auto",
     seed: int = 42,
   ):
@@ -1260,7 +2231,12 @@ class OnlineAnomalyDetector:
         seed=seed,
       )
     elif algo == "loda":
-      self.impl = OnlineLODA(
+      raise RuntimeError(
+        "algorithm=loda (PySAD LODA) does not work: PySAD fit_partial overwrites histograms "
+        "instead of accumulating, producing scores ~0. Use algorithm=loda_ema instead."
+      )
+    elif algo == "loda_ema":
+      self.impl = OnlineLODAEMA(
         n_projections=loda_n_projections,
         bins=loda_bins,
         proj_range=loda_range,
@@ -1309,27 +2285,80 @@ class OnlineAnomalyDetector:
         alpha=freq1d_alpha,
         decay=freq1d_decay,
         max_categories=freq1d_max_categories,
+        aggregation=freq1d_aggregation,
+        topk=freq1d_topk,
+        soft_topk_temperature=freq1d_soft_topk_temperature,
+        model_device=model_device,
+        seed=seed,
+      )
+    elif algo == "gausscop":
+      self.impl = OnlineGaussCop(
+        bins=gausscop_bins,
+        alpha=gausscop_alpha,
+        decay=gausscop_decay,
+        max_categories=gausscop_max_categories,
+        reg=gausscop_reg,
+        u_clamp=gausscop_u_clamp,
+        model_device=model_device,
+        seed=seed,
+        max_features=gausscop_max_features,
+        importance_window=gausscop_importance_window,
+      )
+    elif algo == "copulatree":
+      self.impl = OnlineCopulaTree(
+        bins=freq1d_bins,
+        alpha=freq1d_alpha,
+        decay=freq1d_decay,
+        max_categories=freq1d_max_categories,
+        u_clamp=copulatree_u_clamp,
+        reg=copulatree_reg,
+        max_features=copulatree_max_features,
+        importance_window=copulatree_importance_window,
+        tree_update_interval=copulatree_tree_update_interval,
+        edge_score_aggregation=copulatree_edge_score_aggregation,
+        edge_score_topk=copulatree_edge_score_topk,
+        model_device=model_device,
+        seed=seed,
+      )
+    elif algo == "latentcluster":
+      self.impl = OnlineLatentCluster(
+        bins=freq1d_bins,
+        alpha=freq1d_alpha,
+        decay=freq1d_decay,
+        max_categories=freq1d_max_categories,
+        max_clusters=latentcluster_max_clusters,
+        u_clamp=latentcluster_u_clamp,
+        reg=latentcluster_reg,
+        update_alpha=latentcluster_update_alpha,
+        spawn_threshold=latentcluster_spawn_threshold,
         model_device=model_device,
         seed=seed,
       )
     else:
-      raise ValueError("Unknown algorithm: %s. Choose from: halfspacetrees, loda, kitnet, memstream, zscore, knn, freq1d" % algorithm)
+      raise ValueError("Unknown algorithm: %s. Choose from: halfspacetrees, loda_ema, kitnet, memstream, zscore, knn, freq1d, gausscop, copulatree, latentcluster" % algorithm)
     self.algorithm = self.impl.algorithm
 
-  def score_only(self, features: Dict[str, float]) -> float:
-    """Return anomaly score without updating model state (read-only)."""
-    return self.impl.score_only(features)
+  def score_only(self, features: Dict[str, float]) -> tuple[float, float]:
+    """Return (raw, scaled) without updating model state (read-only)."""
+    raw = self.impl.score_only_raw(features)
+    if self.algorithm == "halfspacetrees":
+      scaled = float(raw)
+    elif self.algorithm in ("gausscop", "copulatree", "latentcluster"):
+      scaled = float(max(0.0, raw) / (1.0 + max(0.0, raw)))
+    else:
+      scaled = 1.0 - float(np.exp(-max(0.0, raw)))
+    return (float(raw), scaled)
 
-  def score_only_raw(self, features: Dict[str, float]) -> float:
-    """Return the underlying (unsquashed) score."""
-    return self.impl.score_only_raw(features)
-
-  def score_and_learn(self, features: Dict[str, float]) -> float:
-    return self.impl.score_and_learn(features)
-
-  def score_and_learn_raw(self, features: Dict[str, float]) -> float:
-    """Return the underlying (unsquashed) score, learning from this instance."""
-    return self.impl.score_and_learn_raw(features)
+  def score_and_learn(self, features: Dict[str, float]) -> tuple[float, float]:
+    """Learn once and return (raw, scaled). Scaled is 0-1 for most models; raw==scaled for HalfSpaceTrees."""
+    raw = self.impl.score_and_learn_raw(features)
+    if self.algorithm == "halfspacetrees":
+      scaled = float(raw)
+    elif self.algorithm in ("gausscop", "copulatree", "latentcluster"):
+      scaled = float(max(0.0, raw) / (1.0 + max(0.0, raw)))
+    else:
+      scaled = 1.0 - float(np.exp(-max(0.0, raw)))
+    return (float(raw), scaled)
 
   def save_checkpoint(self, path: Path, checkpoint_index: int) -> None:
     """Save detector state after learning events 0..checkpoint_index-1."""
@@ -1370,13 +2399,11 @@ class OnlineAnomalyDetector:
     if score_mode not in ("raw", "lograw", "scaled"):
       raise ValueError("score_mode must be 'raw', 'lograw', or 'scaled'")
     if score_mode == "raw":
-      score_fn = self.score_only_raw
+      score_fn = lambda f: self.score_only(f)[0]
     elif score_mode == "scaled":
-      score_fn = self.score_only
+      score_fn = lambda f: self.score_only(f)[1]
     else:
-      # log(1 + raw) behaves like percent change for large raw values:
-      # log(1+raw+Δ) - log(1+raw) ≈ Δ/(1+raw)
-      score_fn = lambda f: math.log1p(max(0.0, float(self.score_only_raw(f))))
+      score_fn = lambda f: math.log1p(max(0.0, float(self.score_only(f)[0])))
     return compute_feature_attribution(self, features, epsilon, score_fn=score_fn)
 
 
@@ -1401,7 +2428,7 @@ def compute_feature_attribution(
   attribution = (s_plus - s_minus) / (2*epsilon) * value.
   """
   if score_fn is None:
-    score_fn = detector.score_only
+    score_fn = lambda f: detector.score_only(f)[1]
   score = float(score_fn(features))
   names = sorted(features.keys())
   attribution: Dict[str, float] = {}

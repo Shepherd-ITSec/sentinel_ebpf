@@ -35,7 +35,7 @@ Optional `attributes` (e.g. from BETH/converter): `return_value`, `mount_namespa
 
 - `extract_feature_dict(evt) -> Dict[str, float]`: general features always; if `evt.event_type` is `file`, `network`, or `process`, appends type-specific features. Key set (and “vector size”) can differ per event.
 
-**General features (18 base + 20 shared online stats = 38):** Always present. Base features from `evt` (data list, ts_unix_nano, attributes, hostname). Shared online stats (proc/host rate, proc interarrival) use five decay windows (01=0.1s, 1, 5, 30, 120s).
+**General features (20 base + 20 shared online stats = 40):** Always present. Base features from `evt` (data list, ts_unix_nano, attributes, hostname). Shared online stats (proc/host rate, proc interarrival) use five decay windows (01=0.1s, 1, 5, 30, 120s).
 
 
 | Feature                                               | Source                              | Description                                                          | Discrete | Range  |
@@ -50,6 +50,8 @@ Optional `attributes` (e.g. from BETH/converter): `return_value`, `mount_namespa
 | `arg1_norm`                                           | `data[7]`                           | Log-scaled magnitude of second arg.                                  | no       | [0, 1] |
 | `hour_norm`                                           | `evt.ts_unix_nano`                  | Hour of day.                                                         | no       | [0, 1] |
 | `minute_norm`                                         | `evt.ts_unix_nano`                  | Minute of hour.                                                      | no       | [0, 1] |
+| `weekday_norm`                                        | `evt.ts_unix_nano`                  | Day of week (0=Monday .. 6=Sunday), normalized.                       | no       | [0, 1] |
+| `week_of_month_norm`                                  | `evt.ts_unix_nano`                  | Quarter of month (1–4), normalized.                                   | no       | [0, 1] |
 | `event_id_norm`                                       | `data[1]`                           | Numeric syscall ID normalized (e.g. 42, 257).                        | no       | [0, 1] |
 | `flags_hash`                                          | `data[9]`                           | Hash of flags string (e.g. open mode).                               | yes      | [0, 1) |
 | `path_depth_norm`                                     | derived from `data[8]` (path)       | Number of path components, normalized.                               | no       | [0, 1] |
@@ -57,7 +59,7 @@ Optional `attributes` (e.g. from BETH/converter): `return_value`, `mount_namespa
 | `return_success`                                      | `evt.attributes["return_value"]`    | 1.0 if return ≥ 0, else 0.0.                                         | yes      | {0, 1} |
 | `return_errno_norm`                                   | `evt.attributes["return_value"]`    | Log-scaled magnitude of errno.                                       | no       | [0, 1] |
 | `mount_ns_hash`                                       | `evt.attributes["mount_namespace"]` | Container/isolation context.                                         | yes      | [0, 1) |
-| `hostname_hash`                                       | `evt.hostname`                      | Hash of the hostname of the machine/node that emitted the event.hour | yes      | [0, 1) |
+| `hostname_hash`                                       | `evt.hostname`                      | Hash of the hostname of the machine/node that emitted the event.     | yes      | [0, 1) |
 | *Shared online stats (5 windows: 01, 1, 5, 30, 120s)* |                                     |                                                                      |          |        |
 | `proc_rate_{wn}`                                      | decayed rate                        | Process (comm) event rate.                                           | no       | [0, 1) |
 | `host_rate_{wn}`                                      | decayed rate                        | Host event rate.                                                     | no       | [0, 1) |
@@ -145,19 +147,25 @@ No config file is read; configuration is env-only so it works well in containers
 
 **Role:** Online anomaly detection models that consume the feature dict from `features.py`, update their internal state (learn), and return an anomaly score per event. All implement the same interface: `score_and_learn(features: Dict[str, float]) -> float`.
 
-**Public API:** `OnlineAnomalyDetector` is a factory. You pass `algorithm` (`"halfspacetrees"`, `"loda"`, `"kitnet"`, `"memstream"`, `"zscore"`, `"knn"`, `"freq1d"`) plus optional hyperparameters; it instantiates the corresponding implementation and exposes `score_and_learn(features)`.
+**Public API:** `OnlineAnomalyDetector` is a factory. You pass `algorithm` (`"halfspacetrees"`, `"loda"`, `"loda_ema"`, `"kitnet"`, `"memstream"`, `"zscore"`, `"knn"`, `"freq1d"`, `"gausscop"`, `"copulatree"`, `"latentcluster"`) plus optional hyperparameters; it instantiates the corresponding implementation and exposes `score_and_learn(features)`.
 
 **Algorithms:**
 
 1. **Half-Space Trees (River)** – Tree ensemble over the feature vector; CPU-only, no PyTorch. Good baseline, low dependency.
-2. **LODA** – Sparse random projections + online histograms; PyTorch, supports CPU/CUDA. Lightweight density estimate.
-3. **KitNet (PySAD)** – Ensemble of small autoencoders; learns a mapping then an anomaly detector in two grace phases. PyTorch, CPU/CUDA.
-4. **MemStream** – Autoencoder + latent memory; memory updated only when the score is below an adaptive threshold to limit poisoning. PyTorch, CPU/CUDA.
-5. **ZScore** – Per-feature online running mean/std with event score `mean(abs(z_i))`. Intentionally simple baseline; CPU-only.
-6. **KNN (scikit-learn)** – Sliding-memory nearest-neighbor detector; score is mean distance to k nearest historical events. CPU-only.
-7. **Freq1D** – Per-feature 1D frequency baseline: numeric features use fixed-bin histograms, categorical/hash features use capped count tables. Scores by average excess surprisal (rarity). CPU-only.
+2. **LODA (PySAD)** – PySAD LODA wrapper. **Broken**: fit_partial overwrites histograms instead of accumulating; scores are often ~0. Not recommended.
+3. **LODA-EMA** – Custom implementation with EMA-based adaptive normalization; streaming from first event; PyTorch, supports CPU/CUDA. **Recommended for LODA.**
+4. **KitNet (PySAD)** – Ensemble of small autoencoders; learns a mapping then an anomaly detector in two grace phases. PyTorch, CPU/CUDA.
+5. **MemStream** – Autoencoder + latent memory; memory updated only when the score is below an adaptive threshold to limit poisoning. PyTorch, CPU/CUDA.
+6. **ZScore** – Per-feature online running mean/std with event score `mean(abs(z_i))`. Intentionally simple baseline; CPU-only.
+7. **KNN (scikit-learn)** – Sliding-memory nearest-neighbor detector; score is mean distance to k nearest historical events. CPU-only.
+8. **Freq1D** – Per-feature 1D frequency baseline: numeric features use fixed-bin histograms, categorical/hash features use capped count tables. Scores by configurable aggregation over excess surprisal (sum / mean / top-k mean / soft top-k mean). CPU-only.
+9. **GaussCop** – Gaussian-copula extension of `freq1d`: marginals come from `freq1d`, then dependence is modeled in Gaussianized space. CPU-only and more expensive than `freq1d`.
+10. **CopulaTree** – Streaming copula-tree detector on top of `freq1d`: marginals come from `freq1d`, pairwise dependence is tracked online in Gaussianized space, and a maximum-spanning tree is refreshed periodically. This keeps the sparse-tree idea from the paper without requiring offline family fitting or Monte Carlo calibration. CPU-only.
+11. **LatentCluster** – Online latent clustering on top of `freq1d` marginals: events are mapped to CDF/probit coordinates, scored against a small bank of latent clusters with diagonal variance, and only likely-normal points update clusters. CPU-only.
 
 Device selection is via config (`model_device`: `auto` / `cpu` / `cuda`). The server uses one model per event_type and calls `score_and_learn` under a lock so only one thread updates any model per event.
+
+**Deferred idea for later:** a **learned mixture-of-regimes** model on top of `freq1d`-normalized inputs. The intended design is: keep `freq1d` for marginals, transform each event to CDF/probit coordinates, use a small gating network to softly assign the event to one of several latent regimes, and score the event by how well at least one regime explains it. Unlike hard routing by `comm`/`event_type`, the partition is learned from data and can differ between systems. Compared with `latentcluster`, the mixture keeps *soft* assignments and regime-specific density models instead of just nearest-cluster geometry.
 
 ---
 
@@ -169,7 +177,7 @@ Device selection is via config (`model_device`: `auto` / `cpu` / `cuda`). The se
 
 1. **Startup:** `load_config()`, create `RECENT_EVENTS` deque (size from config), optionally enable anomaly log file via `ANOMALY_LOG_PATH`, instantiate `RuleBasedDetector(cfg)` (which wraps `DeterministicScorer` and one `OnlineAnomalyDetector` **per event_type**).
 2. **gRPC:** Implements `DetectorService`: `StreamEvents(stream EventEnvelope) -> stream DetectionResponse`. For each event: `extract_feature_dict(evt)` → pick/create the model for `evt.event_type` → `score_and_learn(features)` → build `DetectionResponse` (event_id, anomaly, reason, score, ts). Responses are yielded back to the client. Anomalies and recent events are pushed to in-memory buffers; if `ANOMALY_LOG_PATH` is set, anomalies are also appended as JSONL.
-3. **DeterministicScorer:** Holds the config and the `OnlineAnomalyDetector`. `score_event(evt)` calls `extract_feature_dict(evt)` then uses either `score_and_learn_raw(features)` or `score_and_learn(features)` depending on `cfg.score_mode` (`raw` vs `scaled`), compares the selected score to `cfg.threshold`, and returns a `DetectionResponse` (anomaly = score ≥ threshold). Exceptions are caught and returned as a non-anomaly response with an error reason.
+3. **DeterministicScorer:** Holds the config and the `OnlineAnomalyDetector`. `score_event(evt)` calls `extract_feature_dict(evt)` then `score_and_learn(features)` which returns `(raw, scaled)`, compares the selected score (based on `cfg.score_mode`) to `cfg.threshold`, and returns a `DetectionResponse` (anomaly = score ≥ threshold). Exceptions are caught and returned as a non-anomaly response with an error reason.
 4. **HTTP (optional):** If `events_http_port` > 0, a small HTTP server serves:
   - `GET /recent_events?limit=N` – last N events (for UI log tail)
   - `GET /metrics` – Prometheus-style metrics (events_total, anomalies_total, etc.)

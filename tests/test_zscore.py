@@ -21,7 +21,7 @@ def test_zscore_scores_in_unit_interval():
   )
   rng = np.random.default_rng(3)
   for _ in range(40):
-    score = detector.score_and_learn(_make_features(rng.normal(0.0, 1.0, size=9)))
+    _, score = detector.score_and_learn(_make_features(rng.normal(0.0, 1.0, size=9)))
     assert 0.0 <= score <= 1.0
 
 
@@ -37,11 +37,11 @@ def test_zscore_anomaly_shift_scores_higher():
     detector.score_and_learn(_make_features(rng.normal(0.0, 1.0, size=9)))
 
   normal_scores = [
-    detector.score_and_learn_raw(_make_features(rng.normal(0.0, 1.0, size=9)))
+    detector.score_and_learn(_make_features(rng.normal(0.0, 1.0, size=9)))[0]
     for _ in range(25)
   ]
   anomaly_scores = [
-    detector.score_and_learn_raw(_make_features(rng.normal(8.0, 1.0, size=9)))
+    detector.score_and_learn(_make_features(rng.normal(8.0, 1.0, size=9)))[0]
     for _ in range(25)
   ]
   assert np.mean(anomaly_scores) > np.mean(normal_scores)
@@ -55,7 +55,7 @@ def test_zscore_checkpoint_save_load_preserves_scores():
   full = OnlineAnomalyDetector(algorithm="zscore", zscore_min_count=5, seed=7)
   for i in range(100):
     full.score_and_learn(events[i])
-  full_score = full.score_only(events[100])
+  full_score = full.score_only(events[100])[1]
 
   with tempfile.NamedTemporaryFile(suffix=".pkl", delete=False) as f:
     ckpt = Path(f.name)
@@ -71,7 +71,7 @@ def test_zscore_checkpoint_save_load_preserves_scores():
     assert idx == 50
     for i in range(50, 100):
       loaded.score_and_learn(events[i])
-    loaded_score = loaded.score_only(events[100])
+    loaded_score = loaded.score_only(events[100])[1]
     assert abs(full_score - loaded_score) < 1e-12
   finally:
     ckpt.unlink(missing_ok=True)
@@ -86,10 +86,10 @@ def test_zscore_near_constant_features_stable():
   )
   base = np.full(9, 0.25, dtype=np.float64)
   for _ in range(20):
-    score = detector.score_and_learn(_make_features(base))
+    _, score = detector.score_and_learn(_make_features(base))
     assert np.isfinite(score)
     assert 0.0 <= score <= 1.0
 
-  score_raw = detector.score_only_raw(_make_features(base))
+  score_raw = detector.score_only(_make_features(base))[0]
   assert np.isfinite(score_raw)
   assert score_raw >= 0.0

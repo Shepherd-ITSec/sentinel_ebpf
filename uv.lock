@@ -383,6 +383,15 @@ wheels = [
 ]
 
 [[package]]
+name = "fenwick"
+version = "0.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ce/c0/c1718b78bf8ce0c9f3e109018fd1c7e3e6b9ed192e91f77779671b5e9852/fenwick-0.2.0.tar.gz", hash = "sha256:151cb712886b4c4f767a9bd4d1a328e22ff61ec8a4d792de762b1d0ec3da43ac", size = 5786, upload-time = "2024-10-24T18:47:36.264Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/14/3d/d82aee46ed001ea8fc61fd9a0524235bedba81fb712f40b9ebf7d2dda52b/fenwick-0.2.0-py2.py3-none-any.whl", hash = "sha256:cdbf23efd877bcde8b777af4332dd0b371772ddd072474a0f313ad1394496fa1", size = 4667, upload-time = "2024-10-24T18:47:34.868Z" },
+]
+
+[[package]]
 name = "filelock"
 version = "3.19.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2065,6 +2074,7 @@ dependencies = [
 
 [package.optional-dependencies]
 detector = [
+    { name = "fenwick" },
     { name = "numpy" },
     { name = "pysad", marker = "python_full_version >= '3.10'" },
     { name = "river", version = "0.21.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
@@ -2097,6 +2107,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "fenwick", marker = "extra == 'detector'", specifier = ">=0.2.0" },
     { name = "grpcio", specifier = "==1.76.0" },
     { name = "grpcio-health-checking", specifier = "==1.76.0" },
     { name = "grpcio-tools", specifier = "==1.76.0" },

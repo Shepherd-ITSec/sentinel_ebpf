@@ -339,9 +339,13 @@
           <h3>Capacity Guidance</h3>
           <div class="section-inner" id="capacity"></div>
         </div>
-        <div class="section" data-widget-id="metrics">
-          <h3>Metrics</h3>
-          <div class="section-inner" id="metrics"></div>
+        <div class="section" data-widget-id="metrics-probe">
+          <h3>Probe</h3>
+          <div class="section-inner" id="metrics-probe"></div>
+        </div>
+        <div class="section" data-widget-id="metrics-detector">
+          <h3>Detector</h3>
+          <div class="section-inner" id="metrics-detector"></div>
         </div>
       </div>
       <div class="right-column dashboard-column" id="right-column">
@@ -364,13 +368,24 @@
             </div>
           </div>
         </div>
-        <div class="section" data-widget-id="score-chart">
-          <h3>Anomaly Score (per poll)</h3>
+        <div class="section" data-widget-id="score-chart-scaled">
+          <h3>Anomaly Score (per poll) — Scaled</h3>
           <div class="section-inner">
-            <div class="map-note" style="margin-bottom:8px;">Scores can exceed 1 when detector uses <code>score_mode=raw</code> (default). Use <code>scaled</code> for 0–1 range.</div>
-            <div class="chart-container score-chart-container">
+            <div class="map-note" style="margin-bottom:8px;">0–1 bounded score (1 − exp(−raw)).</div>
+            <div class="chart-container score-chart-container score-chart-scaled">
               <div class="chart-wrapper">
-                <canvas id="scoreChart"></canvas>
+                <canvas id="scoreChartScaled"></canvas>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="section" data-widget-id="score-chart-raw">
+          <h3>Anomaly Score (per poll) — Unscaled</h3>
+          <div class="section-inner">
+            <div class="map-note" style="margin-bottom:8px;">Raw model output (can exceed 1). Threshold shown in raw space (scaled 0–1 threshold converted via −ln(1−s)).</div>
+            <div class="chart-container score-chart-container score-chart-raw">
+              <div class="chart-wrapper">
+                <canvas id="scoreChartRaw"></canvas>
               </div>
             </div>
           </div>
@@ -589,15 +604,17 @@
           }
         } catch (e) {}
         try {
-          if (scoreChartInstance) {
-            applyOptions(scoreChartInstance);
-            const ds = scoreChartInstance.data.datasets;
-            const thresholdColor = isDark ? "#d29922" : "#9a6700";
-            if (ds?.[0]) { ds[0].borderColor = meanColor; ds[0].backgroundColor = meanColor + "20"; }
-            if (ds?.[1]) { ds[1].borderColor = maxColor; ds[1].backgroundColor = maxColor + "20"; }
-            if (ds?.[2]) { ds[2].borderColor = thresholdColor; }
-            scoreChartInstance.update("none");
-          }
+          [scoreChartScaledInstance, scoreChartRawInstance].forEach(inst => {
+            if (inst) {
+              applyOptions(inst);
+              const ds = inst.data.datasets;
+              const thresholdColor = isDark ? "#d29922" : "#9a6700";
+              if (ds?.[0]) { ds[0].borderColor = meanColor; ds[0].backgroundColor = meanColor + "20"; }
+              if (ds?.[1]) { ds[1].borderColor = maxColor; ds[1].backgroundColor = maxColor + "20"; }
+              if (ds?.[2]) { ds[2].borderColor = thresholdColor; }
+              inst.update("none");
+            }
+          });
         } catch (e) {}
         try {
           if (scoreMapInstance) {
@@ -691,11 +708,18 @@
             const numValue = parseFloat(value);
             const raw = name.replace(/^sentinel_ebpf_probe_/, "").replace(/^sentinel_ebpf_detector_/, "");
             const readableName = metricNameMap[name] || raw.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase());
+            let displayValue;
+            if (name === "sentinel_ebpf_detector_last_event_timestamp_seconds" && !isNaN(numValue) && numValue > 0) {
+              const d = new Date(numValue * 1000);
+              displayValue = isNaN(d.getTime()) ? numValue.toLocaleString() : formatTimestampLocal(d);
+            } else {
+              displayValue = isNaN(numValue) ? value : numValue.toLocaleString();
+            }
             metrics.push({
               name: name,
               readableName: readableName,
               value: isNaN(numValue) ? value : numValue,
-              displayValue: isNaN(numValue) ? value : numValue.toLocaleString()
+              displayValue: displayValue
             });
           }
         }
@@ -703,9 +727,11 @@
       }
       let lastMetricsSignature = "";
       function renderMetrics(data) {
-        const el = document.getElementById("metrics");
+        const probeEl = document.getElementById("metrics-probe");
+        const detectorEl = document.getElementById("metrics-detector");
         if (typeof data !== "object" || data === null) {
-          el.innerHTML = "<pre>" + escapeHtml(String(data)) + "</pre>";
+          if (probeEl) probeEl.innerHTML = "<pre>" + escapeHtml(String(data)) + "</pre>";
+          if (detectorEl) detectorEl.innerHTML = "";
           return;
         }
         const probeText = data.probe_metrics != null ? String(data.probe_metrics) : "";
@@ -734,9 +760,9 @@
           previousMetrics.timestamp = currentTimestamp;
         }
         
-        function renderMetricsTable(metrics, title, extraRows = []) {
+        function renderMetricsTable(metrics, extraRows = []) {
           if (metrics.length === 0 && extraRows.length === 0) {
-            return `<div class="metrics-block"><h4>${title}</h4><div class="metrics-empty">No data</div></div>`;
+            return `<div class="metrics-empty">No data</div>`;
           }
           const allRows = [
             ...metrics.map(m => 
@@ -744,7 +770,7 @@
             ),
             ...extraRows
           ];
-          return `<div class="metrics-block"><h4>${title}</h4><table class="metrics-table"><tbody>${allRows.join("")}</tbody></table></div>`;
+          return `<table class="metrics-table"><tbody>${allRows.join("")}</tbody></table>`;
         }
         
         const detectorExtraRows = [];
@@ -758,14 +784,15 @@
         }
         
         const probeHtml = probeMetrics.length > 0 
-          ? renderMetricsTable(probeMetrics, "Probe")
-          : `<div class="metrics-block"><h4>Probe</h4><div class="metrics-empty">No data</div></div>`;
+          ? renderMetricsTable(probeMetrics)
+          : `<div class="metrics-empty">No data</div>`;
         
         const detectorHtml = detectorMetrics.length > 0 || detectorExtraRows.length > 0
-          ? renderMetricsTable(detectorMetrics, "Detector", detectorExtraRows)
-          : `<div class="metrics-block"><h4>Detector</h4><div class="metrics-empty">No detector metrics (gRPC only)</div></div>`;
+          ? renderMetricsTable(detectorMetrics, detectorExtraRows)
+          : `<div class="metrics-empty">No detector metrics (gRPC only)</div>`;
         
-        el.innerHTML = `<div class="metrics-blocks">${probeHtml}${detectorHtml}</div>`;
+        if (probeEl) probeEl.innerHTML = probeHtml;
+        if (detectorEl) detectorEl.innerHTML = detectorHtml;
       }
       let lastCapacitySignature = "";
       function renderCapacity(data) {
@@ -939,6 +966,7 @@
       let logsSortKey = "ts_unix_nano";
       let logsSortDir = "desc";
       let lastLogsData = null;
+      let lastWatchData = null;
       let lastLogsSignature = "";
       function renderLogs(data) {
         lastLogsData = data;
@@ -985,7 +1013,7 @@
             const nb = Number(b.ts_unix_nano);
             return logsSortDir === "asc" ? na - nb : nb - na;
           }
-          if (logsSortKey === "anomaly" || logsSortKey === "score") {
+          if (logsSortKey === "anomaly" || logsSortKey === "score" || logsSortKey === "score_raw") {
             const na = Number(a[logsSortKey]);
             const nb = Number(b[logsSortKey]);
             if (!isNaN(na) && !isNaN(nb)) return logsSortDir === "asc" ? na - nb : nb - na;
@@ -1003,7 +1031,8 @@
           { key: "path", label: "Path" },
           { key: "pid_tid_uid", label: "PID/TID/UID" },
           { key: "anomaly", label: "Anomaly" },
-          { key: "score", label: "Score" },
+          { key: "score", label: "Score (scaled)" },
+          { key: "score_raw", label: "Score (raw)" },
           { key: "reason", label: "Reason" },
         ];
         function buildRow(entry) {
@@ -1033,7 +1062,7 @@
           if (entries.length === 0) {
             table += "<p class=\"logs-message\">No entries.</p>";
           } else {
-            const colWidths = ["10%", "7%", "8%", "8%", "7%", "22%", "12%", "6%", "6%", "14%"];
+            const colWidths = ["10%", "7%", "8%", "8%", "7%", "18%", "10%", "6%", "6%", "6%", "14%"];
             table += "<div class=\"table-wrap\"><table class=\"logs-table\"><colgroup>";
             colWidths.forEach(function(w) { table += "<col style=\"width:" + w + "\">"; });
             table += "</colgroup><thead><tr>";
@@ -1208,7 +1237,7 @@
           lastWatchFilter = filter.trim();
         }
         renderWatchTable();
-        if (lastLogsData) processWatchEntries(lastLogsData);
+        if (lastWatchData && filter.trim()) processWatchEntries(lastWatchData);
       });
       renderWatchTable();
       let scoreMapInstance = null;
@@ -1527,21 +1556,16 @@
         }
       }
 
-      let scoreChartInstance = null;
-      let scoreChartLastSignature = "";
+      let scoreChartScaledInstance = null;
+      let scoreChartRawInstance = null;
+      let scoreChartScaledLastSignature = "";
+      let scoreChartRawLastSignature = "";
       let scoreChartHasRendered = false;
       function renderScoreChart(data) {
-        const container = document.querySelector(".score-chart-container");
-        if (!container) return;
         if (typeof Chart === "undefined") return;
-        let canvas = document.getElementById("scoreChart");
-        let wrapper = canvas ? canvas.closest(".chart-wrapper") : null;
-        if (!canvas || !wrapper) return;
         if (typeof data !== "object" || data === null || !data.time_buckets) {
-          if (scoreChartInstance) {
-            scoreChartInstance.destroy();
-            scoreChartInstance = null;
-          }
+          if (scoreChartScaledInstance) { scoreChartScaledInstance.destroy(); scoreChartScaledInstance = null; }
+          if (scoreChartRawInstance) { scoreChartRawInstance.destroy(); scoreChartRawInstance = null; }
           return;
         }
         const timeBuckets = data.time_buckets || [];
@@ -1561,88 +1585,101 @@
           const s = bucket.max_score;
           return s != null && Number.isFinite(s) ? s : null;
         });
+        function unscaledFromScaled(scaled) {
+          if (scaled == null || !Number.isFinite(scaled) || scaled >= 1) return null;
+          return -Math.log(1 - scaled);
+        }
+        const meanScoresRaw = timeBuckets.map(bucket => {
+          const s = bucket.mean_score_raw;
+          if (s != null && Number.isFinite(s)) return s;
+          return unscaledFromScaled(bucket.mean_score);
+        });
+        const maxScoresRaw = timeBuckets.map(bucket => {
+          const s = bucket.max_score_raw;
+          if (s != null && Number.isFinite(s)) return s;
+          return unscaledFromScaled(bucket.max_score);
+        });
         const threshold = (data.threshold != null && Number.isFinite(data.threshold)) ? data.threshold : 0.7;
-        const scoreChartSignature = JSON.stringify({ labels: timeLabels, mean: meanScores, max: maxScores, threshold });
-        if (scoreChartInstance && scoreChartLastSignature === scoreChartSignature) return;
+        const scoreMode = (data.score_mode === "scaled" || data.score_mode === "raw") ? data.score_mode : (threshold > 0 && threshold < 1 ? "scaled" : "raw");
+        // For raw chart: when threshold is in scaled space, convert to raw via raw = -ln(1 - scaled).
+        const thresholdRaw = (scoreMode === "scaled" && threshold > 0 && threshold < 1)
+          ? -Math.log(1 - threshold)
+          : threshold;
         const isDark = document.documentElement.getAttribute("data-theme") !== "light";
         const textColor = isDark ? "#e6edf3" : "#1f2328";
         const gridColor = isDark ? "#2d3a4f" : "#d0d7de";
         const meanColor = isDark ? "#58a6ff" : "#0969da";
         const maxColor = isDark ? "#f85149" : "#cf222e";
         const thresholdColor = isDark ? "#d29922" : "#9a6700";
-        const thresholdData = timeLabels.map(() => threshold);
-        const datasets = [
-          {
-            label: "Mean",
-            data: meanScores,
-            borderColor: meanColor,
-            backgroundColor: meanColor + "20",
-            borderWidth: 2,
-            fill: true,
-            tension: 0.2,
-            spanGaps: true
-          },
-          {
-            label: "Max",
-            data: maxScores,
-            borderColor: maxColor,
-            backgroundColor: maxColor + "20",
-            borderWidth: 2,
-            fill: false,
-            tension: 0.2,
-            spanGaps: true
-          },
-          {
-            label: "Threshold",
-            data: thresholdData,
-            borderColor: thresholdColor,
-            borderWidth: 1.5,
-            borderDash: [4, 4],
-            fill: false,
-            pointRadius: 0,
-            pointHoverRadius: 0,
-            spanGaps: true
-          }
-        ];
+        const thresholdDataScaled = timeLabels.map(() => threshold);
+        const thresholdDataRaw = timeLabels.map(() => thresholdRaw);
+        function buildDatasets(meanData, maxData, thresholdData) {
+          return [
+            { label: "Mean", data: meanData, borderColor: meanColor, backgroundColor: meanColor + "20", borderWidth: 2, fill: true, tension: 0.2, spanGaps: true },
+            { label: "Max", data: maxData, borderColor: maxColor, backgroundColor: maxColor + "20", borderWidth: 2, fill: false, tension: 0.2, spanGaps: true },
+            { label: "Threshold", data: thresholdData, borderColor: thresholdColor, borderWidth: 1.5, borderDash: [4, 4], fill: false, pointRadius: 0, pointHoverRadius: 0, spanGaps: true }
+          ];
+        }
+        const scaledDatasets = buildDatasets(meanScores, maxScores, thresholdDataScaled);
+        const rawDatasets = buildDatasets(meanScoresRaw, maxScoresRaw, thresholdDataRaw);
+        const scaledSig = JSON.stringify({ labels: timeLabels, mean: meanScores, max: maxScores, threshold });
+        const rawSig = JSON.stringify({ labels: timeLabels, mean: meanScoresRaw, max: maxScoresRaw, thresholdRaw });
         try {
-          if (scoreChartInstance) {
-            scoreChartInstance.data.labels = timeLabels;
-            scoreChartInstance.data.datasets = datasets;
-            scoreChartInstance.update(scoreChartHasRendered ? "none" : undefined);
-          } else {
-            scoreChartInstance = new Chart(canvas, {
-              type: "line",
-              data: { labels: timeLabels, datasets: datasets },
-              options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                animation: { duration: 350 },
-                plugins: {
-                  legend: {
-                    display: true,
-                    position: "top",
-                    labels: { color: textColor, usePointStyle: true }
-                  },
-                  tooltip: { enabled: true, mode: "index", intersect: false }
-                },
-                scales: {
-                  y: {
-                    beginAtZero: true,
-                    min: 0,
-                    suggestedMax: 1,
-                    ticks: { color: textColor, precision: 3 },
-                    grid: { color: gridColor }
-                  },
-                  x: {
-                    ticks: { color: textColor },
-                    grid: { color: gridColor }
+          let canvasScaled = document.getElementById("scoreChartScaled");
+          let wrapperScaled = canvasScaled ? canvasScaled.closest(".chart-wrapper") : null;
+          if (canvasScaled && wrapperScaled) {
+            if (scoreChartScaledInstance && scoreChartScaledLastSignature === scaledSig) { /* no-op */ } else {
+              if (scoreChartScaledInstance) {
+                scoreChartScaledInstance.data.labels = timeLabels;
+                scoreChartScaledInstance.data.datasets = scaledDatasets;
+                scoreChartScaledInstance.update(scoreChartHasRendered ? "none" : undefined);
+              } else {
+                scoreChartScaledInstance = new Chart(canvasScaled, {
+                  type: "line",
+                  data: { labels: timeLabels, datasets: scaledDatasets },
+                  options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: { duration: 350 },
+                    plugins: { legend: { display: true, position: "top", labels: { color: textColor, usePointStyle: true } }, tooltip: { enabled: true, mode: "index", intersect: false } },
+                    scales: {
+                      y: { beginAtZero: true, min: 0, suggestedMax: 1, ticks: { color: textColor, precision: 3 }, grid: { color: gridColor } },
+                      x: { ticks: { color: textColor }, grid: { color: gridColor } }
+                    }
                   }
-                }
+                });
               }
-            });
-            scoreChartHasRendered = true;
+              scoreChartScaledLastSignature = scaledSig;
+            }
           }
-          scoreChartLastSignature = scoreChartSignature;
+          let canvasRaw = document.getElementById("scoreChartRaw");
+          let wrapperRaw = canvasRaw ? canvasRaw.closest(".chart-wrapper") : null;
+          if (canvasRaw && wrapperRaw) {
+            if (scoreChartRawInstance && scoreChartRawLastSignature === rawSig) { /* no-op */ } else {
+              if (scoreChartRawInstance) {
+                scoreChartRawInstance.data.labels = timeLabels;
+                scoreChartRawInstance.data.datasets = rawDatasets;
+                scoreChartRawInstance.update(scoreChartHasRendered ? "none" : undefined);
+              } else {
+                scoreChartRawInstance = new Chart(canvasRaw, {
+                  type: "line",
+                  data: { labels: timeLabels, datasets: rawDatasets },
+                  options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: { duration: 350 },
+                    plugins: { legend: { display: true, position: "top", labels: { color: textColor, usePointStyle: true } }, tooltip: { enabled: true, mode: "index", intersect: false } },
+                    scales: {
+                      y: { beginAtZero: true, ticks: { color: textColor, precision: 3 }, grid: { color: gridColor } },
+                      x: { ticks: { color: textColor }, grid: { color: gridColor } }
+                    }
+                  }
+                });
+              }
+              scoreChartRawLastSignature = rawSig;
+            }
+          }
+          scoreChartHasRendered = true;
         } catch (e) {
           console.error("Error rendering score chart:", e);
         }
@@ -1674,8 +1711,10 @@
             const ns = entry.namespace || "";
             const reason = entry.reason || "";
             const score = entry.score != null ? entry.score : "";
+            const scoreRaw = entry.score_raw != null ? entry.score_raw : "";
+            const scoreStr = scoreRaw !== "" ? `Scaled: ${score} · Raw: ${scoreRaw}` : `Score: ${score}`;
             html += `<div class="anomaly-item">`;
-            html += `<div><strong>${escapeHtml(ts)}</strong> <span class="anomaly-score">Score: ${escapeHtml(String(score))}</span>`;
+            html += `<div><strong>${escapeHtml(ts)}</strong> <span class="anomaly-score">${escapeHtml(scoreStr)}</span>`;
             if (syscall) html += ` <span style="font-weight:600;">${escapeHtml(syscall)}</span>`;
             if (host) html += ` · ${escapeHtml(host)}`;
             html += `</div>`;
@@ -1711,10 +1750,11 @@
           const metrics = await fetchJson("/api/metrics");
           renderMetrics(metrics);
         } catch (e) {
-          const metricsEl = document.getElementById("metrics");
-          if (metricsEl) {
-            metricsEl.innerHTML = "<div class=\"metrics-empty\">Error loading metrics: " + escapeHtml(String(e)) + "</div>";
-          }
+          const errMsg = "<div class=\"metrics-empty\">Error loading metrics: " + escapeHtml(String(e)) + "</div>";
+          const probeEl = document.getElementById("metrics-probe");
+          const detectorEl = document.getElementById("metrics-detector");
+          if (probeEl) probeEl.innerHTML = errMsg;
+          if (detectorEl) detectorEl.innerHTML = errMsg;
         }
         try {
           const capacity = await fetchJson("/api/capacity");
@@ -1757,6 +1797,7 @@
           const watchData = watchFilter.trim()
             ? await fetchJson("/api/watch_search?search=" + encodeURIComponent(watchFilter.trim()))
             : { entries: [] };
+          lastWatchData = watchFilter.trim() ? watchData : null;
           processWatchEntries(watchData);
         } catch (e) {
           const logsEl = document.getElementById("logs");

@@ -40,8 +40,9 @@ message DetectionResponse {
   string event_id = 1;
   bool anomaly = 2;
   string reason = 3;
-  double score = 4;
+  double score = 4;  // scaled (0-1)
   google.protobuf.Timestamp ts = 5;
+  double score_raw = 6;  // unscaled (raw model output)
 }
 
 message AnomalyReport {

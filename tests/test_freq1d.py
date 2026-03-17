@@ -15,11 +15,12 @@ def test_freq1d_raw_score_finite_and_non_negative():
     freq1d_alpha=1.0,
     freq1d_decay=1.0,
     freq1d_max_categories=128,
+    freq1d_aggregation="mean",
     seed=1,
   )
   features = {"a_norm": 0.1, "b_norm": 0.9, "comm_hash": 0.1234, "return_success": 1.0}
   for _ in range(10):
-    raw = det.score_and_learn_raw(features)
+    raw, _ = det.score_and_learn(features)
     assert np.isfinite(raw)
     assert raw >= 0.0
 
@@ -31,6 +32,7 @@ def test_freq1d_shifted_distribution_scores_higher():
     freq1d_alpha=1.0,
     freq1d_decay=1.0,
     freq1d_max_categories=512,
+    freq1d_aggregation="mean",
     seed=2,
   )
   rng = np.random.default_rng(2)
@@ -43,7 +45,7 @@ def test_freq1d_shifted_distribution_scores_higher():
       "comm_hash": float(rng.choice([0.1000, 0.2000, 0.3000])),
       "return_success": float(rng.choice([0.0, 1.0])),
     }
-    det.score_and_learn_raw(features)
+    det.score_and_learn(features)
 
   normal = []
   for _ in range(50):
@@ -53,7 +55,7 @@ def test_freq1d_shifted_distribution_scores_higher():
       "comm_hash": float(rng.choice([0.1000, 0.2000, 0.3000])),
       "return_success": float(rng.choice([0.0, 1.0])),
     }
-    normal.append(det.score_only_raw(features))
+    normal.append(det.score_only(features)[0])
 
   shifted = []
   for _ in range(50):
@@ -63,7 +65,7 @@ def test_freq1d_shifted_distribution_scores_higher():
       "comm_hash": 0.9999,  # rare/unseen category
       "return_success": 1.0,
     }
-    shifted.append(det.score_only_raw(features))
+    shifted.append(det.score_only(features)[0])
 
   assert float(np.mean(shifted)) > float(np.mean(normal))
 
@@ -79,26 +81,26 @@ def test_freq1d_checkpoint_save_load_preserves_scores():
       "return_success": float(i % 2),
     })
 
-  full = OnlineAnomalyDetector(algorithm="freq1d", freq1d_bins=32, freq1d_max_categories=128, seed=7)
+  full = OnlineAnomalyDetector(algorithm="freq1d", freq1d_bins=32, freq1d_max_categories=128, freq1d_aggregation="mean", seed=7)
   for i in range(100):
-    full.score_and_learn_raw(events[i])
-  full_score = full.score_only_raw(events[100])
+    full.score_and_learn(events[i])
+  full_score = full.score_only(events[100])[0]
 
   with tempfile.NamedTemporaryFile(suffix=".pkl", delete=False) as f:
     ckpt = Path(f.name)
   try:
-    ckpt_det = OnlineAnomalyDetector(algorithm="freq1d", freq1d_bins=32, freq1d_max_categories=128, seed=7)
+    ckpt_det = OnlineAnomalyDetector(algorithm="freq1d", freq1d_bins=32, freq1d_max_categories=128, freq1d_aggregation="mean", seed=7)
     for i in range(100):
-      ckpt_det.score_and_learn_raw(events[i])
+      ckpt_det.score_and_learn(events[i])
       if i == 49:
         ckpt_det.save_checkpoint(ckpt, 50)
 
-    loaded = OnlineAnomalyDetector(algorithm="freq1d", freq1d_bins=32, freq1d_max_categories=128, seed=7)
+    loaded = OnlineAnomalyDetector(algorithm="freq1d", freq1d_bins=32, freq1d_max_categories=128, freq1d_aggregation="mean", seed=7)
     idx = loaded.load_checkpoint(ckpt)
     assert idx == 50
     for i in range(50, 100):
-      loaded.score_and_learn_raw(events[i])
-    loaded_score = loaded.score_only_raw(events[100])
+      loaded.score_and_learn(events[i])
+    loaded_score = loaded.score_only(events[100])[0]
     assert abs(full_score - loaded_score) < 1e-12
   finally:
     ckpt.unlink(missing_ok=True)
@@ -111,6 +113,7 @@ def test_freq1d_categorical_cap_does_not_explode():
     freq1d_alpha=1.0,
     freq1d_decay=1.0,
     freq1d_max_categories=8,
+    freq1d_aggregation="mean",
     seed=9,
   )
   for i in range(200):
@@ -119,7 +122,7 @@ def test_freq1d_categorical_cap_does_not_explode():
       "x_norm": float((i % 16) / 15.0),
       "return_success": float(i % 2),
     }
-    det.score_and_learn_raw(features)
+    det.score_and_learn(features)
 
   impl = det.impl
   assert impl.algorithm == "freq1d"
@@ -127,3 +130,52 @@ def test_freq1d_categorical_cap_does_not_explode():
   # Only comm_hash and return_success are categorical -> ensure per-feature cap holds.
   for d in impl._cat_counts:
     assert len(d) <= impl.max_categories
+
+
+def test_freq1d_aggregation_modes_ordering():
+  """sum >= mean; topk_mean(k=1) ~= max; soft_topk_mean is between mean and max (typical)."""
+  rng = np.random.default_rng(123)
+  # Warm up a detector to avoid cold-start effects dominating.
+  base_events = []
+  for _ in range(200):
+    base_events.append({
+      "x_norm": float(np.clip(rng.normal(0.2, 0.05), 0.0, 1.0)),
+      "y_norm": float(np.clip(rng.normal(0.4, 0.05), 0.0, 1.0)),
+      "z_norm": float(np.clip(rng.normal(0.6, 0.05), 0.0, 1.0)),
+      "comm_hash": float(rng.choice([0.1000, 0.2000, 0.3000])),
+      "return_success": float(rng.choice([0.0, 1.0])),
+    })
+
+  feat = {
+    "x_norm": 0.95,
+    "y_norm": 0.95,
+    "z_norm": 0.95,
+    "comm_hash": 0.9999,
+    "return_success": 1.0,
+  }
+
+  def run(aggregation: str, topk: int = 8, temp: float = 0.25) -> float:
+    det = OnlineAnomalyDetector(
+      algorithm="freq1d",
+      freq1d_bins=64,
+      freq1d_max_categories=256,
+      freq1d_alpha=1.0,
+      freq1d_decay=1.0,
+      freq1d_aggregation=aggregation,
+      freq1d_topk=topk,
+      freq1d_soft_topk_temperature=temp,
+      seed=1,
+    )
+    for e in base_events:
+      det.score_and_learn(e)
+    return float(det.score_only(feat)[0])
+
+  s_sum = run("sum")
+  s_mean = run("mean")
+  s_top1 = run("topk_mean", topk=1)
+  s_soft = run("soft_topk_mean", topk=8, temp=0.25)
+
+  assert s_sum >= s_mean
+  assert s_top1 >= s_mean
+  assert s_soft >= s_mean
+  assert s_soft <= s_top1 + 1e-9

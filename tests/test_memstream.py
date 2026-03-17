@@ -21,7 +21,7 @@ def test_memstream_scores_in_unit_interval():
   )
   rng = np.random.default_rng(7)
   for _ in range(20):
-    score = detector.score_and_learn(_make_features(rng.normal(0.0, 1.0, size=9)))
+    _, score = detector.score_and_learn(_make_features(rng.normal(0.0, 1.0, size=9)))
     assert 0.0 <= score <= 1.0
 
 

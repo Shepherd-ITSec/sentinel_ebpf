@@ -468,9 +468,10 @@ class Handler(BaseHTTPRequestHandler):
 
               # Fall back to a short time window when metric counters are unavailable
               # or after detector restarts/counter resets.
-              def count_recent_window() -> tuple[dict, float | None, float | None]:
+              def count_recent_window() -> tuple[dict, float | None, float | None, float | None, float | None]:
                 window_counts = {}
                 scores = []
+                scores_raw = []
                 recent_window_seconds = 30
                 threshold_ns = int(current_time * 1e9) - (recent_window_seconds * 1_000_000_000)
                 for entry in entries:
@@ -481,33 +482,46 @@ class Handler(BaseHTTPRequestHandler):
                     s = entry.get("score")
                     if s is not None and isinstance(s, (int, float)):
                       scores.append(float(s))
+                    sr = entry.get("score_raw")
+                    if sr is not None and isinstance(sr, (int, float)):
+                      scores_raw.append(float(sr))
                 mean_score = sum(scores) / len(scores) if scores else None
                 max_score = max(scores) if scores else None
-                return window_counts, mean_score, max_score
+                mean_score_raw = sum(scores_raw) / len(scores_raw) if scores_raw else None
+                max_score_raw = max(scores_raw) if scores_raw else None
+                return window_counts, mean_score, max_score, mean_score_raw, max_score_raw
 
               mean_score: float | None = None
               max_score: float | None = None
+              mean_score_raw: float | None = None
+              max_score_raw: float | None = None
               if current_total_events is None:
-                counts, mean_score, max_score = count_recent_window()
+                counts, mean_score, max_score, mean_score_raw, max_score_raw = count_recent_window()
               elif last_total_events == 0:
-                counts, mean_score, max_score = count_recent_window()
+                counts, mean_score, max_score, mean_score_raw, max_score_raw = count_recent_window()
               elif current_total_events < last_total_events:
                 # Detector restarted or metrics counter reset.
-                counts, mean_score, max_score = count_recent_window()
+                counts, mean_score, max_score, mean_score_raw, max_score_raw = count_recent_window()
               else:
                 new_events_count = current_total_events - last_total_events
                 if new_events_count > 0:
                   # Entries are oldest-first, so the newest events are at the end.
                   new_entries = entries[-new_events_count:] if new_events_count <= len(entries) else entries
                   scores = []
+                  scores_raw = []
                   for entry in new_entries:
                     event_name = entry.get("event_name", "unknown")
                     counts[event_name] = counts.get(event_name, 0) + 1
                     s = entry.get("score")
                     if s is not None and isinstance(s, (int, float)):
                       scores.append(float(s))
+                    sr = entry.get("score_raw")
+                    if sr is not None and isinstance(sr, (int, float)):
+                      scores_raw.append(float(sr))
                   mean_score = sum(scores) / len(scores) if scores else None
                   max_score = max(scores) if scores else None
+                  mean_score_raw = sum(scores_raw) / len(scores_raw) if scores_raw else None
+                  max_score_raw = max(scores_raw) if scores_raw else None
 
               # Update baseline counter after processing this poll.
               if current_total_events is not None:
@@ -521,6 +535,8 @@ class Handler(BaseHTTPRequestHandler):
                   "counts": counts.copy() if counts else {},
                   "mean_score": mean_score,
                   "max_score": max_score,
+                  "mean_score_raw": mean_score_raw,
+                  "max_score_raw": max_score_raw,
                 })
             except json.JSONDecodeError as e:
               logging.error(f"Failed to parse JSON from detector: {e}, raw={raw[:200]}")
@@ -532,20 +548,24 @@ class Handler(BaseHTTPRequestHandler):
       with _poll_history_lock:
         history = list(_poll_history)
       
-      # Fetch threshold from detector metrics for chart
+      # Fetch threshold and score_mode from detector metrics for chart
       threshold = None
+      score_mode = None
       if detector_metrics_url:
         try:
           metrics_text = _http_get(detector_metrics_url, timeout=2.0)
-          for line in metrics_text.split("\n"):
-            if line.startswith("sentinel_ebpf_detector_threshold"):
-              parts = line.split()
-              if len(parts) >= 2:
-                threshold = float(parts[1])
-                break
+          parsed = _parse_prometheus_metrics(metrics_text)
+          threshold = parsed.get("sentinel_ebpf_detector_threshold")
+          sm = parsed.get("sentinel_ebpf_detector_score_mode")
+          if sm is not None and float(sm) == 1:
+            score_mode = "scaled"
+          elif threshold is not None and 0 < threshold < 1:
+            score_mode = "scaled"  # heuristic: threshold in (0,1) usually means scaled
+          else:
+            score_mode = "raw"
         except Exception:
           pass
-      # Format data for chart: time buckets with counts per event type and mean anomaly score
+      # Format data for chart: time buckets with counts per event type and mean anomaly score (scaled + raw)
       time_buckets = []
       for poll_data in history:
         poll_time_iso = datetime.fromtimestamp(poll_data["time"], tz=timezone.utc).strftime("%H:%M:%S")
@@ -555,9 +575,11 @@ class Handler(BaseHTTPRequestHandler):
           "counts": poll_data["counts"],
           "mean_score": poll_data.get("mean_score"),
           "max_score": poll_data.get("max_score"),
+          "mean_score_raw": poll_data.get("mean_score_raw"),
+          "max_score_raw": poll_data.get("max_score_raw"),
         })
       
-      self._json({"time_buckets": time_buckets, "threshold": threshold})
+      self._json({"time_buckets": time_buckets, "threshold": threshold, "score_mode": score_mode})
       return
 
     self.send_response(404)

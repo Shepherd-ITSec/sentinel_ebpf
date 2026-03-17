@@ -75,7 +75,7 @@ The sentinel-ebpf system consists of **3 main containers** (plus 1 init containe
   - `/metrics` - Prometheus metrics
 
 ### Environment Variables (Model Configuration):
-- `DETECTOR_MODEL_ALGORITHM` - Algorithm: `halfspacetrees`, `loda`, or `memstream`
+- `DETECTOR_MODEL_ALGORITHM` - Algorithm: `halfspacetrees`, `loda`, `loda_ema`, or `memstream`
 - `DETECTOR_THRESHOLD` - Anomaly score threshold (0-1)
 - `DETECTOR_HST_*` - Half-Space Trees parameters
 - `DETECTOR_LODA_*` - LODA parameters

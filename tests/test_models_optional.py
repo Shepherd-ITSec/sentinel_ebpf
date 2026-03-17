@@ -18,7 +18,7 @@ def test_loda_detects_anomaly_shift():
     return {f"f{i}": float(v) for i, v in enumerate(vec)}
 
   detector = OnlineAnomalyDetector(
-    algorithm="loda",
+    algorithm="loda_ema",
     loda_n_projections=10,
     loda_bins=32,
     loda_range=3.0,
@@ -34,12 +34,12 @@ def test_loda_detects_anomaly_shift():
   normal_scores = []
   for _ in range(20):
     x = rng.normal(0.0, 1.0, size=9)
-    normal_scores.append(detector.score_and_learn(make_features(x)))
+    normal_scores.append(detector.score_and_learn(make_features(x))[1])
 
   anomaly_scores = []
   for _ in range(20):
     x = rng.normal(12.0, 1.0, size=9)
-    anomaly_scores.append(detector.score_and_learn(make_features(x)))
+    anomaly_scores.append(detector.score_and_learn(make_features(x))[1])
 
   assert np.mean(anomaly_scores) > np.mean(normal_scores)
 
@@ -67,11 +67,11 @@ def test_memstream_detects_anomaly_shift():
   normal_scores = []
   for _ in range(20):
     x = rng.normal(0.0, 1.0, size=9)
-    normal_scores.append(detector.score_and_learn(make_features(x)))
+    normal_scores.append(detector.score_and_learn(make_features(x))[1])
 
   anomaly_scores = []
   for _ in range(20):
     x = rng.normal(6.0, 1.0, size=9)
-    anomaly_scores.append(detector.score_and_learn(make_features(x)))
+    anomaly_scores.append(detector.score_and_learn(make_features(x))[1])
 
   assert np.mean(anomaly_scores) > np.mean(normal_scores) + 0.05

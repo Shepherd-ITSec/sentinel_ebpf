@@ -45,7 +45,7 @@ def test_kitnet_scores_before_learning(monkeypatch):
     seed=0,
   )
 
-  score = detector.score_and_learn(_make_features())
+  _, score = detector.score_and_learn(_make_features())
   assert np.isclose(score, 1.0 - np.exp(-2.0))
 
   assert detector._model is not None
@@ -73,7 +73,7 @@ def test_kitnet_non_finite_raw_score_falls_back_to_zero(monkeypatch, caplog):
   detector._model.score_value = float("nan")
 
   with caplog.at_level(logging.WARNING):
-    score = detector.score_and_learn(_make_features())
+    _, score = detector.score_and_learn(_make_features())
 
   assert score == 0.0
   assert "KitNet produced non-finite score" in caplog.text
@@ -91,7 +91,7 @@ def test_kitnet_cold_start_missing_internal_model_attribute(monkeypatch):
     seed=0,
   )
 
-  score = detector.score_and_learn(_make_features())
+  _, score = detector.score_and_learn(_make_features())
   assert score == 0.0
   assert detector._model is not None
   assert [name for name, _ in detector._model.calls] == ["score_partial", "fit_partial"]

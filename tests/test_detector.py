@@ -1,8 +1,10 @@
 """Tests for detector/server.py."""
 import json
 import os
+import time
 
 import pytest
+from google.protobuf.empty_pb2 import Empty
 
 import events_pb2
 from detector.config import DetectorConfig
@@ -13,9 +15,13 @@ class TestDetector:
   """Test detector service."""
 
   def test_now_timestamp(self):
+    before = time.time()
     ts = _now_timestamp()
-    assert ts is not None
+    after = time.time()
     assert ts.seconds > 0
+    assert 0 <= ts.nanos < 1_000_000_000
+    ts_float = ts.seconds + (ts.nanos / 1_000_000_000)
+    assert before <= ts_float <= after
 
   def test_detector_init(self):
     cfg = DetectorConfig(port=50051)
@@ -45,6 +51,7 @@ class TestDetector:
     resp = detector._score_event(evt)
     assert resp.event_id == "test-123"
     assert 0.0 <= resp.score <= 1.0
+    assert hasattr(resp, "score_raw") and resp.score_raw >= 0
 
   @pytest.mark.asyncio
   async def test_stream_events(self):
@@ -81,7 +88,7 @@ class TestDetector:
   async def test_score_event_loda(self):
     """Test LODA scoring path."""
     cfg = DetectorConfig(
-      model_algorithm="loda",
+      model_algorithm="loda_ema",
       loda_n_projections=5,
       loda_bins=8,
       loda_range=2.0,
@@ -177,6 +184,85 @@ class TestDetector:
     assert 0.0 <= resp.score <= 1.0
 
   @pytest.mark.asyncio
+  async def test_score_event_latentcluster(self):
+    """Test latent-clustering scoring path."""
+    cfg = DetectorConfig(
+      model_algorithm="latentcluster",
+      freq1d_bins=32,
+      freq1d_alpha=1.0,
+      freq1d_decay=1.0,
+      freq1d_max_categories=128,
+      latentcluster_max_clusters=4,
+      latentcluster_spawn_threshold=4.0,
+      score_mode="scaled",
+    )
+    detector = RuleBasedDetector(cfg)
+
+    evt = events_pb2.EventEnvelope(
+      event_id="test-latentcluster",
+      event_name="openat",
+      event_type="",
+      ts_unix_nano=1234567890000000000,
+      data=["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
+    )
+
+    resp = detector._score_event(evt)
+    assert resp.event_id == "test-latentcluster"
+    assert 0.0 <= resp.score <= 1.0
+
+  @pytest.mark.asyncio
+  async def test_score_event_gausscop(self):
+    """Test GaussCop scoring path."""
+    cfg = DetectorConfig(
+      model_algorithm="gausscop",
+      gausscop_bins=32,
+      gausscop_alpha=1.0,
+      gausscop_decay=1.0,
+      gausscop_max_categories=128,
+      score_mode="scaled",
+    )
+    detector = RuleBasedDetector(cfg)
+
+    evt = events_pb2.EventEnvelope(
+      event_id="test-gausscop",
+      event_name="openat",
+      event_type="",
+      ts_unix_nano=1234567890000000000,
+      data=["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
+    )
+
+    resp = detector._score_event(evt)
+    assert resp.event_id == "test-gausscop"
+    assert 0.0 <= resp.score <= 1.0
+
+  @pytest.mark.asyncio
+  async def test_score_event_copulatree(self):
+    """Test CopulaTree scoring path."""
+    cfg = DetectorConfig(
+      model_algorithm="copulatree",
+      freq1d_bins=32,
+      freq1d_alpha=1.0,
+      freq1d_decay=1.0,
+      freq1d_max_categories=128,
+      copulatree_tree_update_interval=5,
+      copulatree_importance_window=10,
+      score_mode="scaled",
+    )
+    detector = RuleBasedDetector(cfg)
+
+    evt = events_pb2.EventEnvelope(
+      event_id="test-copulatree",
+      event_name="openat",
+      event_type="",
+      ts_unix_nano=1234567890000000000,
+      data=["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
+    )
+
+    resp = detector._score_event(evt)
+    assert resp.event_id == "test-copulatree"
+    assert 0.0 <= resp.score <= 1.0
+
+  @pytest.mark.asyncio
   async def test_score_event_knn(self):
     """Test KNN scoring path."""
     cfg = DetectorConfig(
@@ -214,7 +300,7 @@ class TestDetector:
     )
 
     resp = await detector.ReportAnomaly(report, None)
-    assert resp is not None
+    assert isinstance(resp, Empty)
 
   @pytest.mark.asyncio
   async def test_event_dump(self, tmp_path):
@@ -255,6 +341,7 @@ class TestDetector:
       assert row["event_name"] == "openat"
       assert "anomaly" in row
       assert "score" in row
+      assert "score_raw" in row
       assert "container_id" in row
       assert "attributes" in row
     finally:

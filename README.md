@@ -183,12 +183,12 @@ Supported operators: `=`, `in`, `startswith`, `contains`, `and`, `or`, `not`, pa
 
 Set via `detector.model.*` in Helm values:
 
-- `algorithm`: `halfspacetrees`, `loda`, `kitnet`, `memstream`, `zscore`, `knn`, or `freq1d`
+- `algorithm`: `halfspacetrees`, `loda`, `loda_ema`, `kitnet`, `memstream`, `zscore`, `knn`, `freq1d`, `gausscop`, `copulatree`, or `latentcluster`
 - `threshold`: anomaly threshold (interpreted in the space selected by `score_mode`)
   - `score_mode` (env: `DETECTOR_SCORE_MODE`): `raw` (default) or `scaled`
-- per-algorithm params: `hst_*`, `loda_*`, `kitnet_*`, `mem_*`, `zscore_*`, `knn_*`, `freq1d_*`, plus `seed`
+- per-algorithm params: `hst_*`, `loda_*`, `kitnet_*`, `mem_*`, `zscore_*`, `knn_*`, `freq1d_*`, `gausscop_*`, `copulatree_*`, `latentcluster_*`, plus `seed`
 - Model device selection via env var `DETECTOR_MODEL_DEVICE`: `auto` (default), `cpu`, or `cuda`
-- `loda` and `memstream` support CUDA; `halfspacetrees`, `kitnet`, `zscore`, `knn`, and `freq1d` run on CPU in this implementation
+- `loda_ema` and `memstream` support CUDA; `loda` (PySAD), `halfspacetrees`, `kitnet`, `zscore`, `knn`, `freq1d`, `gausscop`, `copulatree`, and `latentcluster` run on CPU
 
 
 The detector scores events online (streaming), no separate batch training phase required.

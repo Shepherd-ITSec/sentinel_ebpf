@@ -146,6 +146,21 @@ class TestDetectorConfig:
     os.environ["DETECTOR_FREQ1D_ALPHA"] = "0.75"
     os.environ["DETECTOR_FREQ1D_DECAY"] = "0.97"
     os.environ["DETECTOR_FREQ1D_MAX_CATEGORIES"] = "321"
+    os.environ["DETECTOR_FREQ1D_AGGREGATION"] = "topk_mean"
+    os.environ["DETECTOR_FREQ1D_TOPK"] = "5"
+    os.environ["DETECTOR_FREQ1D_SOFT_TOPK_TEMPERATURE"] = "0.3"
+    os.environ["DETECTOR_COPULATREE_U_CLAMP"] = "0.0002"
+    os.environ["DETECTOR_COPULATREE_REG"] = "0.07"
+    os.environ["DETECTOR_COPULATREE_MAX_FEATURES"] = "11"
+    os.environ["DETECTOR_COPULATREE_IMPORTANCE_WINDOW"] = "77"
+    os.environ["DETECTOR_COPULATREE_TREE_UPDATE_INTERVAL"] = "13"
+    os.environ["DETECTOR_COPULATREE_EDGE_SCORE_AGGREGATION"] = "topk_mean"
+    os.environ["DETECTOR_COPULATREE_EDGE_SCORE_TOPK"] = "4"
+    os.environ["DETECTOR_LATENTCLUSTER_MAX_CLUSTERS"] = "9"
+    os.environ["DETECTOR_LATENTCLUSTER_U_CLAMP"] = "0.0001"
+    os.environ["DETECTOR_LATENTCLUSTER_REG"] = "0.5"
+    os.environ["DETECTOR_LATENTCLUSTER_UPDATE_ALPHA"] = "0.2"
+    os.environ["DETECTOR_LATENTCLUSTER_SPAWN_THRESHOLD"] = "7.5"
     os.environ["DETECTOR_SCORE_MODE"] = "scaled"
     os.environ["DETECTOR_MODEL_DEVICE"] = "cpu"
     os.environ["DETECTOR_MODEL_SEED"] = "7"
@@ -175,6 +190,21 @@ class TestDetectorConfig:
       assert cfg.freq1d_alpha == 0.75
       assert cfg.freq1d_decay == 0.97
       assert cfg.freq1d_max_categories == 321
+      assert cfg.freq1d_aggregation == "topk_mean"
+      assert cfg.freq1d_topk == 5
+      assert cfg.freq1d_soft_topk_temperature == 0.3
+      assert cfg.copulatree_u_clamp == 0.0002
+      assert cfg.copulatree_reg == 0.07
+      assert cfg.copulatree_max_features == 11
+      assert cfg.copulatree_importance_window == 77
+      assert cfg.copulatree_tree_update_interval == 13
+      assert cfg.copulatree_edge_score_aggregation == "topk_mean"
+      assert cfg.copulatree_edge_score_topk == 4
+      assert cfg.latentcluster_max_clusters == 9
+      assert cfg.latentcluster_u_clamp == 0.0001
+      assert cfg.latentcluster_reg == 0.5
+      assert cfg.latentcluster_update_alpha == 0.2
+      assert cfg.latentcluster_spawn_threshold == 7.5
       assert cfg.score_mode == "scaled"
       assert cfg.model_device == "cpu"
       assert cfg.model_seed == 7
@@ -204,8 +234,34 @@ class TestDetectorConfig:
         "DETECTOR_FREQ1D_ALPHA",
         "DETECTOR_FREQ1D_DECAY",
         "DETECTOR_FREQ1D_MAX_CATEGORIES",
+        "DETECTOR_FREQ1D_AGGREGATION",
+        "DETECTOR_FREQ1D_TOPK",
+        "DETECTOR_FREQ1D_SOFT_TOPK_TEMPERATURE",
+        "DETECTOR_COPULATREE_U_CLAMP",
+        "DETECTOR_COPULATREE_REG",
+        "DETECTOR_COPULATREE_MAX_FEATURES",
+        "DETECTOR_COPULATREE_IMPORTANCE_WINDOW",
+        "DETECTOR_COPULATREE_TREE_UPDATE_INTERVAL",
+        "DETECTOR_COPULATREE_EDGE_SCORE_AGGREGATION",
+        "DETECTOR_COPULATREE_EDGE_SCORE_TOPK",
+        "DETECTOR_LATENTCLUSTER_MAX_CLUSTERS",
+        "DETECTOR_LATENTCLUSTER_U_CLAMP",
+        "DETECTOR_LATENTCLUSTER_REG",
+        "DETECTOR_LATENTCLUSTER_UPDATE_ALPHA",
+        "DETECTOR_LATENTCLUSTER_SPAWN_THRESHOLD",
         "DETECTOR_SCORE_MODE",
         "DETECTOR_MODEL_DEVICE",
         "DETECTOR_MODEL_SEED",
       ]:
         os.environ.pop(key, None)
+
+  def test_invalid_copulatree_aggregation(self):
+    os.environ["DETECTOR_COPULATREE_EDGE_SCORE_AGGREGATION"] = "median"
+    try:
+      try:
+        load_detector_config()
+        assert False, "expected ValueError"
+      except ValueError as exc:
+        assert "DETECTOR_COPULATREE_EDGE_SCORE_AGGREGATION" in str(exc)
+    finally:
+      os.environ.pop("DETECTOR_COPULATREE_EDGE_SCORE_AGGREGATION", None)

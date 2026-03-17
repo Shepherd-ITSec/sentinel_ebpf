@@ -8,6 +8,7 @@ feature vectors may have different sizes (different features) per event.
 import ast
 import hashlib
 from collections import OrderedDict
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Dict, Iterable
@@ -198,6 +199,13 @@ def _extract_feature_values(evt: events_pb2.EventEnvelope) -> tuple[float, ...]:
   minute_of_hour = (ts_s // 60) % 60
   minute_normalized = minute_of_hour / 60.0
 
+  dt = datetime.fromtimestamp(ts_s, tz=timezone.utc)
+  weekday = dt.weekday()  # 0=Monday, 6=Sunday
+  weekday_normalized = weekday / 7.0
+  day_of_month = dt.day
+  week_of_month = min(4, (day_of_month - 1) // 7 + 1)  # 1-4 (quarters of month)
+  week_of_month_normalized = (week_of_month - 1) / 3.0
+
   # --- Extended features (syscall-argument and context) ---
   # Numeric syscall ID (e.g. 42=connect, 257=openat) – helps distinguish call types
   event_id_val = max(0, _safe_int(event_id_str, default=0))
@@ -236,6 +244,8 @@ def _extract_feature_values(evt: events_pb2.EventEnvelope) -> tuple[float, ...]:
     arg1_norm,
     hour_normalized,
     minute_normalized,
+    weekday_normalized,
+    week_of_month_normalized,
     event_id_norm,
     flags_hash,
     path_depth_norm,
@@ -479,14 +489,16 @@ def extract_feature_dict(evt: events_pb2.EventEnvelope) -> Dict[str, float]:
     "arg1_norm": values[7],
     "hour_norm": values[8],
     "minute_norm": values[9],
-    "event_id_norm": values[10],
-    "flags_hash": values[11],
-    "path_depth_norm": values[12],
-    "path_prefix_hash": values[13],
-    "return_success": values[14],
-    "return_errno_norm": values[15],
-    "mount_ns_hash": values[16],
-    "hostname_hash": values[17],
+    "weekday_norm": values[10],
+    "week_of_month_norm": values[11],
+    "event_id_norm": values[12],
+    "flags_hash": values[13],
+    "path_depth_norm": values[14],
+    "path_prefix_hash": values[15],
+    "return_success": values[16],
+    "return_errno_norm": values[17],
+    "mount_ns_hash": values[18],
+    "hostname_hash": values[19],
   }
   out.update(_extract_general_online_stats(evt))
   event_type = (evt.event_type or "").strip().lower()

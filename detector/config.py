@@ -8,7 +8,7 @@ class DetectorConfig:
   events_http_port: int = 50052  # 0 to disable; serves GET /recent_events for UI log tail in gRPC mode
   recent_events_buffer_size: int = 10000  # Size of recent events ring buffer for UI (default: 10000)
   # River model configuration
-  model_algorithm: str = "freq1d"  # halfspacetrees | loda | kitnet | memstream | zscore | knn | freq1d
+  model_algorithm: str = "freq1d"  # halfspacetrees | loda_ema | kitnet | memstream | zscore | knn | freq1d | gausscop | copulatree | latentcluster
   threshold: float = 0.7  # Anomaly score threshold (0-1). Lower (e.g. 0.3) to flag more events when scores are mostly low.
   hst_n_trees: int = 25
   hst_height: int = 15
@@ -36,6 +36,34 @@ class DetectorConfig:
   freq1d_alpha: float = 1.0
   freq1d_decay: float = 1.0
   freq1d_max_categories: int = 65536
+  # Freq1D score aggregation (how per-feature surprisal is combined)
+  # - sum: sum of per-feature excess surprisal
+  # - mean: mean of per-feature excess surprisal
+  # - topk_mean: mean of top-K per-feature excess surprisal
+  # - soft_topk_mean: softmax-weighted mean (temperature-controlled)
+  freq1d_aggregation: str = "mean"  # sum | mean | topk_mean | soft_topk_mean
+  freq1d_topk: int = 8  # used by topk_mean and soft_topk_mean
+  freq1d_soft_topk_temperature: float = 0.25  # used by soft_topk_mean; smaller => closer to max
+  gausscop_bins: int = 65536
+  gausscop_alpha: float = 1.0
+  gausscop_decay: float = 1.0
+  gausscop_max_categories: int = 65536
+  gausscop_reg: float = 0.01
+  gausscop_u_clamp: float = 1e-6
+  gausscop_max_features: int = 30  # max features for copula (0 = use all, no selection)
+  gausscop_importance_window: int = 500  # events before first selection; also reselection interval
+  copulatree_u_clamp: float = 1e-6
+  copulatree_reg: float = 0.05
+  copulatree_max_features: int = 30  # max features for copula tree (0 = use all)
+  copulatree_importance_window: int = 500  # events before first selection; also reselection interval
+  copulatree_tree_update_interval: int = 100  # events between maximum-spanning-tree rebuilds
+  copulatree_edge_score_aggregation: str = "mean"  # sum | mean | topk_mean
+  copulatree_edge_score_topk: int = 8  # used by topk_mean
+  latentcluster_max_clusters: int = 8
+  latentcluster_u_clamp: float = 1e-6
+  latentcluster_reg: float = 0.25
+  latentcluster_update_alpha: float = 0.05
+  latentcluster_spawn_threshold: float = 6.0
   # score_mode: raw = use model.score_*_raw() and emit raw scores; scaled = use bounded [0,1] scores.
   score_mode: str = "raw"  # raw | scaled
   # auto: use CUDA when available, else CPU for torch-backed models (LODA, MemStream)
@@ -83,6 +111,97 @@ def load_config() -> DetectorConfig:
   freq1d_alpha = float(os.environ.get("DETECTOR_FREQ1D_ALPHA", str(defaults.freq1d_alpha)))
   freq1d_decay = float(os.environ.get("DETECTOR_FREQ1D_DECAY", str(defaults.freq1d_decay)))
   freq1d_max_categories = int(os.environ.get("DETECTOR_FREQ1D_MAX_CATEGORIES", str(defaults.freq1d_max_categories)))
+  freq1d_aggregation = os.environ.get("DETECTOR_FREQ1D_AGGREGATION", defaults.freq1d_aggregation).strip().lower()
+  if freq1d_aggregation not in ("sum", "mean", "topk_mean", "soft_topk_mean"):
+    raise ValueError(
+      f"Invalid DETECTOR_FREQ1D_AGGREGATION={freq1d_aggregation!r}; must be one of: sum, mean, topk_mean, soft_topk_mean"
+    )
+  freq1d_topk = int(os.environ.get("DETECTOR_FREQ1D_TOPK", str(defaults.freq1d_topk)))
+  if freq1d_topk <= 0:
+    raise ValueError(f"Invalid DETECTOR_FREQ1D_TOPK={freq1d_topk!r}; must be > 0")
+  freq1d_soft_topk_temperature = float(
+    os.environ.get("DETECTOR_FREQ1D_SOFT_TOPK_TEMPERATURE", str(defaults.freq1d_soft_topk_temperature))
+  )
+  if not (freq1d_soft_topk_temperature > 0.0):
+    raise ValueError(
+      f"Invalid DETECTOR_FREQ1D_SOFT_TOPK_TEMPERATURE={freq1d_soft_topk_temperature!r}; must be > 0"
+    )
+  gausscop_bins = int(os.environ.get("DETECTOR_GAUSSCOP_BINS", str(defaults.gausscop_bins)))
+  gausscop_alpha = float(os.environ.get("DETECTOR_GAUSSCOP_ALPHA", str(defaults.gausscop_alpha)))
+  gausscop_decay = float(os.environ.get("DETECTOR_GAUSSCOP_DECAY", str(defaults.gausscop_decay)))
+  gausscop_max_categories = int(os.environ.get("DETECTOR_GAUSSCOP_MAX_CATEGORIES", str(defaults.gausscop_max_categories)))
+  gausscop_reg = float(os.environ.get("DETECTOR_GAUSSCOP_REG", str(defaults.gausscop_reg)))
+  gausscop_u_clamp = float(os.environ.get("DETECTOR_GAUSSCOP_U_CLAMP", str(defaults.gausscop_u_clamp)))
+  gausscop_max_features = int(os.environ.get("DETECTOR_GAUSSCOP_MAX_FEATURES", str(defaults.gausscop_max_features)))
+  gausscop_importance_window = int(
+    os.environ.get("DETECTOR_GAUSSCOP_IMPORTANCE_WINDOW", str(defaults.gausscop_importance_window))
+  )
+  copulatree_u_clamp = float(os.environ.get("DETECTOR_COPULATREE_U_CLAMP", str(defaults.copulatree_u_clamp)))
+  if not (0.0 < copulatree_u_clamp < 0.5):
+    raise ValueError(f"Invalid DETECTOR_COPULATREE_U_CLAMP={copulatree_u_clamp!r}; must be in (0, 0.5)")
+  copulatree_reg = float(os.environ.get("DETECTOR_COPULATREE_REG", str(defaults.copulatree_reg)))
+  if not (copulatree_reg > 0.0):
+    raise ValueError(f"Invalid DETECTOR_COPULATREE_REG={copulatree_reg!r}; must be > 0")
+  copulatree_max_features = int(
+    os.environ.get("DETECTOR_COPULATREE_MAX_FEATURES", str(defaults.copulatree_max_features))
+  )
+  if copulatree_max_features < 0:
+    raise ValueError(f"Invalid DETECTOR_COPULATREE_MAX_FEATURES={copulatree_max_features!r}; must be >= 0")
+  copulatree_importance_window = int(
+    os.environ.get("DETECTOR_COPULATREE_IMPORTANCE_WINDOW", str(defaults.copulatree_importance_window))
+  )
+  if copulatree_importance_window <= 0:
+    raise ValueError(
+      f"Invalid DETECTOR_COPULATREE_IMPORTANCE_WINDOW={copulatree_importance_window!r}; must be > 0"
+    )
+  copulatree_tree_update_interval = int(
+    os.environ.get("DETECTOR_COPULATREE_TREE_UPDATE_INTERVAL", str(defaults.copulatree_tree_update_interval))
+  )
+  if copulatree_tree_update_interval <= 0:
+    raise ValueError(
+      f"Invalid DETECTOR_COPULATREE_TREE_UPDATE_INTERVAL={copulatree_tree_update_interval!r}; must be > 0"
+    )
+  copulatree_edge_score_aggregation = os.environ.get(
+    "DETECTOR_COPULATREE_EDGE_SCORE_AGGREGATION",
+    defaults.copulatree_edge_score_aggregation,
+  ).strip().lower()
+  if copulatree_edge_score_aggregation not in ("sum", "mean", "topk_mean"):
+    raise ValueError(
+      "Invalid DETECTOR_COPULATREE_EDGE_SCORE_AGGREGATION=%r; must be one of: sum, mean, topk_mean"
+      % copulatree_edge_score_aggregation
+    )
+  copulatree_edge_score_topk = int(
+    os.environ.get("DETECTOR_COPULATREE_EDGE_SCORE_TOPK", str(defaults.copulatree_edge_score_topk))
+  )
+  if copulatree_edge_score_topk <= 0:
+    raise ValueError(f"Invalid DETECTOR_COPULATREE_EDGE_SCORE_TOPK={copulatree_edge_score_topk!r}; must be > 0")
+  latentcluster_max_clusters = int(
+    os.environ.get("DETECTOR_LATENTCLUSTER_MAX_CLUSTERS", str(defaults.latentcluster_max_clusters))
+  )
+  if latentcluster_max_clusters <= 0:
+    raise ValueError(f"Invalid DETECTOR_LATENTCLUSTER_MAX_CLUSTERS={latentcluster_max_clusters!r}; must be > 0")
+  latentcluster_u_clamp = float(
+    os.environ.get("DETECTOR_LATENTCLUSTER_U_CLAMP", str(defaults.latentcluster_u_clamp))
+  )
+  if not (0.0 < latentcluster_u_clamp < 0.5):
+    raise ValueError(f"Invalid DETECTOR_LATENTCLUSTER_U_CLAMP={latentcluster_u_clamp!r}; must be in (0, 0.5)")
+  latentcluster_reg = float(os.environ.get("DETECTOR_LATENTCLUSTER_REG", str(defaults.latentcluster_reg)))
+  if not (latentcluster_reg > 0.0):
+    raise ValueError(f"Invalid DETECTOR_LATENTCLUSTER_REG={latentcluster_reg!r}; must be > 0")
+  latentcluster_update_alpha = float(
+    os.environ.get("DETECTOR_LATENTCLUSTER_UPDATE_ALPHA", str(defaults.latentcluster_update_alpha))
+  )
+  if not (0.0 < latentcluster_update_alpha <= 1.0):
+    raise ValueError(
+      f"Invalid DETECTOR_LATENTCLUSTER_UPDATE_ALPHA={latentcluster_update_alpha!r}; must be in (0, 1]"
+    )
+  latentcluster_spawn_threshold = float(
+    os.environ.get("DETECTOR_LATENTCLUSTER_SPAWN_THRESHOLD", str(defaults.latentcluster_spawn_threshold))
+  )
+  if not (latentcluster_spawn_threshold > 0.0):
+    raise ValueError(
+      f"Invalid DETECTOR_LATENTCLUSTER_SPAWN_THRESHOLD={latentcluster_spawn_threshold!r}; must be > 0"
+    )
   score_mode = os.environ.get("DETECTOR_SCORE_MODE", defaults.score_mode).strip().lower()
   if score_mode not in ("raw", "scaled"):
     raise ValueError(f"Invalid DETECTOR_SCORE_MODE={score_mode!r}; must be 'raw' or 'scaled'")
@@ -121,6 +240,29 @@ def load_config() -> DetectorConfig:
     freq1d_alpha=freq1d_alpha,
     freq1d_decay=freq1d_decay,
     freq1d_max_categories=freq1d_max_categories,
+    freq1d_aggregation=freq1d_aggregation,
+    freq1d_topk=freq1d_topk,
+    freq1d_soft_topk_temperature=freq1d_soft_topk_temperature,
+    gausscop_bins=gausscop_bins,
+    gausscop_alpha=gausscop_alpha,
+    gausscop_decay=gausscop_decay,
+    gausscop_max_categories=gausscop_max_categories,
+    gausscop_reg=gausscop_reg,
+    gausscop_u_clamp=gausscop_u_clamp,
+    gausscop_max_features=gausscop_max_features,
+    gausscop_importance_window=gausscop_importance_window,
+    copulatree_u_clamp=copulatree_u_clamp,
+    copulatree_reg=copulatree_reg,
+    copulatree_max_features=copulatree_max_features,
+    copulatree_importance_window=copulatree_importance_window,
+    copulatree_tree_update_interval=copulatree_tree_update_interval,
+    copulatree_edge_score_aggregation=copulatree_edge_score_aggregation,
+    copulatree_edge_score_topk=copulatree_edge_score_topk,
+    latentcluster_max_clusters=latentcluster_max_clusters,
+    latentcluster_u_clamp=latentcluster_u_clamp,
+    latentcluster_reg=latentcluster_reg,
+    latentcluster_update_alpha=latentcluster_update_alpha,
+    latentcluster_spawn_threshold=latentcluster_spawn_threshold,
     score_mode=score_mode,
     model_device=model_device,
     model_seed=model_seed,

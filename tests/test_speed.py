@@ -166,12 +166,89 @@ def detector_available(detector_url):
         pytest.skip(f"Detector not available at {detector_url}")
 
 
+def _wait_for_event_ingestion(monitor: DetectorMonitor, timeout_sec: float = 4.0) -> bool:
+    """Return True if detector event count increases within timeout."""
+    initial = monitor.get_metrics()
+    if not initial or "events_total" not in initial:
+        return False
+
+    initial_count = int(initial["events_total"])
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        time.sleep(0.25)
+        current = monitor.get_metrics()
+        if current and int(current.get("events_total", initial_count)) > initial_count:
+            return True
+    return False
+
+
+@pytest.fixture
+def probe_event_flow_available(temp_dir, detector_url, detector_available):
+    """Ensure probe->detector event flow is active for speed tests."""
+    monitor = DetectorMonitor(detector_url)
+    generator = EventGenerator(rate=200, duration=1.0, temp_dir=temp_dir)
+    generator.start()
+    while generator.thread and generator.thread.is_alive():
+        time.sleep(0.1)
+    generator.stop()
+
+    if not _wait_for_event_ingestion(monitor):
+        pytest.skip(
+            "Probe event flow is not active for speed test path. "
+            "Start probe/rules that capture the test directory."
+        )
+
+
+def _run_speed_trial(rate: int, duration: float, temp_dir: Path, detector_url: str) -> dict:
+    """Run one generation/monitoring trial and return derived metrics."""
+    monitor = DetectorMonitor(detector_url)
+    monitor.start_monitoring()
+
+    generator = EventGenerator(rate=rate, duration=duration, temp_dir=temp_dir)
+    generator.start()
+    while generator.thread and generator.thread.is_alive():
+        time.sleep(0.5)
+    generator.stop()
+
+    monitor.stop_monitoring()
+    gen_stats = generator.get_stats()
+    det_stats = monitor.get_stats()
+    assert gen_stats is not None, "Failed to generate events"
+    assert det_stats is not None, "Failed to collect detector stats"
+
+    events_generated = int(gen_stats["events_generated"])
+    events_processed = int(det_stats["events_processed"])
+    elapsed = float(gen_stats["elapsed_time"])
+    throughput = events_processed / elapsed if elapsed > 0 else 0.0
+    efficiency = (events_processed / events_generated * 100.0) if events_generated > 0 else 0.0
+    drop_rate = max(0.0, 100.0 - efficiency)
+    return {
+        "events_generated": events_generated,
+        "events_processed": events_processed,
+        "elapsed_time": elapsed,
+        "throughput": throughput,
+        "efficiency": efficiency,
+        "drop_rate": drop_rate,
+    }
+
+
+def _print_trial_stats(label: str, rate: int, stats: dict) -> None:
+    """Emit consistent debug output for speed tests."""
+    print(f"\nSpeed Test Results ({label}):")
+    print(f"  Target Rate: {rate} events/sec")
+    print(f"  Events Generated: {stats['events_generated']}")
+    print(f"  Events Processed: {stats['events_processed']}")
+    print(f"  Throughput: {stats['throughput']:.1f} events/sec")
+    print(f"  Efficiency: {stats['efficiency']:.2f}%")
+    print(f"  Drop Rate: {stats['drop_rate']:.2f}%")
+
+
 class TestSpeed:
     """Performance tests for probe throughput."""
 
     @pytest.mark.integration
     @pytest.mark.slow
-    def test_throughput_low_rate(self, temp_dir, detector_url, detector_available):
+    def test_throughput_low_rate(self, temp_dir, detector_url, probe_event_flow_available):
         """Test throughput at low rate (1000 events/sec).
         
         Note: This test requires both the probe and detector to be running.
@@ -184,37 +261,12 @@ class TestSpeed:
         rate = 1000
         duration = 5.0
 
-        monitor = DetectorMonitor(detector_url)
-        monitor.start_monitoring()
-
-        generator = EventGenerator(rate=rate, duration=duration, temp_dir=temp_dir)
-        generator.start()
-
-        while generator.thread and generator.thread.is_alive():
-            time.sleep(0.5)
-
-        generator.stop()
-        monitor.stop_monitoring()
-
-        gen_stats = generator.get_stats()
-        det_stats = monitor.get_stats()
-
-        assert gen_stats is not None, "Failed to generate events"
-        assert det_stats is not None, "Failed to collect detector stats"
-
-        events_processed = det_stats["events_processed"]
-        events_generated = gen_stats["events_generated"]
-        throughput = events_processed / gen_stats["elapsed_time"] if gen_stats["elapsed_time"] > 0 else 0
-        efficiency = (events_processed / events_generated * 100) if events_generated > 0 else 0
-
-        # Print results for debugging
-        print(f"\nSpeed Test Results (low rate):")
-        print(f"  Target Rate: {rate} events/sec")
-        print(f"  Events Generated: {events_generated}")
-        print(f"  Events Processed: {events_processed}")
-        print(f"  Throughput: {throughput:.1f} events/sec")
-        print(f"  Efficiency: {efficiency:.2f}%")
-        print(f"  Drop Rate: {100 - efficiency:.2f}%")
+        stats = _run_speed_trial(rate=rate, duration=duration, temp_dir=temp_dir, detector_url=detector_url)
+        _print_trial_stats("low rate", rate, stats)
+        events_processed = stats["events_processed"]
+        events_generated = stats["events_generated"]
+        throughput = stats["throughput"]
+        efficiency = stats["efficiency"]
 
         # Basic check: some events should be processed
         assert events_processed > 0, (
@@ -241,44 +293,17 @@ class TestSpeed:
 
     @pytest.mark.integration
     @pytest.mark.slow
-    def test_throughput_medium_rate(self, temp_dir, detector_url, detector_available):
+    def test_throughput_medium_rate(self, temp_dir, detector_url, probe_event_flow_available):
         """Test throughput at medium rate (5000 events/sec)."""
         rate = 5000
         duration = 10.0
 
-        monitor = DetectorMonitor(detector_url)
-        monitor.start_monitoring()
-
-        generator = EventGenerator(rate=rate, duration=duration, temp_dir=temp_dir)
-        generator.start()
-
-        while generator.thread and generator.thread.is_alive():
-            time.sleep(0.5)
-
-        generator.stop()
-        monitor.stop_monitoring()
-
-        gen_stats = generator.get_stats()
-        det_stats = monitor.get_stats()
-
-        assert gen_stats is not None, "Failed to generate events"
-        assert det_stats is not None, "Failed to collect detector stats"
-
-        events_processed = det_stats["events_processed"]
-        events_generated = gen_stats["events_generated"]
-        throughput = events_processed / gen_stats["elapsed_time"]
-        drop_rate = ((events_generated - events_processed) / events_generated * 100) if events_generated > 0 else 0
-
-        efficiency = (events_processed / events_generated * 100) if events_generated > 0 else 0
-        
-        # Print results for debugging
-        print(f"\nSpeed Test Results (medium rate):")
-        print(f"  Target Rate: {rate} events/sec")
-        print(f"  Events Generated: {events_generated}")
-        print(f"  Events Processed: {events_processed}")
-        print(f"  Throughput: {throughput:.1f} events/sec")
-        print(f"  Efficiency: {efficiency:.2f}%")
-        print(f"  Drop Rate: {drop_rate:.2f}%")
+        stats = _run_speed_trial(rate=rate, duration=duration, temp_dir=temp_dir, detector_url=detector_url)
+        _print_trial_stats("medium rate", rate, stats)
+        events_processed = stats["events_processed"]
+        events_generated = stats["events_generated"]
+        throughput = stats["throughput"]
+        efficiency = stats["efficiency"]
 
         # Basic check: some events should be processed
         assert events_processed > 0, (
@@ -302,44 +327,17 @@ class TestSpeed:
 
     @pytest.mark.integration
     @pytest.mark.slow
-    def test_throughput_high_rate(self, temp_dir, detector_url, detector_available):
+    def test_throughput_high_rate(self, temp_dir, detector_url, probe_event_flow_available):
         """Test throughput at high rate (10000 events/sec)."""
         rate = 10000
         duration = 10.0
 
-        monitor = DetectorMonitor(detector_url)
-        monitor.start_monitoring()
-
-        generator = EventGenerator(rate=rate, duration=duration, temp_dir=temp_dir)
-        generator.start()
-
-        while generator.thread and generator.thread.is_alive():
-            time.sleep(0.5)
-
-        generator.stop()
-        monitor.stop_monitoring()
-
-        gen_stats = generator.get_stats()
-        det_stats = monitor.get_stats()
-
-        assert gen_stats is not None, "Failed to generate events"
-        assert det_stats is not None, "Failed to collect detector stats"
-
-        events_processed = det_stats["events_processed"]
-        events_generated = gen_stats["events_generated"]
-        throughput = events_processed / gen_stats["elapsed_time"]
-        drop_rate = ((events_generated - events_processed) / events_generated * 100) if events_generated > 0 else 0
-
-        efficiency = (events_processed / events_generated * 100) if events_generated > 0 else 0
-        
-        # Print results for debugging
-        print(f"\nSpeed Test Results (high rate):")
-        print(f"  Target Rate: {rate} events/sec")
-        print(f"  Events Generated: {events_generated}")
-        print(f"  Events Processed: {events_processed}")
-        print(f"  Throughput: {throughput:.1f} events/sec")
-        print(f"  Efficiency: {efficiency:.2f}%")
-        print(f"  Drop Rate: {drop_rate:.2f}%")
+        stats = _run_speed_trial(rate=rate, duration=duration, temp_dir=temp_dir, detector_url=detector_url)
+        _print_trial_stats("high rate", rate, stats)
+        events_processed = stats["events_processed"]
+        events_generated = stats["events_generated"]
+        throughput = stats["throughput"]
+        efficiency = stats["efficiency"]
 
         # Basic check: some events should be processed
         assert events_processed > 0, (
@@ -363,48 +361,21 @@ class TestSpeed:
 
     @pytest.mark.integration
     @pytest.mark.slow
-    def test_throughput_custom_rate(self, temp_dir, detector_url, detector_available):
+    def test_throughput_custom_rate(self, temp_dir, detector_url, probe_event_flow_available):
         """Test throughput at custom rate from environment variable."""
         rate = int(os.environ.get("SPEED_TEST_RATE", "2000"))
         duration = float(os.environ.get("SPEED_TEST_DURATION", "5.0"))
 
-        monitor = DetectorMonitor(detector_url)
-        monitor.start_monitoring()
-
-        generator = EventGenerator(rate=rate, duration=duration, temp_dir=temp_dir)
-        generator.start()
-
-        while generator.thread and generator.thread.is_alive():
-            time.sleep(0.5)
-
-        generator.stop()
-        monitor.stop_monitoring()
-
-        gen_stats = generator.get_stats()
-        det_stats = monitor.get_stats()
-
-        assert gen_stats is not None, "Failed to generate events"
-        assert det_stats is not None, "Failed to collect detector stats"
-
-        events_processed = det_stats["events_processed"]
-        events_generated = gen_stats["events_generated"]
-        throughput = events_processed / gen_stats["elapsed_time"]
-        efficiency = (events_processed / events_generated * 100) if events_generated > 0 else 0
-
-        # Print results for debugging
-        print(f"\nSpeed Test Results:")
-        print(f"  Target Rate: {rate} events/sec")
-        print(f"  Events Generated: {events_generated}")
-        print(f"  Events Processed: {events_processed}")
-        print(f"  Throughput: {throughput:.1f} events/sec")
-        print(f"  Efficiency: {efficiency:.2f}%")
+        stats = _run_speed_trial(rate=rate, duration=duration, temp_dir=temp_dir, detector_url=detector_url)
+        _print_trial_stats("custom rate", rate, stats)
+        events_processed = stats["events_processed"]
 
         # Basic assertion - should process some events
         assert events_processed > 0, "No events were processed"
 
     @pytest.mark.integration
     @pytest.mark.slow
-    def test_find_max_throughput(self, temp_dir, detector_url, detector_available):
+    def test_find_max_throughput(self, temp_dir, detector_url, probe_event_flow_available):
         """Find maximum sustainable throughput (can be skipped for CI)."""
         if os.environ.get("SKIP_MAX_THROUGHPUT_TEST") == "1":
             pytest.skip("Max throughput test skipped")
@@ -419,46 +390,31 @@ class TestSpeed:
         current_rate = start_rate
 
         while current_rate <= max_rate:
-            monitor = DetectorMonitor(detector_url)
-            monitor.start_monitoring()
+            stats = _run_speed_trial(
+                rate=current_rate, duration=duration, temp_dir=temp_dir, detector_url=detector_url
+            )
+            throughput = stats["throughput"]
+            drop_rate = stats["drop_rate"]
 
-            generator = EventGenerator(rate=current_rate, duration=duration, temp_dir=temp_dir)
-            generator.start()
+            results.append(
+                {
+                    "rate": current_rate,
+                    "throughput": throughput,
+                    "drop_rate": drop_rate,
+                    "events_generated": stats["events_generated"],
+                    "events_processed": stats["events_processed"],
+                }
+            )
 
-            while generator.thread and generator.thread.is_alive():
-                time.sleep(0.5)
+            print(f"Rate: {current_rate} events/sec, Throughput: {throughput:.1f}, Drop: {drop_rate:.2f}%")
 
-            generator.stop()
-            monitor.stop_monitoring()
+            # Stop if drop rate exceeds threshold
+            if drop_rate > max_drop_rate:
+                break
 
-            gen_stats = generator.get_stats()
-            det_stats = monitor.get_stats()
-
-            if gen_stats and det_stats:
-                events_processed = det_stats["events_processed"]
-                events_generated = gen_stats["events_generated"]
-                throughput = events_processed / gen_stats["elapsed_time"]
-                drop_rate = ((events_generated - events_processed) / events_generated * 100) if events_generated > 0 else 0
-
-                results.append(
-                    {
-                        "rate": current_rate,
-                        "throughput": throughput,
-                        "drop_rate": drop_rate,
-                        "events_generated": events_generated,
-                        "events_processed": events_processed,
-                    }
-                )
-
-                print(f"Rate: {current_rate} events/sec, Throughput: {throughput:.1f}, Drop: {drop_rate:.2f}%")
-
-                # Stop if drop rate exceeds threshold
-                if drop_rate > max_drop_rate:
-                    break
-
-                # Stop if throughput is significantly lower than target
-                if throughput < current_rate * 0.7:
-                    break
+            # Stop if throughput is significantly lower than target
+            if throughput < current_rate * 0.7:
+                break
 
             current_rate += step
             time.sleep(1)  # Brief pause between tests

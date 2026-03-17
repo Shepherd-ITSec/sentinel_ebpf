@@ -46,6 +46,135 @@ MAX_RULES = 24
 MAX_PREFIX_LEN = 24
 COMM_LEN = 16
 
+PROBE_METRIC_SPECS = [
+  (
+    "sentinel_ebpf_probe_events_sent_total",
+    "Total number of events sent to detector",
+    "counter",
+    0,
+    "int",
+  ),
+  (
+    "sentinel_ebpf_probe_queue_size",
+    "Current number of events in queue",
+    "gauge",
+    0,
+    "int",
+  ),
+  (
+    "sentinel_ebpf_probe_queue_capacity",
+    "Configured max queue capacity",
+    "gauge",
+    0,
+    "int",
+  ),
+  (
+    "sentinel_ebpf_probe_events_dropped_total",
+    "Total number of events dropped (queue full)",
+    "counter",
+    0,
+    "int",
+  ),
+  (
+    "sentinel_ebpf_probe_rules_compiled",
+    "Total number of compiled userspace rules",
+    "gauge",
+    0,
+    "int",
+  ),
+  (
+    "sentinel_ebpf_probe_rules_loaded",
+    "Total number of rules loaded into BPF map",
+    "gauge",
+    0,
+    "int",
+  ),
+  (
+    "sentinel_ebpf_probe_rules_truncated_total",
+    "Total number of compiled rules dropped due to MAX_RULES cap",
+    "gauge",
+    0,
+    "int",
+  ),
+  (
+    "sentinel_ebpf_probe_kernel_compiled_predicates",
+    "Total predicates compiled to kernel prefilter",
+    "gauge",
+    0,
+    "int",
+  ),
+  (
+    "sentinel_ebpf_probe_kernel_fallback_predicates",
+    "Total predicates evaluated in userspace fallback",
+    "gauge",
+    0,
+    "int",
+  ),
+  (
+    "sentinel_ebpf_probe_kernel_branches_total",
+    "Total DNF branches from condition rules",
+    "gauge",
+    0,
+    "int",
+  ),
+  (
+    "sentinel_ebpf_probe_kernel_branches_compiled",
+    "Total DNF branches partially/fully compiled to kernel",
+    "gauge",
+    0,
+    "int",
+  ),
+  (
+    "sentinel_ebpf_probe_kernel_branches_impossible",
+    "Total DNF branches eliminated as impossible",
+    "gauge",
+    0,
+    "int",
+  ),
+  (
+    "sentinel_ebpf_probe_host_cpu_usage_percent",
+    "Host CPU usage percent",
+    "gauge",
+    0.0,
+    "float2",
+  ),
+  (
+    "sentinel_ebpf_probe_host_memory_used_bytes",
+    "Host used memory in bytes",
+    "gauge",
+    0,
+    "int",
+  ),
+  (
+    "sentinel_ebpf_probe_host_memory_total_bytes",
+    "Host total memory in bytes",
+    "gauge",
+    0,
+    "int",
+  ),
+  (
+    "sentinel_ebpf_probe_host_memory_usage_percent",
+    "Host memory usage percent",
+    "gauge",
+    0.0,
+    "float2",
+  ),
+  (
+    "sentinel_ebpf_probe_host_load1",
+    "Host load average (1m)",
+    "gauge",
+    0.0,
+    "float3",
+  ),
+  (
+    "sentinel_ebpf_probe_host_cpu_count",
+    "Host CPU core count",
+    "gauge",
+    1,
+    "int",
+  ),
+]
+
 
 class BpfRule(ctypes.Structure):
   _fields_ = [
@@ -91,6 +220,72 @@ def _event_attributes(meta: dict) -> dict:
   if node:
     attrs["node"] = node
   return attrs
+
+
+def _format_probe_metric(value, fmt: str) -> str:
+  if fmt == "float2":
+    return f"{float(value):.2f}"
+  if fmt == "float3":
+    return f"{float(value):.3f}"
+  return str(int(value))
+
+
+def _probe_metrics_snapshot(probe_runner) -> dict:
+  metrics = {name: default for name, _help, _type, default, _fmt in PROBE_METRIC_SPECS}
+  if not probe_runner or not hasattr(probe_runner, "streamer"):
+    return metrics
+
+  streamer = probe_runner.streamer
+  with streamer._lock:
+    metrics["sentinel_ebpf_probe_queue_size"] = len(streamer._queue)
+    metrics["sentinel_ebpf_probe_events_dropped_total"] = streamer._drop_count
+    metrics["sentinel_ebpf_probe_queue_capacity"] = streamer._queue.maxlen or 0
+
+  with streamer._events_sent_lock:
+    metrics["sentinel_ebpf_probe_events_sent_total"] = streamer._events_sent
+
+  metrics["sentinel_ebpf_probe_rules_compiled"] = getattr(probe_runner, "_compiled_rule_count", 0)
+  metrics["sentinel_ebpf_probe_rules_loaded"] = getattr(probe_runner, "_loaded_rule_count", 0)
+  metrics["sentinel_ebpf_probe_rules_truncated_total"] = max(
+    0, metrics["sentinel_ebpf_probe_rules_compiled"] - metrics["sentinel_ebpf_probe_rules_loaded"]
+  )
+  metrics["sentinel_ebpf_probe_kernel_compiled_predicates"] = getattr(
+    probe_runner, "_kernel_compiled_predicates", 0
+  )
+  metrics["sentinel_ebpf_probe_kernel_fallback_predicates"] = getattr(
+    probe_runner, "_kernel_fallback_predicates", 0
+  )
+  metrics["sentinel_ebpf_probe_kernel_branches_total"] = getattr(probe_runner, "_kernel_branches_total", 0)
+  metrics["sentinel_ebpf_probe_kernel_branches_compiled"] = getattr(
+    probe_runner, "_kernel_branches_compiled", 0
+  )
+  metrics["sentinel_ebpf_probe_kernel_branches_impossible"] = getattr(
+    probe_runner, "_kernel_branches_impossible", 0
+  )
+
+  host = probe_runner.host_metrics.collect() if getattr(probe_runner, "host_metrics", None) else {}
+  metrics["sentinel_ebpf_probe_host_cpu_usage_percent"] = host.get("cpu_usage_percent", 0.0)
+  metrics["sentinel_ebpf_probe_host_memory_used_bytes"] = host.get("memory_used_bytes", 0)
+  metrics["sentinel_ebpf_probe_host_memory_total_bytes"] = host.get("memory_total_bytes", 0)
+  metrics["sentinel_ebpf_probe_host_memory_usage_percent"] = host.get("memory_usage_percent", 0.0)
+  metrics["sentinel_ebpf_probe_host_load1"] = host.get("load1", 0.0)
+  metrics["sentinel_ebpf_probe_host_cpu_count"] = host.get("cpu_count", 1)
+  return metrics
+
+
+def _render_probe_metrics(metrics: dict) -> str:
+  lines = []
+  for name, help_text, metric_type, default, fmt in PROBE_METRIC_SPECS:
+    value = metrics.get(name, default)
+    lines.extend(
+      [
+        f"# HELP {name} {help_text}",
+        f"# TYPE {name} {metric_type}",
+        f"{name} {_format_probe_metric(value, fmt)}",
+        "",
+      ]
+    )
+  return "\n".join(lines)
 
 
 class HostMetricsSampler:
@@ -304,36 +499,36 @@ class GrpcStreamer:
         events_sent_ref[0] = 0  # Reset per-stream counter
         
       except grpc.RpcError as rpc_err:
-        if channel:
-          await channel.close()
-          channel = None
-        with self._lock:
-          queue_size = len(self._queue)
-        # Update final count for this stream before resetting
-        if response_count > 0:
-          with self._events_sent_lock:
-            self._events_sent = initial_events_sent + response_count
-        
+        queue_size = self._queue_size()
+        channel = await self._reset_stream_state(channel, initial_events_sent, response_count)
         logging.error("grpc stream error: %s (events processed: %d, queue size: %d)", 
                      rpc_err, events_sent_ref[0], queue_size)
         await asyncio.sleep(backoff)
         backoff = min(backoff * 2, 30)
         events_sent_ref[0] = 0
       except Exception as exc:
-        if channel:
-          await channel.close()
-          channel = None
-        with self._lock:
-          queue_size = len(self._queue)
-        # Update final count for this stream before resetting
-        if response_count > 0:
-          with self._events_sent_lock:
-            self._events_sent = initial_events_sent + response_count
-        
+        queue_size = self._queue_size()
+        channel = await self._reset_stream_state(channel, initial_events_sent, response_count)
         logging.error("Unexpected error in gRPC stream: %s (queue size: %d)", exc, queue_size, exc_info=True)
         await asyncio.sleep(backoff)
         backoff = min(backoff * 2, 30)
         events_sent_ref[0] = 0
+
+  def _queue_size(self) -> int:
+    with self._lock:
+      return len(self._queue)
+
+  def _flush_sent_count(self, initial_events_sent: int, response_count: int) -> None:
+    if response_count <= 0:
+      return
+    with self._events_sent_lock:
+      self._events_sent = initial_events_sent + response_count
+
+  async def _reset_stream_state(self, channel, initial_events_sent: int, response_count: int):
+    if channel is not None:
+      await channel.close()
+    self._flush_sent_count(initial_events_sent, response_count)
+    return None
 
   def start(self):
     if self.cfg.stream.mode != "grpc":
@@ -435,181 +630,9 @@ class HealthHandler(BaseHTTPRequestHandler):
       self.send_response(200)
       self.send_header("Content-Type", "text/plain; version=0.0.4")
       self.end_headers()
-      
-      # Get metrics from probe runner if available
-      metrics_lines = []
-      
-      # Try to get probe runner instance (set by main)
       probe_runner = getattr(self.server, "_probe_runner", None)
-      if probe_runner and hasattr(probe_runner, "streamer"):
-        streamer = probe_runner.streamer
-        with streamer._lock:
-          queue_size = len(streamer._queue)
-          drop_count = streamer._drop_count
-        
-        with streamer._events_sent_lock:
-          events_sent = streamer._events_sent
-        
-        rules_compiled = getattr(probe_runner, "_compiled_rule_count", 0)
-        rules_loaded = getattr(probe_runner, "_loaded_rule_count", 0)
-        kernel_compiled_predicates = getattr(probe_runner, "_kernel_compiled_predicates", 0)
-        kernel_fallback_predicates = getattr(probe_runner, "_kernel_fallback_predicates", 0)
-        kernel_branches_total = getattr(probe_runner, "_kernel_branches_total", 0)
-        kernel_branches_compiled = getattr(probe_runner, "_kernel_branches_compiled", 0)
-        kernel_branches_impossible = getattr(probe_runner, "_kernel_branches_impossible", 0)
-        host = probe_runner.host_metrics.collect() if getattr(probe_runner, "host_metrics", None) else {}
-        metrics_lines.extend([
-          "# HELP sentinel_ebpf_probe_events_sent_total Total number of events sent to detector",
-          "# TYPE sentinel_ebpf_probe_events_sent_total counter",
-          f"sentinel_ebpf_probe_events_sent_total {events_sent}",
-          "",
-          "# HELP sentinel_ebpf_probe_queue_size Current number of events in queue",
-          "# TYPE sentinel_ebpf_probe_queue_size gauge",
-          f"sentinel_ebpf_probe_queue_size {queue_size}",
-          "",
-          "# HELP sentinel_ebpf_probe_queue_capacity Configured max queue capacity",
-          "# TYPE sentinel_ebpf_probe_queue_capacity gauge",
-          f"sentinel_ebpf_probe_queue_capacity {streamer._queue.maxlen}",
-          "",
-          "# HELP sentinel_ebpf_probe_events_dropped_total Total number of events dropped (queue full)",
-          "# TYPE sentinel_ebpf_probe_events_dropped_total counter",
-          f"sentinel_ebpf_probe_events_dropped_total {drop_count}",
-          "",
-          "# HELP sentinel_ebpf_probe_rules_compiled Total number of compiled userspace rules",
-          "# TYPE sentinel_ebpf_probe_rules_compiled gauge",
-          f"sentinel_ebpf_probe_rules_compiled {rules_compiled}",
-          "",
-          "# HELP sentinel_ebpf_probe_rules_loaded Total number of rules loaded into BPF map",
-          "# TYPE sentinel_ebpf_probe_rules_loaded gauge",
-          f"sentinel_ebpf_probe_rules_loaded {rules_loaded}",
-          "",
-          "# HELP sentinel_ebpf_probe_rules_truncated_total Total number of compiled rules dropped due to MAX_RULES cap",
-          "# TYPE sentinel_ebpf_probe_rules_truncated_total gauge",
-          f"sentinel_ebpf_probe_rules_truncated_total {max(0, rules_compiled - rules_loaded)}",
-          "",
-          "# HELP sentinel_ebpf_probe_kernel_compiled_predicates Total predicates compiled to kernel prefilter",
-          "# TYPE sentinel_ebpf_probe_kernel_compiled_predicates gauge",
-          f"sentinel_ebpf_probe_kernel_compiled_predicates {kernel_compiled_predicates}",
-          "",
-          "# HELP sentinel_ebpf_probe_kernel_fallback_predicates Total predicates evaluated in userspace fallback",
-          "# TYPE sentinel_ebpf_probe_kernel_fallback_predicates gauge",
-          f"sentinel_ebpf_probe_kernel_fallback_predicates {kernel_fallback_predicates}",
-          "",
-          "# HELP sentinel_ebpf_probe_kernel_branches_total Total DNF branches from condition rules",
-          "# TYPE sentinel_ebpf_probe_kernel_branches_total gauge",
-          f"sentinel_ebpf_probe_kernel_branches_total {kernel_branches_total}",
-          "",
-          "# HELP sentinel_ebpf_probe_kernel_branches_compiled Total DNF branches partially/fully compiled to kernel",
-          "# TYPE sentinel_ebpf_probe_kernel_branches_compiled gauge",
-          f"sentinel_ebpf_probe_kernel_branches_compiled {kernel_branches_compiled}",
-          "",
-          "# HELP sentinel_ebpf_probe_kernel_branches_impossible Total DNF branches eliminated as impossible",
-          "# TYPE sentinel_ebpf_probe_kernel_branches_impossible gauge",
-          f"sentinel_ebpf_probe_kernel_branches_impossible {kernel_branches_impossible}",
-          "",
-          "# HELP sentinel_ebpf_probe_host_cpu_usage_percent Host CPU usage percent",
-          "# TYPE sentinel_ebpf_probe_host_cpu_usage_percent gauge",
-          f"sentinel_ebpf_probe_host_cpu_usage_percent {host.get('cpu_usage_percent', 0.0):.2f}",
-          "",
-          "# HELP sentinel_ebpf_probe_host_memory_used_bytes Host used memory in bytes",
-          "# TYPE sentinel_ebpf_probe_host_memory_used_bytes gauge",
-          f"sentinel_ebpf_probe_host_memory_used_bytes {host.get('memory_used_bytes', 0)}",
-          "",
-          "# HELP sentinel_ebpf_probe_host_memory_total_bytes Host total memory in bytes",
-          "# TYPE sentinel_ebpf_probe_host_memory_total_bytes gauge",
-          f"sentinel_ebpf_probe_host_memory_total_bytes {host.get('memory_total_bytes', 0)}",
-          "",
-          "# HELP sentinel_ebpf_probe_host_memory_usage_percent Host memory usage percent",
-          "# TYPE sentinel_ebpf_probe_host_memory_usage_percent gauge",
-          f"sentinel_ebpf_probe_host_memory_usage_percent {host.get('memory_usage_percent', 0.0):.2f}",
-          "",
-          "# HELP sentinel_ebpf_probe_host_load1 Host load average (1m)",
-          "# TYPE sentinel_ebpf_probe_host_load1 gauge",
-          f"sentinel_ebpf_probe_host_load1 {host.get('load1', 0.0):.3f}",
-          "",
-          "# HELP sentinel_ebpf_probe_host_cpu_count Host CPU core count",
-          "# TYPE sentinel_ebpf_probe_host_cpu_count gauge",
-          f"sentinel_ebpf_probe_host_cpu_count {host.get('cpu_count', 1)}",
-          "",
-        ])
-      else:
-        # Fallback: at least return something if probe runner not available
-        metrics_lines.extend([
-          "# HELP sentinel_ebpf_probe_events_sent_total Total number of events sent to detector",
-          "# TYPE sentinel_ebpf_probe_events_sent_total counter",
-          "sentinel_ebpf_probe_events_sent_total 0",
-          "",
-          "# HELP sentinel_ebpf_probe_queue_size Current number of events in queue",
-          "# TYPE sentinel_ebpf_probe_queue_size gauge",
-          "sentinel_ebpf_probe_queue_size 0",
-          "",
-          "# HELP sentinel_ebpf_probe_queue_capacity Configured max queue capacity",
-          "# TYPE sentinel_ebpf_probe_queue_capacity gauge",
-          "sentinel_ebpf_probe_queue_capacity 0",
-          "",
-          "# HELP sentinel_ebpf_probe_events_dropped_total Total number of events dropped (queue full)",
-          "# TYPE sentinel_ebpf_probe_events_dropped_total counter",
-          "sentinel_ebpf_probe_events_dropped_total 0",
-          "",
-          "# HELP sentinel_ebpf_probe_rules_compiled Total number of compiled userspace rules",
-          "# TYPE sentinel_ebpf_probe_rules_compiled gauge",
-          "sentinel_ebpf_probe_rules_compiled 0",
-          "",
-          "# HELP sentinel_ebpf_probe_rules_loaded Total number of rules loaded into BPF map",
-          "# TYPE sentinel_ebpf_probe_rules_loaded gauge",
-          "sentinel_ebpf_probe_rules_loaded 0",
-          "",
-          "# HELP sentinel_ebpf_probe_rules_truncated_total Total number of compiled rules dropped due to MAX_RULES cap",
-          "# TYPE sentinel_ebpf_probe_rules_truncated_total gauge",
-          "sentinel_ebpf_probe_rules_truncated_total 0",
-          "",
-          "# HELP sentinel_ebpf_probe_kernel_compiled_predicates Total predicates compiled to kernel prefilter",
-          "# TYPE sentinel_ebpf_probe_kernel_compiled_predicates gauge",
-          "sentinel_ebpf_probe_kernel_compiled_predicates 0",
-          "",
-          "# HELP sentinel_ebpf_probe_kernel_fallback_predicates Total predicates evaluated in userspace fallback",
-          "# TYPE sentinel_ebpf_probe_kernel_fallback_predicates gauge",
-          "sentinel_ebpf_probe_kernel_fallback_predicates 0",
-          "",
-          "# HELP sentinel_ebpf_probe_kernel_branches_total Total DNF branches from condition rules",
-          "# TYPE sentinel_ebpf_probe_kernel_branches_total gauge",
-          "sentinel_ebpf_probe_kernel_branches_total 0",
-          "",
-          "# HELP sentinel_ebpf_probe_kernel_branches_compiled Total DNF branches partially/fully compiled to kernel",
-          "# TYPE sentinel_ebpf_probe_kernel_branches_compiled gauge",
-          "sentinel_ebpf_probe_kernel_branches_compiled 0",
-          "",
-          "# HELP sentinel_ebpf_probe_kernel_branches_impossible Total DNF branches eliminated as impossible",
-          "# TYPE sentinel_ebpf_probe_kernel_branches_impossible gauge",
-          "sentinel_ebpf_probe_kernel_branches_impossible 0",
-          "",
-          "# HELP sentinel_ebpf_probe_host_cpu_usage_percent Host CPU usage percent",
-          "# TYPE sentinel_ebpf_probe_host_cpu_usage_percent gauge",
-          "sentinel_ebpf_probe_host_cpu_usage_percent 0",
-          "",
-          "# HELP sentinel_ebpf_probe_host_memory_used_bytes Host used memory in bytes",
-          "# TYPE sentinel_ebpf_probe_host_memory_used_bytes gauge",
-          "sentinel_ebpf_probe_host_memory_used_bytes 0",
-          "",
-          "# HELP sentinel_ebpf_probe_host_memory_total_bytes Host total memory in bytes",
-          "# TYPE sentinel_ebpf_probe_host_memory_total_bytes gauge",
-          "sentinel_ebpf_probe_host_memory_total_bytes 0",
-          "",
-          "# HELP sentinel_ebpf_probe_host_memory_usage_percent Host memory usage percent",
-          "# TYPE sentinel_ebpf_probe_host_memory_usage_percent gauge",
-          "sentinel_ebpf_probe_host_memory_usage_percent 0",
-          "",
-          "# HELP sentinel_ebpf_probe_host_load1 Host load average (1m)",
-          "# TYPE sentinel_ebpf_probe_host_load1 gauge",
-          "sentinel_ebpf_probe_host_load1 0",
-          "",
-          "# HELP sentinel_ebpf_probe_host_cpu_count Host CPU core count",
-          "# TYPE sentinel_ebpf_probe_host_cpu_count gauge",
-          "sentinel_ebpf_probe_host_cpu_count 1",
-          "",
-        ])
-      
-      self.wfile.write("\n".join(metrics_lines).encode("utf-8"))
+      metrics = _probe_metrics_snapshot(probe_runner)
+      self.wfile.write(_render_probe_metrics(metrics).encode("utf-8"))
       return
     self.send_response(200)
     self.end_headers()

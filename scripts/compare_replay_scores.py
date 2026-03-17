@@ -258,7 +258,7 @@ def main() -> None:
   ap.add_argument("--detector-port", type=int, default=50051, help="Detector gRPC port")
   ap.add_argument("--pace", choices=["fast", "realtime"], default="fast", help="Replay pace")
   ap.add_argument("--startup-timeout", type=float, default=30.0, help="Seconds to wait for detector")
-  ap.add_argument("--algorithm", default=None, help="Model algorithm (kitnet, loda, halfspacetrees, memstream, zscore, knn, freq1d)")
+  ap.add_argument("--algorithm", default=None, help="Model algorithm (kitnet, loda_ema, halfspacetrees, memstream, zscore, knn, freq1d, gausscop, copulatree, latentcluster)")
   ap.add_argument("--threshold", default=None, help="Anomaly threshold (e.g. 0.7)")
   ap.add_argument(
     "--score-mode",

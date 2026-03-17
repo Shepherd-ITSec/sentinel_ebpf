@@ -195,10 +195,10 @@ def _replay_and_get_target_features(
       evt = _dict_to_event_envelope(first)
       features = extract_feature_dict(evt)
       detector.score_and_learn(features)
+      start_i = 1
       if checkpoint_at == 1 and checkpoint_path is not None:
         detector.save_checkpoint(checkpoint_path, 1)
         log.info("Saved checkpoint at index 1")
-      start_i = 1
 
   it = event_iter
   if tqdm:
@@ -252,12 +252,10 @@ def _compute_sanity_report(
       f1 = dict(features)
       f0[name] = 0.0
       f1[name] = 1.0
-      s0_raw = detector.score_only_raw(f0)
-      s1_raw = detector.score_only_raw(f1)
+      s0_raw, s0 = detector.score_only(f0)
+      s1_raw, s1 = detector.score_only(f1)
       s0_lograw = math.log1p(max(0.0, float(s0_raw)))
       s1_lograw = math.log1p(max(0.0, float(s1_raw)))
-      s0 = detector.score_only(f0)
-      s1 = detector.score_only(f1)
       item["flip"] = {
         "s0_raw": s0_raw,
         "s1_raw": s1_raw,
@@ -274,12 +272,10 @@ def _compute_sanity_report(
       f_minus = dict(features)
       f_plus[name] = max(0.0, min(1.0, val + eps))
       f_minus[name] = max(0.0, min(1.0, val - eps))
-      s_plus_raw = detector.score_only_raw(f_plus)
-      s_minus_raw = detector.score_only_raw(f_minus)
+      s_plus_raw, s_plus = detector.score_only(f_plus)
+      s_minus_raw, s_minus = detector.score_only(f_minus)
       s_plus_lograw = math.log1p(max(0.0, float(s_plus_raw)))
       s_minus_lograw = math.log1p(max(0.0, float(s_minus_raw)))
-      s_plus = detector.score_only(f_plus)
-      s_minus = detector.score_only(f_minus)
       item["eps_diagnostics"][str(eps)] = {
         "s_plus_raw": s_plus_raw,
         "s_minus_raw": s_minus_raw,
@@ -306,8 +302,8 @@ def main():
   ap.add_argument(
     "--algorithm",
     default="kitnet",
-    choices=["kitnet", "memstream", "loda", "halfspacetrees", "zscore", "knn", "freq1d"],
-    help="Detector algorithm (default: kitnet). KitNet needs ~50k events to exit grace.",
+    choices=["kitnet", "memstream", "loda_ema", "halfspacetrees", "zscore", "knn", "freq1d", "gausscop", "copulatree", "latentcluster"],
+    help="Detector algorithm (default: kitnet).",
   )
   g = ap.add_mutually_exclusive_group()
   g.add_argument(
@@ -490,8 +486,7 @@ def main():
         json_path = args.json
 
     log.info("Computing attribution for event index %d", event_index)
-    score_scaled = detector.score_only(features)
-    score_raw = detector.score_only_raw(features)
+    score_raw, score_scaled = detector.score_only(features)
     score_attr, attribution = detector.compute_feature_attribution(
       features,
       epsilon=args.epsilon,
@@ -501,7 +496,7 @@ def main():
     max_attr = max(abs(v) for v in attribution.values()) if attribution else 0.0
     if score_scaled == 0.0 and args.algorithm == "kitnet":
       log.warning(
-        "KitNet returned score 0 (likely in grace period). Needs ~50k events. Try --algorithm loda or higher event_index."
+        "KitNet returned score 0 (likely in grace period). Needs ~50k events. Try higher event_index."
       )
     if max_attr < 1e-9:
       log.warning(
@@ -573,7 +568,7 @@ def main():
       ax.text(
         0.5,
         0.5,
-        "All attributions zero.\nKitNet needs ~50k events; try --algorithm loda.",
+        "All attributions zero.\nKitNet needs ~50k events.",
         transform=ax.transAxes,
         fontsize=12,
         ha="center",
@@ -646,8 +641,7 @@ def main():
             json_path = args.json
 
       log.info("Computing attribution for event index %d", i)
-      score_scaled = detector.score_only(features)
-      score_raw = detector.score_only_raw(features)
+      score_raw, score_scaled = detector.score_only(features)
       score_attr, attribution = detector.compute_feature_attribution(
         features,
         epsilon=args.epsilon,
@@ -657,7 +651,7 @@ def main():
       max_attr = max(abs(v) for v in attribution.values()) if attribution else 0.0
       if score_scaled == 0.0 and args.algorithm == "kitnet":
         log.warning(
-          "KitNet returned score 0 (likely in grace period). Needs ~50k events. Try --algorithm loda or higher event_index."
+          "KitNet returned score 0 (likely in grace period). Needs ~50k events. Try higher event_index."
         )
       if max_attr < 1e-9:
         log.warning(
@@ -729,7 +723,7 @@ def main():
         ax.text(
           0.5,
           0.5,
-          "All attributions zero.\nKitNet needs ~50k events; try --algorithm loda.",
+          "All attributions zero.\nKitNet needs ~50k events;",
           transform=ax.transAxes,
           fontsize=12,
           ha="center",

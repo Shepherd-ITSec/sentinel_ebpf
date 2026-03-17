@@ -162,7 +162,7 @@ Configure in Helm values:
 ```yaml
 detector:
   model:
-    algorithm: "memstream" # halfspacetrees | loda | memstream
+    algorithm: "memstream" # halfspacetrees | loda | loda_ema | memstream | freq1d | gausscop | copulatree | latentcluster
     threshold: 0.5
     # Half-Space Trees
     hst_n_trees: 25
@@ -193,8 +193,13 @@ helm upgrade sentinel-ebpf ./charts/sentinel-ebpf \
 Available algorithms:
 
 - `halfspacetrees`: streaming tree-based anomaly detection (River).
-- `loda`: random projection + online histogram density.
+- `loda`: PySAD LODA wrapper; paper-faithful, infinite window.
+- `loda_ema`: custom LODA with EMA-based adaptive normalization; streaming from first event; supports CUDA.
 - `memstream`: online autoencoder with latent-memory scoring and threshold-gated FIFO memory updates.
+- `freq1d`: per-feature rarity baseline with configurable score aggregation.
+- `gausscop`: Gaussian-copula dependence model on top of `freq1d` marginals.
+- `copulatree`: streaming copula tree on top of `freq1d` marginals; tracks pairwise Gaussian copula edges and refreshes a maximum-spanning tree online.
+- `latentcluster`: online latent clustering in `freq1d`-normalized space.
 
 
 `memstream` implementation note:
@@ -204,11 +209,12 @@ Available algorithms:
   - Official repo: https://github.com/Stream-AD/MemStream
 
 `loda` implementation note:
-- Uses an in-repo online variant based on sparse random projections and histogram density scoring.
-- References:
-  - Paper: https://doi.org/10.1007/s10994-015-5521-0
-  - PyOD implementation notes: https://pyod.readthedocs.io/en/latest/_modules/pyod/models/loda.html
-  - PySAD streaming adaptation notes: https://pysad.readthedocs.io/en/latest/_modules/pysad/models/loda.html
+- Uses PySAD LODA (library-based wrapper). Paper-faithful, infinite window.
+- References: PySAD https://pysad.readthedocs.io/en/latest/_modules/pysad/models/loda.html
+
+`loda_ema` implementation note:
+- Custom in-repo variant with EMA-based adaptive normalization; streaming from first event.
+- References: Paper https://doi.org/10.1007/s10994-015-5521-0, PyOD/PySAD notes
 
 
 ### Feature extraction summary

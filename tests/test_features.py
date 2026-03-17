@@ -16,10 +16,10 @@ def test_extract_feature_dict_returns_expected_shape():
     data=["openat", "2", "cat", "123", "124", "1000", "-100", "2", "/etc/passwd", "2"],
   )
   values = extract_feature_dict(evt)
-  # No event_type -> general features (18) + shared online stats (5 windows * 4)
-  assert len(values) == 18 + 5 * 4
+  # No event_type -> general features (20) + shared online stats (5 windows * 4)
+  assert len(values) == 20 + 5 * 4
   vec = np.array(list(values.values()), dtype=np.float32)
-  assert vec.shape == (18 + 5 * 4,)
+  assert vec.shape == (20 + 5 * 4,)
   assert np.isfinite(vec).all()
 
 
@@ -60,6 +60,8 @@ def test_extract_feature_dict_has_stable_features():
     "arg1_norm",
     "hour_norm",
     "minute_norm",
+    "weekday_norm",
+    "week_of_month_norm",
     "event_id_norm",
     "flags_hash",
     "path_depth_norm",
@@ -75,6 +77,27 @@ def test_extract_feature_dict_has_stable_features():
     general_features.add(f"proc_interarrival_{w}")
     general_features.add(f"proc_interarrival_std_{w}")
   assert set(values.keys()) == general_features
+
+
+def test_extract_feature_dict_weekday_and_week_of_month():
+  """weekday_norm (0=Mon..6=Sun) and week_of_month_norm (1-4 quarters) from ts_unix_nano."""
+  # 2023-11-14 22:13:20 UTC = Tuesday (weekday=1), day 14 = week 2 of month
+  evt = events_pb2.EventEnvelope(
+    event_id="feat-time",
+    event_name="openat",
+    event_type="",
+    ts_unix_nano=1_700_000_000_000_000_000,
+    data=["openat", "2", "cat", "1", "1", "0", "0", "0", "/tmp/x", ""],
+  )
+  values = extract_feature_dict(evt)
+  assert "weekday_norm" in values
+  assert "week_of_month_norm" in values
+  assert 0.0 <= values["weekday_norm"] <= 1.0
+  assert 0.0 <= values["week_of_month_norm"] <= 1.0
+  # 2023-11-14 is Tuesday (weekday=1) -> 1/7
+  assert abs(values["weekday_norm"] - 1.0 / 7.0) < 0.01
+  # day 14 -> week 2 -> (2-1)/3 = 1/3
+  assert abs(values["week_of_month_norm"] - 1.0 / 3.0) < 0.01
 
 
 def test_extract_feature_dict_path_and_return_attributes():
@@ -132,8 +155,8 @@ def test_extract_feature_dict_adds_file_features_when_event_type_file():
   assert "file_pair_interarrival_std_1" in values
   assert "file_proc_path_depth_mean_120" in values
   assert "file_host_path_depth_std_30" in values
-  # 18 general + 5*4 shared online + 7 static file + 5*(2 rate + 4 interarrival + 6 path_depth) = 38+57 = 95
-  assert len(values) == 95
+  # 20 general + 5*4 shared online + 7 static file + 5*(2 rate + 4 interarrival + 6 path_depth) = 40+57 = 97
+  assert len(values) == 97
 
 
 def test_extract_file_features_open_flags_only_for_open_syscalls():
@@ -196,8 +219,8 @@ def test_extract_feature_dict_adds_network_features_when_event_type_network():
   assert "net_host_addrlen_std_1" in values
   assert "net_daddr_dport_mean_30" in values
   assert "net_proc_daddr_dport_std_120" in values
-  # 18 general + 5*4 shared online + 7 static + 5*16 network-specific (no proc/host rate or proc interarrival) = 38+87 = 125
-  assert len(values) == 125
+  # 20 general + 5*4 shared online + 7 static + 5*16 network-specific (no proc/host rate or proc interarrival) = 40+87 = 127
+  assert len(values) == 127
 
 
 def test_extract_network_features_socket_family_type():
@@ -260,6 +283,6 @@ def test_extract_feature_dict_adds_process_features_when_event_type_process():
   assert values["process_is_execve"] == 1.0
   assert "process_is_fork" in values
   assert values["process_is_fork"] == 0.0  # execve, not fork
-  assert len(values) == 18 + 5 * 4 + 2  # +2 for process_is_execve, process_is_fork
+  assert len(values) == 20 + 5 * 4 + 2  # +2 for process_is_execve, process_is_fork
 
 

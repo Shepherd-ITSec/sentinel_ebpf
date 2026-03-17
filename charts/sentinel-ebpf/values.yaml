@@ -61,7 +61,7 @@ detector:
   eventDumpPath: "/var/log/sentinel-ebpf/events.jsonl"   # Path to dump all incoming events to file (empty to disable, e.g., /var/log/sentinel-ebpf/events.jsonl)
   # Model configurations
   model:
-    algorithm: "freq1d"  # halfspacetrees | loda | memstream | kitnet | zscore | freq1d
+    algorithm: "copulatree"  # halfspacetrees | loda | loda_ema | memstream | kitnet | zscore | freq1d | gausscop | copulatree | latentcluster
     threshold: 0.7  # Anomaly score threshold (0-1)
     score_mode: "scaled"  # raw | scaled (scaled = bounded [0,1] scores)
     # Half-Space Trees parameters
@@ -70,7 +70,7 @@ detector:
     hst_window_size: 250
     # LODA parameters
     loda_n_projections: 20
-    loda_bins: 64
+    loda_bins: 65536
     loda_range: 3.0
     loda_ema_alpha: 0.01
     loda_hist_decay: 1.0
@@ -89,10 +89,37 @@ detector:
     zscore_min_count: 20
     zscore_std_floor: 0.001
     # Freq1D baseline parameters (hybrid categorical+numeric)
-    freq1d_bins: 64
+    freq1d_bins: 65536 # is high to ensure no collisions
     freq1d_alpha: 1.0
     freq1d_decay: 1.0
-    freq1d_max_categories: 2048
+    freq1d_max_categories: 65536 # is high to ensure no collisions
+    freq1d_aggregation: "topk_mean" # Freq1D aggregation: sum | mean | topk_mean | soft_topk_mean
+    freq1d_topk: 8 # Used by topk_mean and soft_topk_mean
+    freq1d_soft_topk_temperature: 0.25 # Used by soft_topk_mean (smaller => closer to max)
+    # GaussCop parameters (Gaussian copula on freq1D marginals)
+    gausscop_bins: 16384
+    gausscop_alpha: 1.0
+    gausscop_decay: 1.0
+    gausscop_max_categories: 16384
+    gausscop_reg: 0.01
+    gausscop_u_clamp: 1e-12
+    gausscop_max_features: 30  # max features for copula (0 = use all)
+    gausscop_importance_window: 5000  # events before first selection; as we have ten thousands of events real quick thats a tiny number
+    # CopulaTree parameters (streaming Gaussian pair-copula tree on freq1d marginals)
+    copulatree_u_clamp: 1e-6
+    copulatree_reg: 0.05
+    copulatree_max_features: 30
+    copulatree_importance_window: 500
+    copulatree_tree_update_interval: 100
+    copulatree_edge_score_aggregation: "mean" # sum | mean | topk_mean
+    copulatree_edge_score_topk: 8
+    # LatentCluster parameters (online latent clustering on freq1d-normalized inputs)
+    latentcluster_max_clusters: 8
+    latentcluster_u_clamp: 1e-6
+    latentcluster_reg: 0.25
+    latentcluster_update_alpha: 0.05
+    latentcluster_spawn_threshold: 6.0
+    # General parameters
     seed: 42
   resources: {}
   nodeSelector: {}

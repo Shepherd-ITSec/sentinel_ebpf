@@ -7,7 +7,7 @@ lists:
   process_events: [execve, fork]
   net_events: [socket, connect, bind, listen, accept, accept4]
   shell_events: [bash, sh, zsh]
-  noisy_paths: [/proc, /sys, /dev, /run, /var/run, /tmp, /var/log]
+  noisy_paths: [/proc, /sys, /dev, /run, /var/run, /tmp, /var/log, /var/lib/rancher/k3s/agent/containerd/io.containerd.snapshotter.v1.overlayfs]
 
 macros:
   file_evt: "event_name in (file_events)"
