@@ -33,7 +33,7 @@ class TestReplayLogs:
     payload = json.dumps({
       "event_id": "test-1",
       "event_name": "openat",
-      "event_type": "",
+      "event_group": "",
       "ts_unix_nano": 1234567890000000000,
       "data": ["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
     }).encode("utf-8")
@@ -52,7 +52,7 @@ class TestReplayLogs:
       payload = json.dumps({
         "event_id": f"test-{i}",
         "event_name": "openat",
-        "event_type": "",
+        "event_group": "",
         "ts_unix_nano": 1234567890000000000 + i * 1000000,
         "data": ["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
       }).encode("utf-8")
@@ -72,7 +72,7 @@ class TestReplayLogs:
       payload = json.dumps({
         "event_id": f"test-{i}",
         "event_name": "openat",
-        "event_type": "",
+        "event_group": "",
         "ts_unix_nano": (base_ts + i * 1000) * 1_000_000,  # Convert to ns
         "data": ["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
       }).encode("utf-8")
@@ -91,7 +91,7 @@ class TestReplayLogs:
       payload = json.dumps({
         "event_id": f"test-{i}",
         "event_name": "openat",
-        "event_type": "",
+        "event_group": "",
         "ts_unix_nano": (base_ts + i * 1000) * 1_000_000,
         "data": ["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
       }).encode("utf-8")
@@ -110,7 +110,7 @@ class TestReplayLogs:
       payload = json.dumps({
         "event_id": f"test-{i}",
         "event_name": "openat",
-        "event_type": "",
+        "event_group": "",
         "ts_unix_nano": (base_ts + i * 1000) * 1_000_000,
         "data": ["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
       }).encode("utf-8")
@@ -129,7 +129,7 @@ class TestReplayLogs:
       payload = json.dumps({
         "event_id": f"test-{i}",
         "event_name": "openat",
-        "event_type": "",
+        "event_group": "",
         "ts_unix_nano": 1234567890000000000 + i * 1000000,
         "data": ["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
       }).encode("utf-8")
@@ -154,7 +154,7 @@ class TestReplayLogs:
   def test_iter_events_jsonl_lossless(self, temp_dir):
     jsonl_file = temp_dir / "detector-events.jsonl"
     jsonl_file.write_text(
-      '{"event_id": "a", "event_name": "openat", "event_type": "file", "data": ["openat", "2", "bash", "1", "2", "1000", "0", "0", "/tmp/x", ""], '
+      '{"event_id": "a", "event_name": "openat", "event_group": "file", "data": ["openat", "2", "bash", "1", "2", "1000", "0", "0", "/tmp/x", ""], '
       '"hostname": "h", "pod_name": "p", "namespace": "ns", "container_id": "cid", "attributes": {"return_value": "0"}, "ts_unix_nano": 1234567890000000000}\n'
     )
     events = list(iter_events_jsonl(jsonl_file))
@@ -192,7 +192,7 @@ class TestReplayLogs:
     payload = json.dumps({
       "event_id": "test-1",
       "event_name": "openat",
-      "event_type": "",
+      "event_group": "",
       "ts_unix_nano": 1234567890000000000,
       "data": {"filename": "/tmp/test", "bytes": "1024", "comm": "bash", "pid": "1", "tid": "2"},
     }).encode("utf-8")

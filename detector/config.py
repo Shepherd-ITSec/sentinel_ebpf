@@ -9,6 +9,8 @@ class DetectorConfig:
   recent_events_buffer_size: int = 10000  # Size of recent events ring buffer for UI (default: 10000)
   # River model configuration
   model_algorithm: str = "freq1d"  # halfspacetrees | loda_ema | kitnet | memstream | zscore | knn | freq1d | gausscop | copulatree | latentcluster
+  # Generic feature encoding: hash (legacy scalar hashes) | encoded (event one-hot, bucket banks, path tokens)
+  feature_encoding: str = "encoded"  # hash | encoded
   threshold: float = 0.7  # Anomaly score threshold (0-1). Lower (e.g. 0.3) to flag more events when scores are mostly low.
   hst_n_trees: int = 25
   hst_height: int = 15
@@ -27,6 +29,7 @@ class DetectorConfig:
   mem_latent_dim: int = 8
   mem_memory_size: int = 128
   mem_lr: float = 0.001
+  mem_input_mode: str = "raw"  # raw | freq1d_u | freq1d_z | freq1d_surprisal | freq1d_z_surprisal
   zscore_min_count: int = 20
   zscore_std_floor: float = 1e-3
   knn_k: int = 5
@@ -64,8 +67,15 @@ class DetectorConfig:
   latentcluster_reg: float = 0.25
   latentcluster_update_alpha: float = 0.05
   latentcluster_spawn_threshold: float = 6.0
-  # score_mode: raw = use model.score_*_raw() and emit raw scores; scaled = use bounded [0,1] scores.
-  score_mode: str = "raw"  # raw | scaled
+  # score_mode:
+  # - raw: threshold on raw model score (unbounded, model-dependent)
+  # - scaled: threshold on bounded [0,1] score (most models: 1-exp(-raw))
+  # - percentile: threshold on online percentile of (log1p(raw)) per event_group
+  score_mode: str = "raw"  # raw | scaled | percentile
+  # percentile calibration window (per event_group): number of past scores kept for percentile estimate
+  percentile_window_size: int = 2048
+  # warmup samples before percentile thresholding becomes active (before that percentile score is 0)
+  percentile_warmup: int = 128
   # auto: use CUDA when available, else CPU for torch-backed models (LODA, MemStream)
   # cpu/cuda: force explicit device choice
   model_device: str = "auto"
@@ -80,6 +90,11 @@ def load_config() -> DetectorConfig:
   events_http_port = int(os.environ.get("DETECTOR_EVENTS_PORT", str(defaults.events_http_port)))
 
   model_algorithm = os.environ.get("DETECTOR_MODEL_ALGORITHM", defaults.model_algorithm)
+  feature_encoding = os.environ.get("DETECTOR_FEATURE_ENCODING", defaults.feature_encoding).strip().lower()
+  if feature_encoding not in ("hash", "encoded"):
+    raise ValueError(
+      f"Invalid DETECTOR_FEATURE_ENCODING={feature_encoding!r}; must be 'hash' or 'encoded'"
+    )
   threshold = float(os.environ.get("DETECTOR_THRESHOLD", str(defaults.threshold)))
   hst_n_trees = int(os.environ.get("DETECTOR_HST_N_TREES", str(defaults.hst_n_trees)))
   hst_height = int(os.environ.get("DETECTOR_HST_HEIGHT", str(defaults.hst_height)))
@@ -102,6 +117,12 @@ def load_config() -> DetectorConfig:
   mem_latent_dim = int(os.environ.get("DETECTOR_MEMSTREAM_LATENT_DIM", str(defaults.mem_latent_dim)))
   mem_memory_size = int(os.environ.get("DETECTOR_MEMSTREAM_MEMORY_SIZE", str(defaults.mem_memory_size)))
   mem_lr = float(os.environ.get("DETECTOR_MEMSTREAM_LR", str(defaults.mem_lr)))
+  mem_input_mode = os.environ.get("DETECTOR_MEMSTREAM_INPUT_MODE", defaults.mem_input_mode).strip().lower()
+  if mem_input_mode not in ("raw", "freq1d_u", "freq1d_z", "freq1d_surprisal", "freq1d_z_surprisal"):
+    raise ValueError(
+      "Invalid DETECTOR_MEMSTREAM_INPUT_MODE=%r; must be one of: raw, freq1d_u, freq1d_z, freq1d_surprisal, freq1d_z_surprisal"
+      % mem_input_mode
+    )
   zscore_min_count = int(os.environ.get("DETECTOR_ZSCORE_MIN_COUNT", str(defaults.zscore_min_count)))
   zscore_std_floor = float(os.environ.get("DETECTOR_ZSCORE_STD_FLOOR", str(defaults.zscore_std_floor)))
   knn_k = int(os.environ.get("DETECTOR_KNN_K", str(defaults.knn_k)))
@@ -203,8 +224,18 @@ def load_config() -> DetectorConfig:
       f"Invalid DETECTOR_LATENTCLUSTER_SPAWN_THRESHOLD={latentcluster_spawn_threshold!r}; must be > 0"
     )
   score_mode = os.environ.get("DETECTOR_SCORE_MODE", defaults.score_mode).strip().lower()
-  if score_mode not in ("raw", "scaled"):
-    raise ValueError(f"Invalid DETECTOR_SCORE_MODE={score_mode!r}; must be 'raw' or 'scaled'")
+  if score_mode not in ("raw", "scaled", "percentile"):
+    raise ValueError(f"Invalid DETECTOR_SCORE_MODE={score_mode!r}; must be 'raw', 'scaled', or 'percentile'")
+  percentile_window_size = int(os.environ.get("DETECTOR_PERCENTILE_WINDOW_SIZE", str(defaults.percentile_window_size)))
+  if percentile_window_size < 32:
+    raise ValueError(
+      f"Invalid DETECTOR_PERCENTILE_WINDOW_SIZE={percentile_window_size!r}; must be >= 32"
+    )
+  percentile_warmup = int(os.environ.get("DETECTOR_PERCENTILE_WARMUP", str(defaults.percentile_warmup)))
+  if percentile_warmup < 0:
+    raise ValueError(
+      f"Invalid DETECTOR_PERCENTILE_WARMUP={percentile_warmup!r}; must be >= 0"
+    )
   model_device = os.environ.get("DETECTOR_MODEL_DEVICE", defaults.model_device).strip().lower()
   model_seed = int(os.environ.get("DETECTOR_MODEL_SEED", str(defaults.model_seed)))
 
@@ -213,6 +244,7 @@ def load_config() -> DetectorConfig:
     events_http_port=events_http_port,
     recent_events_buffer_size=recent_events_buffer_size,
     model_algorithm=model_algorithm,
+    feature_encoding=feature_encoding,
     threshold=threshold,
     hst_n_trees=hst_n_trees,
     hst_height=hst_height,
@@ -231,6 +263,7 @@ def load_config() -> DetectorConfig:
     mem_latent_dim=mem_latent_dim,
     mem_memory_size=mem_memory_size,
     mem_lr=mem_lr,
+    mem_input_mode=mem_input_mode,
     zscore_min_count=zscore_min_count,
     zscore_std_floor=zscore_std_floor,
     knn_k=knn_k,
@@ -264,6 +297,8 @@ def load_config() -> DetectorConfig:
     latentcluster_update_alpha=latentcluster_update_alpha,
     latentcluster_spawn_threshold=latentcluster_spawn_threshold,
     score_mode=score_mode,
+    percentile_window_size=percentile_window_size,
+    percentile_warmup=percentile_warmup,
     model_device=model_device,
     model_seed=model_seed,
   )

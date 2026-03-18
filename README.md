@@ -66,20 +66,6 @@ Or run detector with embedded replay:
 uv run python -m detector.server --replay-log events.bin --replay-pace realtime
 ```
 
-### 3b) BETH train-test evaluation (warmup then test-only metrics)
-
-Use this to benchmark ranking with a realistic online workflow:
-train split first (model warmup), then test split, then metrics on test labels only.
-
-```bash
-uv run python scripts/run_detector_eval.py \
-  --train-csv test_data/beth/labelled_training_data.csv \
-  --test-csv test_data/beth/labelled_testing_data.csv \
-  --pace fast
-```
-
-This command writes converted EVT1 files, anomaly logs, and test-only metrics into `test_data/beth/eval/`.
-
 ### 4) Quick smoke test
 
 Use this for a clean one-shot cluster test.
@@ -150,27 +136,33 @@ Detailed rules authoring and execution guide: `docs/RULES_GUIDE.md`.
 Path exclusions should be expressed in DSL macros/conditions (Falco-like style),
 for example `not noisy_path` in file-focused rules.
 
-Rule format is DSL-only: `lists`, `macros`, `condition`.
+Rule format is hybrid: explicit `rules[].syscalls` for capture membership, optional `lists` / `macros` for reuse, optional `condition` for extra filters, and `groups` for event-type metadata.
 
 Minimal example:
 
 ```yaml
 lists:
-  file_events: [open, openat, openat2, unlink, unlinkat, rename, renameat]
+  file_syscalls: [open, openat, openat2, unlink, unlinkat, rename, renameat]
   shell_comms: [bash, sh, zsh]
 
 macros:
-  file_evt: "event_name in (file_events)"
   sensitive_path: "path startswith /etc or path startswith /root"
+
+groups:
+  file: {}
+  network: {}
 
 rules:
   - name: capture-sensitive-file-events
     enabled: true
-    condition: "file_evt and sensitive_path and comm in (shell_comms)"
+    group: file
+    syscalls: file_syscalls
+    condition: "sensitive_path and comm in (shell_comms)"
 
   - name: capture-network-connectivity
     enabled: true
-    condition: "event_name in (socket, connect)"
+    group: network
+    syscalls: [socket, connect]
 ```
 
 Supported fields: `event_name`, `event_id`, `path`, `comm`, `pid`, `tid`, `uid`, `open_flags`, `arg0`, `arg1`, `arg_flags`, `return_value`, `hostname`, `namespace`
@@ -184,8 +176,9 @@ Supported operators: `=`, `in`, `startswith`, `contains`, `and`, `or`, `not`, pa
 Set via `detector.model.*` in Helm values:
 
 - `algorithm`: `halfspacetrees`, `loda`, `loda_ema`, `kitnet`, `memstream`, `zscore`, `knn`, `freq1d`, `gausscop`, `copulatree`, or `latentcluster`
+- `feature_encoding`: `encoded` (default; event one-hot + bucket banks + token buckets) or `hash` (legacy scalar hash features)
 - `threshold`: anomaly threshold (interpreted in the space selected by `score_mode`)
-  - `score_mode` (env: `DETECTOR_SCORE_MODE`): `raw` (default) or `scaled`
+  - `score_mode` (env: `DETECTOR_SCORE_MODE`): `raw`, `scaled`, or `percentile`
 - per-algorithm params: `hst_*`, `loda_*`, `kitnet_*`, `mem_*`, `zscore_*`, `knn_*`, `freq1d_*`, `gausscop_*`, `copulatree_*`, `latentcluster_*`, plus `seed`
 - Model device selection via env var `DETECTOR_MODEL_DEVICE`: `auto` (default), `cpu`, or `cuda`
 - `loda_ema` and `memstream` support CUDA; `loda` (PySAD), `halfspacetrees`, `kitnet`, `zscore`, `knn`, `freq1d`, `gausscop`, `copulatree`, and `latentcluster` run on CPU

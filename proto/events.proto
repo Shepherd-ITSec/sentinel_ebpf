@@ -10,7 +10,7 @@ import "google/protobuf/timestamp.proto";
 
 // Envelope for any observed kernel-level event (syscalls and LSM-style events).
 // Universal semantics: event_name = syscall/event name (openat, connect, ...);
-// event_type = category/meta tag from rules (network, file, process, or empty).
+// event_group = category/meta tag from rules (network, file, process, or empty).
 // Syscalls behave like function calls; envelope carries one canonical data layout.
 message EventEnvelope {
   // Unique ID for correlating responses.
@@ -23,7 +23,7 @@ message EventEnvelope {
   // Syscall/event name (e.g. openat, connect, socket, execve). Same as data[0].
   string event_name = 8;
   // Category/meta tag from rules (e.g. network, file, process). Empty if no rule type.
-  string event_type = 9;
+  string event_group = 9;
   // Canonical ordered data vector. Same layout for all events; unused slots are empty.
   // Order: [event_name, event_id, comm, pid, tid, uid, arg0, arg1, path, flags]
   // - arg0, arg1: event-specific (e.g. fd, addrlen for connect; dfd, flags for openat).

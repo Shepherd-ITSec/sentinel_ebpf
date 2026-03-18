@@ -132,6 +132,83 @@ def test_freq1d_categorical_cap_does_not_explode():
     assert len(d) <= impl.max_categories
 
 
+def test_freq1d_treats_bucket_and_event_onehot_features_as_categorical():
+  det = OnlineAnomalyDetector(
+    algorithm="freq1d",
+    freq1d_bins=16,
+    freq1d_alpha=1.0,
+    freq1d_decay=1.0,
+    freq1d_max_categories=8,
+    freq1d_aggregation="mean",
+    seed=10,
+  )
+  features = {
+    "event_name_openat": 1.0,
+    "event_name_connect": 0.0,
+    "comm_bucket_000": 1.0,
+    "comm_bucket_001": 0.0,
+    "hostname_bucket_000": 1.0,
+    "mount_ns_bucket_000": 1.0,
+    "path_tok_d0_bucket_000": 1.0,
+    "return_success": 1.0,
+    "x_norm": 0.25,
+  }
+  det.score_and_learn(features)
+
+  impl = det.impl
+  assert impl.algorithm == "freq1d"
+  assert impl._feature_names is not None
+  categorical_names = {
+    name
+    for name, kind in zip(impl._feature_names, impl._kind)
+    if kind == "cat"
+  }
+  assert "event_name_openat" in categorical_names
+  assert "comm_bucket_000" in categorical_names
+  assert "hostname_bucket_000" in categorical_names
+  assert "mount_ns_bucket_000" in categorical_names
+  assert "path_tok_d0_bucket_000" in categorical_names
+  assert "x_norm" not in categorical_names
+
+
+def test_freq1d_treats_type_specific_encoded_banks_as_categorical():
+  det = OnlineAnomalyDetector(
+    algorithm="freq1d",
+    freq1d_bins=16,
+    freq1d_alpha=1.0,
+    freq1d_decay=1.0,
+    freq1d_max_categories=8,
+    freq1d_aggregation="mean",
+    seed=11,
+  )
+  features = {
+    "file_event_name_openat": 1.0,
+    "file_extension_bucket_000": 1.0,
+    "file_flags_bucket_000": 1.0,
+    "net_socket_type_bucket_000": 1.0,
+    "net_daddr_bucket_000": 1.0,
+    "net_af_af_inet": 1.0,
+    "net_fd_norm": 0.25,
+  }
+  det.score_and_learn(features)
+
+  impl = det.impl
+  assert impl.algorithm == "freq1d"
+  assert impl._feature_names is not None
+  categorical_names = {
+    name
+    for name, kind in zip(impl._feature_names, impl._kind)
+    if kind == "cat"
+  }
+  assert "file_event_name_openat" in categorical_names
+  assert "file_extension_bucket_000" in categorical_names
+  assert "file_flags_bucket_000" in categorical_names
+  assert "net_socket_type_bucket_000" in categorical_names
+  assert "net_daddr_bucket_000" in categorical_names
+  assert "net_af_af_inet" in categorical_names
+  assert "net_fd_norm" not in categorical_names
+
+
 def test_freq1d_aggregation_modes_ordering():
   """sum >= mean; topk_mean(k=1) ~= max; soft_topk_mean is between mean and max (typical)."""
   rng = np.random.default_rng(123)

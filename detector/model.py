@@ -1,9 +1,11 @@
 """Online anomaly detection models."""
 import contextlib
+import bisect
 import io
 import logging
 import math
 import pickle
+from collections import deque
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -566,6 +568,11 @@ class OnlineMemStream(_BothScoresMixin):
     latent_dim: int,
     memory_size: int,
     lr: float,
+    input_mode: str,
+    freq1d_bins: int,
+    freq1d_alpha: float,
+    freq1d_decay: float,
+    freq1d_max_categories: int,
     model_device: str,
     seed: int,
   ):
@@ -575,6 +582,14 @@ class OnlineMemStream(_BothScoresMixin):
     self.memory_size = memory_size
     self.lr = lr
     self.seed = seed
+    self.input_mode = str(input_mode).strip().lower()
+    if self.input_mode not in ("raw", "freq1d_u", "freq1d_z", "freq1d_surprisal", "freq1d_z_surprisal"):
+      raise ValueError(
+        "memstream input_mode must be one of: raw, freq1d_u, freq1d_z, freq1d_surprisal, freq1d_z_surprisal"
+      )
+    self._frontend_u_clamp = 1e-6
+    self._frontend_z_clip = 8.0
+    self._frontend_surprisal_clip = 12.0
     self.model_device = model_device
     self._device = _resolve_torch_device(model_device)
     self._feature_names: Optional[List[str]] = None
@@ -593,18 +608,60 @@ class OnlineMemStream(_BothScoresMixin):
     self._beta_sigma = 2.5
     self._warmup_accept = max(8, min(32, self.memory_size // 4))
     self._noise_std = 1e-3
+    self._accepted_updates = 0
+    self._rejected_updates = 0
+    self._overwrite_updates = 0
+    self._last_debug: Dict[str, Any] = {}
+    self._frontend_marginals: Optional[OnlineFreq1D] = None
+    if self.input_mode != "raw":
+      self._frontend_marginals = OnlineFreq1D(
+        bins=freq1d_bins,
+        alpha=freq1d_alpha,
+        decay=freq1d_decay,
+        max_categories=freq1d_max_categories,
+        aggregation="mean",
+        topk=1,
+        soft_topk_temperature=1.0,
+        model_device="cpu",
+        seed=0,
+      )
     logging.info(
-      "Initialized %s (hidden=%d, latent=%d, memory=%d, lr=%.5f, device=%s)",
+      "Initialized %s (hidden=%d, latent=%d, memory=%d, lr=%.5f, input_mode=%s, device=%s)",
       self.algorithm,
       hidden_dim,
       latent_dim,
       memory_size,
       lr,
+      self.input_mode,
       self._device.type,
     )
 
-  def _init_from_features(self, features: Dict[str, float]) -> None:
-    self._feature_names = sorted(features.keys())
+  def _frontend_transform(self, features: Dict[str, float]) -> Dict[str, float]:
+    if self.input_mode == "raw":
+      return dict(features)
+    if self._frontend_marginals is None:
+      raise RuntimeError("MemStream frontend marginals not initialized")
+    u = self._frontend_marginals.get_cdf_vector(features)
+    names = self._frontend_marginals._feature_names
+    if names is None:
+      raise RuntimeError("MemStream frontend feature names not initialized")
+    if self.input_mode == "freq1d_u":
+      return {f"u::{name}": float(u[i]) for i, name in enumerate(names)}
+    u_clipped = np.clip(u, self._frontend_u_clamp, 1.0 - self._frontend_u_clamp)
+    z = np.clip(scipy_norm.ppf(u_clipped), -self._frontend_z_clip, self._frontend_z_clip)
+    if self.input_mode == "freq1d_z":
+      return {f"z::{name}": float(z[i]) for i, name in enumerate(names)}
+    excess = np.clip(self._frontend_marginals.get_excess_vector(features), 0.0, self._frontend_surprisal_clip)
+    if self.input_mode == "freq1d_surprisal":
+      return {f"s::{name}": float(excess[i]) for i, name in enumerate(names)}
+    transformed: Dict[str, float] = {}
+    for i, name in enumerate(names):
+      transformed[f"z::{name}"] = float(z[i])
+      transformed[f"s::{name}"] = float(excess[i])
+    return transformed
+
+  def _init_model_for_feature_names(self, feature_names: List[str]) -> None:
+    self._feature_names = list(feature_names)
     input_dim = len(self._feature_names)
     auto_hidden = _auto_mem_hidden_dim(input_dim)
     auto_latent = _auto_mem_latent_dim(auto_hidden)
@@ -630,12 +687,17 @@ class OnlineMemStream(_BothScoresMixin):
       effective_latent,
     )
 
+  def _init_from_features(self, features: Dict[str, float]) -> None:
+    transformed = self._frontend_transform(features)
+    self._init_model_for_feature_names(sorted(transformed.keys()))
+
   def _vectorize(self, features: Dict[str, float]) -> torch.Tensor:
     if self._feature_names is None:
       self._init_from_features(features)
     if self._feature_names is None:
       raise RuntimeError("MemStream feature names not initialized")
-    vec = np.array([float(features[k]) for k in self._feature_names], dtype=np.float32)
+    transformed = self._frontend_transform(features)
+    vec = np.array([float(transformed[k]) for k in self._feature_names], dtype=np.float32)
     return torch.from_numpy(vec).to(self._device)
 
   def _normalize(self, x: torch.Tensor) -> torch.Tensor:
@@ -683,9 +745,15 @@ class OnlineMemStream(_BothScoresMixin):
       return True
     return score_raw <= self._adaptive_beta()
 
-  def _write_memory(self, x: torch.Tensor, z: torch.Tensor) -> None:
+  def _write_memory(self, x: torch.Tensor, z: torch.Tensor) -> Dict[str, Any]:
     if self._memory_latent is None or self._memory_input is None:
-      return
+      return {
+        "memory_slot": None,
+        "overwrite": False,
+        "mem_filled_after": self._mem_filled,
+        "mem_index_after": self._mem_index,
+      }
+    overwrite = self._mem_filled >= self.memory_size
     if self._mem_filled < self.memory_size:
       idx = self._mem_filled
       self._mem_filled += 1
@@ -695,6 +763,15 @@ class OnlineMemStream(_BothScoresMixin):
     self._memory_latent[idx] = z.detach()
     self._memory_input[idx] = x.detach()
     self._refresh_norm_from_memory()
+    return {
+      "memory_slot": int(idx),
+      "overwrite": overwrite,
+      "mem_filled_after": int(self._mem_filled),
+      "mem_index_after": int(self._mem_index),
+    }
+
+  def get_last_debug(self) -> Dict[str, Any]:
+    return dict(self._last_debug)
 
   def score_only_raw(self, features: Dict[str, float]) -> float:
     """Return the underlying (unsquashed) score."""
@@ -712,7 +789,28 @@ class OnlineMemStream(_BothScoresMixin):
       recon_error = float(torch.mean((x_norm - recon_eval) ** 2).item())
       memory_error = self._memory_distance(z_eval, k=3)
       score_raw = (0.8 * memory_error) + (0.2 * recon_error)
-    return max(0.0, float(score_raw))
+    score_raw = max(0.0, float(score_raw))
+    score_std = float(np.sqrt(max(0.0, self._score_var_ema)))
+    self._last_debug = {
+      "mode": "score_only",
+      "score_raw": score_raw,
+      "recon_error": recon_error,
+      "memory_error": memory_error,
+      "adaptive_beta": float(self._adaptive_beta()),
+      "score_ema": None if self._score_ema is None else float(self._score_ema),
+      "score_std_ema": score_std,
+      "update_allowed": None,
+      "update_reason": "score_only",
+      "mem_filled_before": int(self._mem_filled),
+      "mem_filled_after": int(self._mem_filled),
+      "memory_fill_fraction": float(self._mem_filled / max(1, self.memory_size)),
+      "memory_slot": None,
+      "memory_overwrite": False,
+      "memory_size": int(self.memory_size),
+      "warmup_accept": int(self._warmup_accept),
+      "input_mode": self.input_mode,
+    }
+    return score_raw
 
   def score_and_learn_raw(self, features: Dict[str, float]) -> float:
     """Return the underlying (unsquashed) score, learning from this instance."""
@@ -733,8 +831,21 @@ class OnlineMemStream(_BothScoresMixin):
       # MemStream-style memory distance is primary; recon error stabilizes early phase.
       score_raw = (0.8 * memory_error) + (0.2 * recon_error)
 
+    mem_filled_before = int(self._mem_filled)
+    mem_index_before = int(self._mem_index)
     self._update_score_stats(score_raw)
+    adaptive_beta = float(self._adaptive_beta())
     update_allowed = self._should_update_memory(score_raw)
+    update_reason = "warmup" if mem_filled_before < self._warmup_accept else (
+      "score_below_beta" if update_allowed else "score_above_beta"
+    )
+    train_loss: Optional[float] = None
+    write_info: Dict[str, Any] = {
+      "memory_slot": None,
+      "overwrite": False,
+      "mem_filled_after": mem_filled_before,
+      "mem_index_after": mem_index_before,
+    }
 
     if update_allowed:
       noisy = x_norm + (self._noise_std * torch.randn_like(x_norm))
@@ -743,8 +854,42 @@ class OnlineMemStream(_BothScoresMixin):
       loss = torch.mean((x_norm - recon_train) ** 2)
       loss.backward()
       self._optimizer.step()
-      self._write_memory(x, z_train.squeeze(0))
-    return max(0.0, float(score_raw))
+      train_loss = float(loss.item())
+      write_info = self._write_memory(x, z_train.squeeze(0))
+      self._accepted_updates += 1
+      if bool(write_info["overwrite"]):
+        self._overwrite_updates += 1
+    else:
+      self._rejected_updates += 1
+
+    score_raw = max(0.0, float(score_raw))
+    score_std = float(np.sqrt(max(0.0, self._score_var_ema)))
+    self._last_debug = {
+      "mode": "score_and_learn",
+      "score_raw": score_raw,
+      "recon_error": recon_error,
+      "memory_error": memory_error,
+      "adaptive_beta": adaptive_beta,
+      "score_ema": None if self._score_ema is None else float(self._score_ema),
+      "score_std_ema": score_std,
+      "update_allowed": bool(update_allowed),
+      "update_reason": update_reason,
+      "train_loss": train_loss,
+      "mem_filled_before": mem_filled_before,
+      "mem_filled_after": int(write_info["mem_filled_after"]),
+      "mem_index_before": mem_index_before,
+      "mem_index_after": int(write_info["mem_index_after"]),
+      "memory_fill_fraction": float(int(write_info["mem_filled_after"]) / max(1, self.memory_size)),
+      "memory_slot": write_info["memory_slot"],
+      "memory_overwrite": bool(write_info["overwrite"]),
+      "memory_size": int(self.memory_size),
+      "warmup_accept": int(self._warmup_accept),
+      "input_mode": self.input_mode,
+      "accepted_updates_total": int(self._accepted_updates),
+      "rejected_updates_total": int(self._rejected_updates),
+      "overwrite_updates_total": int(self._overwrite_updates),
+    }
+    return score_raw
 
   def get_state(self) -> Dict[str, Any]:
     """Return picklable state for checkpointing."""
@@ -758,18 +903,27 @@ class OnlineMemStream(_BothScoresMixin):
       "memory_input": self._memory_input.cpu().numpy() if self._memory_input is not None else None,
       "norm_mean": self._norm_mean.cpu().numpy() if self._norm_mean is not None else None,
       "norm_std": self._norm_std.cpu().numpy() if self._norm_std is not None else None,
+      "input_mode": self.input_mode,
+      "frontend_marginals_state": self._frontend_marginals.get_state() if self._frontend_marginals is not None and self.input_mode != "raw" else None,
       "mem_index": self._mem_index,
       "mem_filled": self._mem_filled,
       "score_ema": self._score_ema,
       "score_var_ema": self._score_var_ema,
+      "accepted_updates": self._accepted_updates,
+      "rejected_updates": self._rejected_updates,
+      "overwrite_updates": self._overwrite_updates,
     }
 
   def set_state(self, state: Dict[str, Any]) -> None:
     """Restore from checkpoint state."""
+    self.input_mode = str(state.get("input_mode", self.input_mode))
+    frontend_state = state.get("frontend_marginals_state")
+    if frontend_state is not None:
+      if self._frontend_marginals is None:
+        raise RuntimeError("MemStream frontend state present but frontend is disabled")
+      self._frontend_marginals.set_state(frontend_state)
     self._feature_names = list(state["feature_names"])
-    # Init model from feature names so architecture exists
-    dummy = {k: 0.0 for k in self._feature_names}
-    self._init_from_features(dummy)
+    self._init_model_for_feature_names(self._feature_names)
     self._model.load_state_dict(
       {k: v.to(self._device) for k, v in state["model_state"].items()}
     )
@@ -787,6 +941,9 @@ class OnlineMemStream(_BothScoresMixin):
     self._mem_filled = int(state["mem_filled"])
     self._score_ema = state.get("score_ema")
     self._score_var_ema = float(state.get("score_var_ema", 0.0))
+    self._accepted_updates = int(state.get("accepted_updates", 0))
+    self._rejected_updates = int(state.get("rejected_updates", 0))
+    self._overwrite_updates = int(state.get("overwrite_updates", 0))
 
 
 class OnlineZScore(_BothScoresMixin):
@@ -1110,10 +1267,24 @@ class OnlineFreq1D(_BothScoresMixin):
       return float(np.mean(topk))
     return float(np.sum(w * topk) / denom)
 
+  _BINARY_PREFIXES = (
+    "event_name_",
+    "comm_bucket_",
+    "hostname_bucket_",
+    "mount_ns_bucket_",
+    "path_tok_d",
+    "file_event_name_",
+    "file_extension_bucket_",
+    "file_flags_bucket_",
+    "net_socket_type_bucket_",
+    "net_daddr_bucket_",
+    "net_af_",
+  )
+
   def _is_categorical(self, name: str) -> tuple[bool, Optional[str]]:
     if name.endswith("_hash"):
       return True, "hash"
-    if name in self._BINARY_FEATURES:
+    if name in self._BINARY_FEATURES or name.startswith(self._BINARY_PREFIXES):
       return True, "binary"
     return False, None
 
@@ -1294,6 +1465,25 @@ class OnlineFreq1D(_BothScoresMixin):
           out[i] = self._cdf_cat_slot(slot, mode, x)
         else:
           out[i] = 0.5
+    return out
+
+  def get_excess_vector(self, features: Dict[str, float]) -> np.ndarray:
+    """Return per-feature excess surprisal in _feature_names order."""
+    self._ensure_init(features)
+    if self._feature_names is None or self._kind is None or self._num_slot is None or self._cat_slot is None or self._cat_mode is None:
+      raise RuntimeError("Freq1D not initialized")
+    out = np.zeros(len(self._feature_names), dtype=np.float64)
+    for i, name in enumerate(self._feature_names):
+      x = float(features.get(name, 0.0))
+      if self._kind[i] == "num":
+        slot = self._num_slot[i]
+        if slot >= 0:
+          out[i] = self._score_numeric_slot(slot, x)
+      else:
+        slot = self._cat_slot[i]
+        mode = self._cat_mode[i] or "hash"
+        if slot >= 0:
+          out[i] = self._score_cat_slot(slot, mode, x)
     return out
 
   def _learn_cat_slot(self, slot: int, mode: str, x: float) -> None:
@@ -2186,6 +2376,7 @@ class OnlineAnomalyDetector:
     mem_latent_dim: int = 8,
     mem_memory_size: int = 128,
     mem_lr: float = 0.001,
+    mem_input_mode: str = "raw",
     zscore_min_count: int = 20,
     zscore_std_floor: float = 1e-3,
     knn_k: int = 5,
@@ -2261,6 +2452,11 @@ class OnlineAnomalyDetector:
         latent_dim=mem_latent_dim,
         memory_size=mem_memory_size,
         lr=mem_lr,
+        input_mode=mem_input_mode,
+        freq1d_bins=freq1d_bins,
+        freq1d_alpha=freq1d_alpha,
+        freq1d_decay=freq1d_decay,
+        freq1d_max_categories=freq1d_max_categories,
         model_device=model_device,
         seed=seed,
       )
@@ -2360,6 +2556,13 @@ class OnlineAnomalyDetector:
       scaled = 1.0 - float(np.exp(-max(0.0, raw)))
     return (float(raw), scaled)
 
+  def get_last_debug(self) -> Dict[str, Any]:
+    getter = getattr(self.impl, "get_last_debug", None)
+    if getter is None:
+      return {}
+    debug = getter()
+    return debug if isinstance(debug, dict) else {}
+
   def save_checkpoint(self, path: Path, checkpoint_index: int) -> None:
     """Save detector state after learning events 0..checkpoint_index-1."""
     state = {
@@ -2455,3 +2658,44 @@ def compute_feature_attribution(
       grad_approx = (s_plus - s_minus) / (2.0 * epsilon) if epsilon > 0 else 0.0
       attribution[name] = float(grad_approx * val)
   return (score, attribution)
+
+
+class OnlinePercentileCalibrator:
+  """
+  Online percentile calibration for anomaly scores.
+
+  Maintains a fixed-size window of past log1p(raw_score) values and returns the
+  percentile rank of the current value w.r.t. the past window (prequential).
+  """
+
+  def __init__(self, window_size: int = 2048, warmup: int = 128):
+    self.window_size = int(max(32, window_size))
+    self.warmup = int(max(0, warmup))
+    self._queue: deque[float] = deque(maxlen=self.window_size)
+    self._sorted: List[float] = []
+
+  @staticmethod
+  def _lograw(score_raw: float) -> float:
+    return float(math.log1p(max(0.0, float(score_raw))))
+
+  def percentile_prequential(self, score_raw: float) -> float:
+    """
+    Return percentile in [0,1] based on past window, then update window with this score.
+    """
+    x = self._lograw(score_raw)
+    n = len(self._sorted)
+    if n <= 0 or n < self.warmup:
+      pct = 0.0
+    else:
+      k = bisect.bisect_right(self._sorted, x)
+      pct = float(k) / float(n)
+
+    if len(self._queue) >= self.window_size:
+      old = self._queue.popleft()
+      j = bisect.bisect_left(self._sorted, old)
+      if 0 <= j < len(self._sorted):
+        self._sorted.pop(j)
+
+    self._queue.append(x)
+    bisect.insort(self._sorted, x)
+    return float(min(1.0, max(0.0, pct)))

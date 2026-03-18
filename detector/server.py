@@ -24,6 +24,7 @@ import events_pb2_grpc
 from detector.config import DetectorConfig, load_config
 from detector.features import extract_feature_dict
 from detector.model import OnlineAnomalyDetector
+from detector.model import OnlinePercentileCalibrator
 
 # Ring buffer of recent events for UI log tail in gRPC mode (GET /recent_events).
 # Size is set during initialization from config
@@ -89,7 +90,7 @@ def _event_base_entry(evt: events_pb2.EventEnvelope) -> dict:
   return {
     "event_id": evt.event_id,
     "event_name": evt.event_name or "",
-    "event_type": evt.event_type or "",
+    "event_group": evt.event_group or "",
     "data": list(evt.data) if evt.data else [],
     "hostname": evt.hostname or "",
     "pod_name": evt.pod_name or "",
@@ -187,9 +188,9 @@ def _now_timestamp() -> timestamp_pb2.Timestamp:
 
 
 class DeterministicScorer:
-  """Per-event_type scorer that preserves deterministic learning semantics.
+  """Per-event_group scorer that preserves deterministic learning semantics.
 
-  We maintain one OnlineAnomalyDetector instance per event_type (including the
+  We maintain one OnlineAnomalyDetector instance per event_group (including the
   empty/default type). Each model sees a consistent feature vector shape, since
   extract_feature_dict() always returns the same feature set for a given type.
   """
@@ -197,10 +198,11 @@ class DeterministicScorer:
   def __init__(self, cfg: DetectorConfig):
     self.cfg = cfg
     self._models: dict[str, OnlineAnomalyDetector] = {}
+    self._percentiles: dict[str, OnlinePercentileCalibrator] = {}
     self._lock = threading.Lock()
 
-  def _key_for_type(self, event_type: str) -> str:
-    t = (event_type or "").strip().lower()
+  def _key_for_type(self, event_group: str) -> str:
+    t = (event_group or "").strip().lower()
     return t or "__default__"
 
   def _model_kwargs(self) -> dict:
@@ -223,6 +225,7 @@ class DeterministicScorer:
       "mem_latent_dim": self.cfg.mem_latent_dim,
       "mem_memory_size": self.cfg.mem_memory_size,
       "mem_lr": self.cfg.mem_lr,
+      "mem_input_mode": self.cfg.mem_input_mode,
       "zscore_min_count": self.cfg.zscore_min_count,
       "zscore_std_floor": self.cfg.zscore_std_floor,
       "knn_k": self.cfg.knn_k,
@@ -259,31 +262,56 @@ class DeterministicScorer:
       "seed": self.cfg.model_seed,
     }
 
-  def _get_model(self, event_type: str) -> OnlineAnomalyDetector:
-    key = self._key_for_type(event_type)
+  def _get_model(self, event_group: str) -> OnlineAnomalyDetector:
+    key = self._key_for_type(event_group)
     model = self._models.get(key)
     if model is None:
       model = OnlineAnomalyDetector(**self._model_kwargs())
       self._models[key] = model
-      logging.info("Initialized model for event_type=%r (algorithm=%s)", key, model.algorithm)
+      logging.info("Initialized model for event_group=%r (algorithm=%s)", key, model.algorithm)
     return model
+
+  def _get_percentile(self, event_group: str) -> OnlinePercentileCalibrator:
+    key = self._key_for_type(event_group)
+    cal = self._percentiles.get(key)
+    if cal is None:
+      cal = OnlinePercentileCalibrator(
+        window_size=getattr(self.cfg, "percentile_window_size", 2048),
+        warmup=getattr(self.cfg, "percentile_warmup", 128),
+      )
+      self._percentiles[key] = cal
+      logging.info(
+        "Initialized percentile calibrator for event_group=%r (window=%d warmup=%d)",
+        key,
+        cal.window_size,
+        cal.warmup,
+      )
+    return cal
 
   def score_event(self, evt: events_pb2.EventEnvelope) -> events_pb2.DetectionResponse:
     anomaly = False
     reason = ""
     score_raw = 0.0
     score_scaled = 0.0
+    score_primary = 0.0
 
     try:
       with self._lock:
-        features = extract_feature_dict(evt)
-        model = self._get_model(evt.event_type or "")
+        features = extract_feature_dict(evt, encoding=getattr(self.cfg, "feature_encoding", "encoded"))
+        model = self._get_model(evt.event_group or "")
         score_raw, score_scaled = model.score_and_learn(features)
-        primary = score_scaled if getattr(self.cfg, "score_mode", "raw") == "scaled" else score_raw
-        anomaly = primary >= self.cfg.threshold
+        score_mode = getattr(self.cfg, "score_mode", "raw")
+        if score_mode == "scaled":
+          score_primary = float(score_scaled)
+        elif score_mode == "percentile":
+          cal = self._get_percentile(evt.event_group or "")
+          score_primary = float(cal.percentile_prequential(float(score_raw)))
+        else:
+          score_primary = float(score_raw)
+        anomaly = score_primary >= float(self.cfg.threshold)
 
       if anomaly:
-        reason = f"{model.algorithm} anomaly score {primary:.3f} exceeds threshold {self.cfg.threshold}"
+        reason = f"{model.algorithm} anomaly score {score_primary:.3f} exceeds threshold {self.cfg.threshold}"
     except Exception as e:
       logging.error("Error scoring event %s: %s", evt.event_id, e, exc_info=True)
       anomaly = False
@@ -291,7 +319,8 @@ class DeterministicScorer:
       score_scaled = 0.0
       reason = f"Scoring error: {str(e)}"
 
-    resp_score = float(score_scaled)
+    # `score` is the primary score used for thresholding/UI (bounded 0..1).
+    resp_score = float(score_primary) if getattr(self.cfg, "score_mode", "raw") == "percentile" else float(score_scaled)
     resp_score = min(resp_score, 1.0)
 
     return events_pb2.DetectionResponse(  # type: ignore[attr-defined]
@@ -399,6 +428,7 @@ async def serve():
           # Prometheus-format metrics
           with _metrics_lock:
             m = _metrics.copy()
+          score_mode = getattr(cfg, "score_mode", "raw")
           lines = [
             "# HELP sentinel_ebpf_detector_events_total Total number of events processed",
             "# TYPE sentinel_ebpf_detector_events_total counter",
@@ -428,9 +458,17 @@ async def serve():
             "# TYPE sentinel_ebpf_detector_threshold gauge",
             f"sentinel_ebpf_detector_threshold {cfg.threshold}",
             "",
-            "# HELP sentinel_ebpf_detector_score_mode Score space: 0=raw, 1=scaled",
+            "# HELP sentinel_ebpf_detector_score_mode Detector score mode (raw/scaled/percentile)",
             "# TYPE sentinel_ebpf_detector_score_mode gauge",
-            f'sentinel_ebpf_detector_score_mode {1 if cfg.score_mode == "scaled" else 0}',
+            f'sentinel_ebpf_detector_score_mode{{mode="{score_mode}"}} 1',
+            "",
+            "# HELP sentinel_ebpf_detector_percentile_window_size Percentile calibration window size (events)",
+            "# TYPE sentinel_ebpf_detector_percentile_window_size gauge",
+            f"sentinel_ebpf_detector_percentile_window_size {getattr(cfg, 'percentile_window_size', 0)}",
+            "",
+            "# HELP sentinel_ebpf_detector_percentile_warmup Percentile calibration warmup (events)",
+            "# TYPE sentinel_ebpf_detector_percentile_warmup gauge",
+            f"sentinel_ebpf_detector_percentile_warmup {getattr(cfg, 'percentile_warmup', 0)}",
           ]
           body = "\n".join(lines).encode("utf-8")
           self.send_response(200)
@@ -464,9 +502,9 @@ async def serve():
             path_s = (path or "").lower()
             comm_s = (comm or "").lower()
             hostname = (obj.get("hostname") or "").lower()
-            event_type = (obj.get("event_type") or "").lower()
+            event_group = (obj.get("event_group") or "").lower()
             data_joined = " ".join(str(x) for x in data).lower()
-            haystack = f"{event_name} {comm_s} {path_s} {hostname} {event_type} {data_joined}"
+            haystack = f"{event_name} {comm_s} {path_s} {hostname} {event_group} {data_joined}"
             parts = query.strip().split()
             for part in parts:
               if not part:
@@ -482,7 +520,7 @@ async def serve():
                   return False
                 if field == "hostname" and value not in hostname:
                   return False
-                if field == "type" and value not in event_type:
+                if field == "type" and value not in event_group:
                   return False
               elif part.lower() not in haystack:
                 return False

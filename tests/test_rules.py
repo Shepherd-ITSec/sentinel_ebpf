@@ -1,4 +1,4 @@
-"""Tests for probe/rules.py in DSL-only mode."""
+"""Tests for probe/rules.py rule loading and matching."""
 
 import pytest
 
@@ -28,30 +28,41 @@ class TestRuleEngineDsl:
 
   def test_reload(self, temp_dir):
     rules_file = temp_dir / "rules.yaml"
-    rules_file.write_text("""rules:
+    rules_file.write_text("""groups:
+  file: {}
+rules:
   - name: rule1
-    condition: "event_name = openat and path startswith /"
+    group: file
+    syscalls: [openat]
+    condition: "path startswith /"
 """)
     engine = RuleEngine(str(rules_file))
     assert len(engine.condition_rules) == 1
 
-    rules_file.write_text("""rules:
+    rules_file.write_text("""groups:
+  file: {}
+rules:
   - name: rule1
-    condition: "event_name = openat and path startswith /"
+    group: file
+    syscalls: [openat]
+    condition: "path startswith /"
   - name: rule2
-    condition: "event_name = execve and comm = bash"
+    group: file
+    syscalls: [execve]
+    condition: "comm = bash"
 """)
     engine.reload()
     assert len(engine.condition_rules) == 2
 
-  def test_rejects_path_prefix_excludes(self, temp_dir):
+  def test_rejects_deprecated_type_field(self, temp_dir):
     rules_file = temp_dir / "rules.yaml"
-    rules_file.write_text("""pathPrefixExcludes:
-  - "/proc"
-  - "/sys"
+    rules_file.write_text("""groups:
+  file: {}
 rules:
   - name: capture-all
-    condition: "event_name = openat and path startswith /"
+    type: file
+    syscalls: [openat]
+    condition: "path startswith /"
 """)
-    with pytest.raises(ValueError, match="pathPrefixExcludes is not supported"):
+    with pytest.raises(ValueError, match="deprecated 'type'"):
       RuleEngine(str(rules_file))

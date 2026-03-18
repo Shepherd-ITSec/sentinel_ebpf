@@ -171,7 +171,7 @@ def _build_output_from_selected(
   for out_idx, src in enumerate(selected_rows):
     evt, label = _build_evt(src.row, out_idx, start_ts_unix_nano, event_id_prefix=event_id_prefix)
     # Synthetic dataset inherits BETH rows; mark category consistently.
-    evt["event_type"] = "network"
+    evt["event_group"] = "network"
     # Keep provenance to make debugging easier while preserving original label semantics.
     evt.setdefault("attributes", {})
     evt["attributes"]["source_file"] = src.source_file

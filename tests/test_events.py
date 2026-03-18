@@ -13,12 +13,12 @@ class TestEventEnvelope:
     evt = events_pb2.EventEnvelope(
       event_id="test-123",
       event_name="openat",
-      event_type="",
+      event_group="",
       ts_unix_nano=1234567890000000000,
     )
     assert evt.event_id == "test-123"
     assert evt.event_name == "openat"
-    assert evt.event_type == ""
+    assert evt.event_group == ""
     assert evt.ts_unix_nano == 1234567890000000000
     assert len(evt.data) == 0
 
@@ -26,7 +26,7 @@ class TestEventEnvelope:
     evt = events_pb2.EventEnvelope(
       event_id="test-123",
       event_name="openat",
-      event_type="",
+      event_group="",
       ts_unix_nano=1234567890000000000,
       data=["openat", "2", "bash", "1234", "5678", "1000", "-100", "2", "/tmp/test.txt", "2"],
     )
@@ -46,7 +46,7 @@ class TestEventEnvelope:
       namespace="default",
       container_id="container-123",
       event_name="openat",
-      event_type="",
+      event_group="",
       ts_unix_nano=1234567890000000000,
       data=["openat", "2", "cat", "5678", "5678", "0", "-100", "2", "/etc/hosts", "2"],
     )
@@ -60,7 +60,7 @@ class TestEventEnvelope:
     evt = events_pb2.EventEnvelope(
       event_id="test-123",
       event_name="openat",
-      event_type="",
+      event_group="",
       ts_unix_nano=1234567890000000000,
       data=["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
       attributes={"env": "prod", "team": "security"},
@@ -77,7 +77,7 @@ class TestEventEnvelope:
       namespace="default",
       container_id="container-123",
       event_name="openat",
-      event_type="",
+      event_group="",
       ts_unix_nano=1234567890000000000,
       data=["openat", "2", "bash", "1234", "5678", "1000", "-100", "2", "/tmp/test.txt", "2"],
     )
@@ -91,7 +91,7 @@ class TestEventEnvelope:
       "namespace": evt.namespace,
       "container_id": evt.container_id,
       "event_name": evt.event_name,
-      "event_type": evt.event_type,
+      "event_group": evt.event_group,
       "data": list(evt.data),
       "attributes": dict(evt.attributes),
     }
@@ -101,7 +101,7 @@ class TestEventEnvelope:
 
     assert parsed["event_id"] == "test-123"
     assert parsed["event_name"] == "openat"
-    assert parsed["event_type"] == ""
+    assert parsed["event_group"] == ""
     assert parsed["data"] == ["openat", "2", "bash", "1234", "5678", "1000", "-100", "2", "/tmp/test.txt", "2"]
 
   def test_generic_event_format(self):
@@ -109,7 +109,7 @@ class TestEventEnvelope:
     evt = events_pb2.EventEnvelope(
       event_id="open-123",
       event_name="openat",
-      event_type="",
+      event_group="",
       ts_unix_nano=1234567890000000000,
       data=["openat", "2", "cat", "9999", "9999", "1000", "-100", "2", "/etc/passwd", "2"],
     )

@@ -1,4 +1,4 @@
-"""Tests for Falco-like condition DSL and kernel compile behavior."""
+"""Tests for explicit-syscall rules and DSL/kernel compile behavior."""
 
 from probe.bpf_build import build_bpf_program, enabled_event_ids_from_rules
 from probe.rules import RuleEngine
@@ -8,14 +8,18 @@ def test_condition_rules_with_lists_and_macros(temp_dir):
   rules_file = temp_dir / "rules.yaml"
   rules_file.write_text(
     """lists:
-  shell_comms: ["bash", "sh"]
+  file_syscalls: [open, openat, openat2]
+  shell_comms: [bash, sh]
 macros:
-  file_evt: "event_name in (open, openat, openat2)"
   sensitive_open: "path startswith /etc or path startswith /root"
+groups:
+  file: {}
 rules:
   - name: dsl-rule
     enabled: true
-    condition: "file_evt and sensitive_open and comm in (shell_comms)"
+    group: file
+    syscalls: file_syscalls
+    condition: "sensitive_open and comm in (shell_comms)"
 """
   )
   engine = RuleEngine(str(rules_file))
@@ -47,18 +51,20 @@ rules:
   )
 
 
-def test_rule_type_label_is_exposed_via_classify_event(temp_dir):
+def test_rule_group_label_is_exposed_via_classify_event(temp_dir):
   rules_file = temp_dir / "rules.yaml"
   rules_file.write_text(
-    """rules:
+    """groups:
+  network: {}
+rules:
   - name: capture-network-connectivity
     enabled: true
-    type: network
-    condition: "event_name in (socket, connect)"
+    group: network
+    syscalls: [socket, connect]
 """
   )
   engine = RuleEngine(str(rules_file))
-  allowed, rule_type = engine.classify_event(
+  allowed, group = engine.classify_event(
     {
       "event_name": "connect",
       "event_id": 42,
@@ -78,104 +84,114 @@ def test_rule_type_label_is_exposed_via_classify_event(temp_dir):
     }
   )
   assert allowed
-  assert rule_type == "network"
+  assert group == "network"
 
 
-def test_kernel_compile_includes_read_write_from_file_events(temp_dir):
-  """Read and write are in EVENT_NAME_TO_ID; rules with file_events should compile BPF rules for them."""
+def test_kernel_compile_includes_read_write_from_rule_syscalls(temp_dir):
   rules_file = temp_dir / "rules.yaml"
   rules_file.write_text(
     """lists:
-  file_events: [open, openat, read, write]
+  file_syscalls: [open, openat, read, write]
+groups:
+  file: {}
 rules:
   - name: capture-file
     enabled: true
-    type: file
-    condition: "event_name in (file_events)"
+    group: file
+    syscalls: file_syscalls
 """
   )
   engine = RuleEngine(str(rules_file))
   compiled, _ = engine.compile_kernel_rules()
   event_ids = {r["event_id"] for r in compiled}
-  assert 0 in event_ids, "read (syscall 0) should be in compiled rules"
-  assert 1 in event_ids, "write (syscall 1) should be in compiled rules"
+  assert 0 in event_ids
+  assert 1 in event_ids
 
 
 def test_enabled_event_ids_selective_probes(temp_dir):
-  """Only event_ids in rules are enabled for probe attachment."""
   rules_file = temp_dir / "rules.yaml"
   rules_file.write_text(
-    """rules:
+    """groups:
+  file: {}
+rules:
   - name: openat-only
     enabled: true
-    condition: "event_name = openat"
+    group: file
+    syscalls: [openat]
 """
   )
   engine = RuleEngine(str(rules_file))
   compiled, _ = engine.compile_kernel_rules()
   enabled = enabled_event_ids_from_rules(compiled)
-  assert 257 in enabled, "openat (257) should be enabled"
-  assert 0 not in enabled, "read (0) should not be enabled when not in rules"
-  assert 59 not in enabled, "execve (59) should not be enabled"
+  assert 257 in enabled
+  assert 0 not in enabled
+  assert 59 not in enabled
 
-  # Build program and verify ENABLE_OPENAT=1; read/write probes disabled when not in rules
   prog = build_bpf_program(256, enabled_event_ids=enabled)
   assert "#define ENABLE_OPENAT 1" in prog
-  assert "#define ENABLE_READ 0" in prog  # read probe not attached when not in rules
+  assert "#define ENABLE_READ 0" in prog
 
 
 def test_enabled_event_ids_read_only_includes_fd_map_deps(temp_dir):
-  """Rules with only read (or write) get open/openat/openat2/close for fd->path cache."""
   rules_file = temp_dir / "rules.yaml"
   rules_file.write_text(
-    """rules:
+    """groups:
+  file: {}
+rules:
   - name: read-only
     enabled: true
-    condition: "event_name = read"
+    group: file
+    syscalls: [read]
 """
   )
   engine = RuleEngine(str(rules_file))
   compiled, _ = engine.compile_kernel_rules()
   enabled = enabled_event_ids_from_rules(compiled)
   assert 0 in enabled
-  assert 2 in enabled, "open needed for fd_map"
-  assert 3 in enabled, "close needed for fd_map"
-  assert 257 in enabled, "openat needed for fd_map"
-  assert 437 in enabled, "openat2 needed for fd_map"
-  assert 57 in enabled, "fork needed for pid_to_parent (inherited fds)"
+  assert 2 in enabled
+  assert 3 in enabled
+  assert 257 in enabled
+  assert 437 in enabled
+  assert 57 in enabled
 
 
-def test_enabled_event_ids_wildcard_enables_all(temp_dir):
-  """Rule with event_id wildcard enables all probes."""
+def test_enabled_event_ids_without_syscall_wildcard(temp_dir):
   rules_file = temp_dir / "rules.yaml"
   rules_file.write_text(
-    """rules:
-  - name: any-event
+    """groups:
+  file: {}
+rules:
+  - name: any-file-open
     enabled: true
+    group: file
+    syscalls: [openat]
     condition: "comm = bash"
 """
   )
   engine = RuleEngine(str(rules_file))
   compiled, _ = engine.compile_kernel_rules()
   enabled = enabled_event_ids_from_rules(compiled)
-  assert 257 in enabled and 59 in enabled, "wildcard should enable all"
-  assert 0 in enabled and 1 in enabled, "wildcard enables read/write (enriched via fd->path)"
+  assert enabled == {257}
 
 
 def test_kernel_compile_with_userspace_fallback_predicates(temp_dir):
   rules_file = temp_dir / "rules.yaml"
   rules_file.write_text(
-    """rules:
+    """groups:
+  file: {}
+rules:
   - name: mixed-rule
     enabled: true
-    condition: "event_name = openat and path startswith /etc and open_flags contains O_RDONLY and hostname = node-a"
+    group: file
+    syscalls: [openat]
+    condition: "path startswith /etc and open_flags contains O_RDONLY and hostname = node-a"
 """
   )
   engine = RuleEngine(str(rules_file))
   compiled, stats = engine.compile_kernel_rules()
   assert len(compiled) >= 1
-  assert stats.compiled_predicates >= 2  # event_name + path startswith
-  assert stats.fallback_predicates >= 2  # open_flags/hostname
+  assert stats.compiled_predicates >= 1
+  assert stats.fallback_predicates >= 2
 
 
 def test_startswithin_with_list(temp_dir):
@@ -185,14 +201,17 @@ def test_startswithin_with_list(temp_dir):
   noisy_paths: [/proc, /sys, /tmp]
 macros:
   noisy_path: "path startswithin (noisy_paths)"
+groups:
+  file: {}
 rules:
   - name: capture-non-noisy
     enabled: true
-    condition: "event_name = openat and not noisy_path"
+    group: file
+    syscalls: [openat]
+    condition: "not noisy_path"
 """
   )
   engine = RuleEngine(str(rules_file))
-  # /etc/passwd does not start with any noisy prefix -> allowed
   assert engine.allow_event(
     {
       "event_name": "openat",
@@ -206,7 +225,6 @@ rules:
       "namespace": "default",
     }
   )
-  # /proc/self/status starts with /proc -> noisy, not allowed
   assert not engine.allow_event(
     {
       "event_name": "openat",
@@ -220,7 +238,6 @@ rules:
       "namespace": "default",
     }
   )
-  # /tmp/foo starts with /tmp -> noisy, not allowed
   assert not engine.allow_event(
     {
       "event_name": "openat",

@@ -1,34 +1,37 @@
-# Falco-like building blocks (phase-1 subset):
-# - lists: reusable value sets
-# - macros: reusable condition fragments
-# - rules: condition expressions with and/or/not, in, startswith, startswithin, contains, =
 lists:
-  file_events: [open, openat, openat2, unlink, unlinkat, rename, renameat, chmod, chown, read, write]
-  process_events: [execve, fork]
-  net_events: [socket, connect, bind, listen, accept, accept4]
-  shell_events: [bash, sh, zsh]
+  file_syscalls: [open, openat, openat2, unlink, unlinkat, rename, renameat, chmod, chown, read, write]
+  process_syscalls: [execve, fork]
+  network_syscalls: [socket, connect, bind, listen, accept, accept4]
+  shell_comms: [bash, sh, zsh]
   noisy_paths: [/proc, /sys, /dev, /run, /var/run, /tmp, /var/log, /var/lib/rancher/k3s/agent/containerd/io.containerd.snapshotter.v1.overlayfs]
 
+groups:
+  file:
+    features:
+      sensitive_paths: [/etc, /root, /bin, /usr/bin, /sbin, /usr/sbin]
+      tmp_paths: [/tmp, /var/tmp]
+  process: {}
+  network: {}
+
 macros:
-  file_evt: "event_name in (file_events)"
-  process_evt: "event_name in (process_events)"
-  net_evt: "event_name in (net_events)"
   noisy_path: "path startswithin (noisy_paths)"
-  shell_proc: "comm in (shell_events)"
   filterable_path: "not (event_name in (read, write) and path = \"\")"
+  shell_proc: "comm in (shell_comms)"
 
 rules:
   - name: capture-file-events
     enabled: true
-    type: file
-    condition: "file_evt and not noisy_path and filterable_path"
+    group: file
+    syscalls: file_syscalls
+    condition: "not noisy_path and filterable_path"
 
   - name: capture-shell-process-events
     enabled: false
-    type: process
-    condition: "process_evt and shell_proc"
+    group: process
+    syscalls: process_syscalls
+    condition: "shell_proc"
 
   - name: capture-network-events
     enabled: false
-    type: network
-    condition: "net_evt"
+    group: network
+    syscalls: network_syscalls

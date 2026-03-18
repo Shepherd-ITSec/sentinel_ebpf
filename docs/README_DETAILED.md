@@ -97,7 +97,7 @@ Deep-dive authoring and execution details: `docs/RULES_GUIDE.md`.
 
 Supported style:
 
-- Condition DSL with reusable `lists`, `macros`, and boolean `condition`.
+- Hybrid rules with explicit `rules[].syscalls`, optional reusable `lists`/`macros`, boolean `condition`, and `groups` metadata.
 - Path exclusions should be encoded in DSL macros/conditions (Falco-like style),
   for example `not noisy_path` in file-focused rules.
 
@@ -105,21 +105,27 @@ Example:
 
 ```yaml
 lists:
-  file_events: [open, openat, openat2, unlink, unlinkat, rename, renameat]
+  file_syscalls: [open, openat, openat2, unlink, unlinkat, rename, renameat]
   shell_comms: [bash, sh, zsh]
 
 macros:
-  file_evt: "event_name in (file_events)"
   sensitive_path: "path startswith /etc or path startswith /root"
+
+groups:
+  file: {}
+  network: {}
 
 rules:
   - name: capture-sensitive-shell-file-events
     enabled: true
-    condition: "file_evt and sensitive_path and comm in (shell_comms)"
+    group: file
+    syscalls: file_syscalls
+    condition: "sensitive_path and comm in (shell_comms)"
 
   - name: capture-network-connectivity
     enabled: true
-    condition: "event_name in (socket, connect)"
+    group: network
+    syscalls: [socket, connect]
 ```
 
 Supported condition fields:
@@ -147,7 +153,7 @@ Supported operators:
 Probe sends `EventEnvelope` with:
 
 - `event_name`: syscall/event name (e.g. `openat`, `execve`, `socket`, `connect`).
-- `event_type`: rule-defined category (e.g. `network`, `file`, `process`) or empty.
+- `event_group`: rule-defined category (e.g. `network`, `file`, `process`) or empty.
 - `data`: ordered string vector with canonical format:
   `[event_name, event_id, comm, pid, tid, uid, arg0, arg1, path, flags]`.
 - `attributes.open_flags`: userspace-decoded open flags for open/openat/openat2 events.

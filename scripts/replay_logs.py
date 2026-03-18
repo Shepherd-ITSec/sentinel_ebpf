@@ -137,13 +137,13 @@ def replay(path, target, pace, start_ms, end_ms, total=None, label="Replay", max
       data_field = obj.get("data", [])
       if not isinstance(data_field, list):
         raise ValueError("invalid event record: 'data' must be an ordered list")
-      # event_name = syscall name; event_type = category. Support old payloads that only had event_type (syscall name).
+      # event_name = syscall name; event_group = category.
       if "event_name" in obj:
         event_name = obj.get("event_name", "") or (data_field[0] if data_field else "")
-        event_type = obj.get("event_type", "")
+        event_group = obj.get("event_group", "")
       else:
-        event_name = obj.get("event_type", "") or (data_field[0] if data_field else "")
-        event_type = ""
+        event_name = obj.get("event_name", "") or (data_field[0] if data_field else "")
+        event_group = ""
       # JSONL dump uses pod_name; EVT1 uses pod
       pod_name = obj.get("pod_name", obj.get("pod", ""))
       env = events_pb2.EventEnvelope(
@@ -154,7 +154,7 @@ def replay(path, target, pace, start_ms, end_ms, total=None, label="Replay", max
         container_id=obj.get("container_id", ""),
         ts_unix_nano=int(obj.get("ts_unix_nano", 0)),
         event_name=event_name,
-        event_type=event_type,
+        event_group=event_group,
         data=data_field,
         attributes=dict(obj.get("attributes", {}) or {}),
       )

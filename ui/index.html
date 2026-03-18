@@ -369,9 +369,9 @@
           </div>
         </div>
         <div class="section" data-widget-id="score-chart-scaled">
-          <h3>Anomaly Score (per poll) — Scaled</h3>
+          <h3>Anomaly Score (per poll) — Primary</h3>
           <div class="section-inner">
-            <div class="map-note" style="margin-bottom:8px;">0–1 bounded score (1 − exp(−raw)).</div>
+            <div class="map-note" style="margin-bottom:8px;" id="scorePrimaryNote">0–1 primary score.</div>
             <div class="chart-container score-chart-container score-chart-scaled">
               <div class="chart-wrapper">
                 <canvas id="scoreChartScaled"></canvas>
@@ -1024,14 +1024,14 @@
         entries = entries.slice().sort(compare);
         const headers = [
           { key: "ts_unix_nano", label: "Time" },
-          { key: "event_type", label: "Type" },
+          { key: "event_group", label: "Group" },
           { key: "event_name", label: "Syscall" },
           { key: "hostname", label: "Host" },
           { key: "comm", label: "Comm" },
           { key: "path", label: "Path" },
           { key: "pid_tid_uid", label: "PID/TID/UID" },
           { key: "anomaly", label: "Anomaly" },
-          { key: "score", label: "Score (scaled)" },
+          { key: "score", label: "Score (primary)" },
           { key: "score_raw", label: "Score (raw)" },
           { key: "reason", label: "Reason" },
         ];
@@ -1119,7 +1119,7 @@
         const path = (f.path || "").toLowerCase();
         const comm = (f.comm || "").toLowerCase();
         const hostname = (entry.hostname || "").toLowerCase();
-        const eventType = (entry.event_type || "").toLowerCase();
+        const eventType = (entry.event_group || "").toLowerCase();
         const parts = filter.trim().split(/\s+/);
         for (const part of parts) {
           const m = part.match(/^(\w+)=(.+)$/);
@@ -1153,7 +1153,7 @@
       }
       const watchHeaders = [
         { key: "ts_unix_nano", label: "Time" },
-        { key: "event_type", label: "Type" },
+        { key: "event_group", label: "Group" },
         { key: "event_name", label: "Syscall" },
         { key: "hostname", label: "Host" },
         { key: "comm", label: "Comm" },
@@ -1278,7 +1278,7 @@
           tid: p.tid || "",
           uid: p.uid || "",
           hostname: p.hostname || "",
-          event_type: p.event_type || "",
+          event_group: p.event_group || "",
           ts_unix_nano: p.ts_unix_nano || 0
         }));
         const scoreMapSignature = JSON.stringify(datasetPoints.map(p => [
@@ -1316,7 +1316,7 @@
                   title: (items) => {
                     if (!items || !items.length) return "";
                     const raw = items[0].raw || {};
-                    return `${raw.event_type || "event"} @ ${formatTimestampNs(raw.ts_unix_nano)}`;
+                    return `${raw.event_group || "event"} @ ${formatTimestampNs(raw.ts_unix_nano)}`;
                   },
                   label: (item) => {
                     const raw = item.raw || {};
@@ -1600,11 +1600,20 @@
           return unscaledFromScaled(bucket.max_score);
         });
         const threshold = (data.threshold != null && Number.isFinite(data.threshold)) ? data.threshold : 0.7;
-        const scoreMode = (data.score_mode === "scaled" || data.score_mode === "raw") ? data.score_mode : (threshold > 0 && threshold < 1 ? "scaled" : "raw");
+        const scoreMode = (data.score_mode === "scaled" || data.score_mode === "raw" || data.score_mode === "percentile")
+          ? data.score_mode
+          : (threshold > 0 && threshold < 1 ? "scaled" : "raw");
         // For raw chart: when threshold is in scaled space, convert to raw via raw = -ln(1 - scaled).
         const thresholdRaw = (scoreMode === "scaled" && threshold > 0 && threshold < 1)
           ? -Math.log(1 - threshold)
           : threshold;
+        // Update UI note for primary score interpretation.
+        const noteEl = document.getElementById("scorePrimaryNote");
+        if (noteEl) {
+          if (scoreMode === "percentile") noteEl.textContent = "Primary score = online percentile of log1p(raw) per event type (0–1).";
+          else if (scoreMode === "scaled") noteEl.textContent = "Primary score = bounded [0,1] (most models: 1 − exp(−raw)).";
+          else noteEl.textContent = "Primary score = raw model output (clipped to 0–1 for display).";
+        }
         const isDark = document.documentElement.getAttribute("data-theme") !== "light";
         const textColor = isDark ? "#e6edf3" : "#1f2328";
         const gridColor = isDark ? "#2d3a4f" : "#d0d7de";

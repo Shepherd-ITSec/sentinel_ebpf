@@ -85,7 +85,7 @@ def _build_evt(row: Dict[str, str], row_idx: int, base_ts_ns: int, event_id_pref
     "namespace": "",
     "container_id": "",
     "event_name": event_name,
-    "event_type": BETH_EVENT_TYPE,
+    "event_group": BETH_EVENT_TYPE,
     "data": [
       event_name,
       str(event_id),

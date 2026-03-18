@@ -2,8 +2,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-import yaml
 from probe.events import EVENT_NAME_TO_ID, UNKNOWN_EVENT_ID
+from rules_config import load_rules_config
 
 # Sentinel for "match any" in kernel rules; must match probe.bpf.c WILDCARD (0xFFFFFFFF).
 # Avoids collision with event_id 0 (read), uid 0 (root), pid/tid 0.
@@ -31,9 +31,9 @@ class ConditionRule:
   name: str
   condition: str
   enabled: bool = True
-  # Optional high-level classification for matched events (e.g. "network", "file").
-  # This is metadata attached to the rule, not part of the expression language.
-  rule_type: str = ""
+  group: str = ""
+  syscalls: tuple[str, ...] = ()
+  event_ids: frozenset[int] = frozenset()
   ast: Optional["Expr"] = None
 
 
@@ -74,11 +74,6 @@ class Not(Expr):
   inner: Expr
 
 
-def _load_yaml(path: str) -> Any:
-  with open(path, "r", encoding="utf-8") as f:
-    return yaml.safe_load(f) or {}
-
-
 def _strip_quotes(token: str) -> str:
   if len(token) >= 2 and ((token[0] == '"' and token[-1] == '"') or (token[0] == "'" and token[-1] == "'")):
     return token[1:-1]
@@ -92,7 +87,7 @@ def _tokenize_condition(condition: str) -> List[str]:
 
 
 class _ConditionParser:
-  def __init__(self, tokens: List[str], lists: Dict[str, List[str]]):
+  def __init__(self, tokens: List[str], lists: Dict[str, tuple[str, ...]]):
     self.tokens = tokens
     self.pos = 0
     self.lists = lists
@@ -158,8 +153,9 @@ class _ConditionParser:
         break
       if tok == ",":
         continue
-      if tok in self.lists:
-        items.extend(self.lists[tok])
+      list_key = _strip_quotes(tok).strip().lower()
+      if list_key in self.lists:
+        items.extend(self.lists[list_key])
       else:
         items.append(_strip_quotes(tok))
     return items
@@ -183,8 +179,9 @@ class _ConditionParser:
         self._next()
         values = self._parse_list_items()
       else:
-        tok = self._next()
-        values = list(self.lists.get(tok, [_strip_quotes(tok)]))
+        tok = _strip_quotes(self._next())
+        list_key = tok.strip().lower()
+        values = list(self.lists.get(list_key, (tok,)))
       return Predicate(field=field, op="in", value=values)
 
     if op_tok == "startswithin":
@@ -193,25 +190,6 @@ class _ConditionParser:
       return Predicate(field=field, op="startswithin", value=values)
 
     raise ValueError(f"Unsupported operator '{op_tok}' in condition")
-
-
-def _normalize_lists(raw_lists: Any) -> Dict[str, List[str]]:
-  result: Dict[str, List[str]] = {}
-  if not isinstance(raw_lists, dict):
-    return result
-  for name, values in raw_lists.items():
-    if isinstance(values, list):
-      result[str(name)] = [str(v) for v in values]
-  return result
-
-
-def _normalize_macros(raw_macros: Any) -> Dict[str, str]:
-  result: Dict[str, str] = {}
-  if not isinstance(raw_macros, dict):
-    return result
-  for name, expr in raw_macros.items():
-    result[str(name)] = str(expr)
-  return result
 
 
 def _expand_macros(condition: str, macros: Dict[str, str]) -> str:
@@ -241,26 +219,6 @@ def _expand_macros(condition: str, macros: Dict[str, str]) -> str:
   return expanded
 
 
-def _normalize_rules(raw_data: Any) -> Tuple[Dict[str, List[str]], Dict[str, str], List[Dict[str, Any]]]:
-  lists: Dict[str, List[str]] = {}
-  macros: Dict[str, str] = {}
-  rule_entries: List[Dict[str, Any]] = []
-
-  if not isinstance(raw_data, dict):
-    raise ValueError("rules file must be a mapping with keys: lists, macros, rules")
-  if "pathPrefixExcludes" in raw_data:
-    raise ValueError("pathPrefixExcludes is not supported; express exclusions in DSL conditions")
-  lists = _normalize_lists(raw_data.get("lists", {}))
-  macros = _normalize_macros(raw_data.get("macros", {}))
-  raw_rules = raw_data.get("rules", [])
-  if isinstance(raw_rules, list):
-    for r in raw_rules:
-      if isinstance(r, dict):
-        rule_entries.append(r)
-
-  return lists, macros, rule_entries
-
-
 class RuleEngine:
   def __init__(self, path: str):
     self.path = path
@@ -269,23 +227,29 @@ class RuleEngine:
     self.reload()
 
   def reload(self):
-    data = _load_yaml(self.path)
-    lists, macros, raw_rules = _normalize_rules(data)
+    cfg = load_rules_config(self.path)
     self.condition_rules = []
 
-    for raw in raw_rules:
-      enabled = bool(raw.get("enabled", True))
-      name = str(raw.get("name") or "")
-      cond_text = str(raw.get("condition", "")).strip()
-      if not cond_text:
-        raise ValueError(f"Rule '{name or '<unnamed>'}' is missing required 'condition'")
-      expanded = _expand_macros(cond_text, macros)
-      tokens = _tokenize_condition(expanded)
-      parser = _ConditionParser(tokens=tokens, lists=lists)
-      ast = parser.parse()
-      rule_type = str(raw.get("type") or "").strip()
+    for raw in cfg.rules:
+      ast: Optional[Expr] = None
+      if raw.condition:
+        expanded = _expand_macros(raw.condition, cfg.macros)
+        tokens = _tokenize_condition(expanded)
+        parser = _ConditionParser(tokens=tokens, lists=cfg.lists)
+        ast = parser.parse()
+      missing = [name for name in raw.syscalls if name not in EVENT_NAME_TO_ID]
+      if missing:
+        raise ValueError(f"Rule '{raw.name or '<unnamed>'}' references unknown syscall(s): {', '.join(missing)}")
       self.condition_rules.append(
-        ConditionRule(name=name, condition=cond_text, enabled=enabled, rule_type=rule_type, ast=ast)
+        ConditionRule(
+          name=raw.name,
+          condition=raw.condition,
+          enabled=raw.enabled,
+          group=raw.group,
+          syscalls=raw.syscalls,
+          event_ids=frozenset(EVENT_NAME_TO_ID[name] for name in raw.syscalls),
+          ast=ast,
+        )
       )
 
   @staticmethod
@@ -345,6 +309,23 @@ class RuleEngine:
       return not self._eval_expr(expr.inner, ctx)
     return False
 
+  def _ctx_event_id(self, ctx: Dict[str, Any]) -> Optional[int]:
+    event_id = self._to_int_maybe(ctx.get("event_id"))
+    if event_id is not None:
+      return event_id
+    event_name = str(ctx.get("event_name") or "").strip().lower()
+    if not event_name:
+      return None
+    mapped = EVENT_NAME_TO_ID.get(event_name, UNKNOWN_EVENT_ID)
+    return None if mapped == UNKNOWN_EVENT_ID else mapped
+
+  def _matches_rule_syscalls(self, rule: ConditionRule, ctx: Dict[str, Any]) -> bool:
+    event_name = str(ctx.get("event_name") or "").strip().lower()
+    if event_name and event_name in rule.syscalls:
+      return True
+    event_id = self._ctx_event_id(ctx)
+    return event_id is not None and event_id in rule.event_ids
+
   def allow(self, event_name: str, filename: str, comm: str) -> bool:
     """event_name = syscall name (e.g. openat, connect). Returns True if any rule matches."""
     return self.allow_event(
@@ -371,17 +352,18 @@ class RuleEngine:
     Evaluate rules against an event context.
 
     Returns:
-      (allowed, rule_type) where rule_type is the first matching rule's type
-      (or None/\"\" if no type was specified on that rule).
+      (allowed, group) where group is the first matching rule's group.
 
     This is a superset of allow_event; allow_event keeps the original bool-only
     behavior for compatibility.
     """
     for rule in self.condition_rules:
-      if not rule.enabled or rule.ast is None:
+      if not rule.enabled:
         continue
-      if self._eval_expr(rule.ast, ctx):
-        return True, (rule.rule_type or None)
+      if not self._matches_rule_syscalls(rule, ctx):
+        continue
+      if rule.ast is None or self._eval_expr(rule.ast, ctx):
+        return True, (rule.group or None)
     return False, None
 
   def allow_event(self, ctx: Dict[str, Any]) -> bool:
@@ -417,15 +399,15 @@ class RuleEngine:
           ids.add(nval)
       return ids
 
-    # Condition rules: compile positive kernel-supported predicates branch-wise.
+    # Explicit syscall membership is always part of the kernel filter; condition adds extra branch-wise predicates.
     for rule in self.condition_rules:
-      if not rule.enabled or rule.ast is None:
+      if not rule.enabled:
         continue
-      branches = self._expr_to_dnf(rule.ast)
+      branches = self._expr_to_dnf(rule.ast) if rule.ast is not None else [[]]
       stats.branches_total += len(branches)
 
       for branch in branches:
-        event_ids: Optional[set[int]] = None
+        event_ids: Optional[set[int]] = set(rule.event_ids)
         prefixes: Optional[set[str]] = None
         comms: Optional[set[str]] = None
         pids: Optional[set[int]] = None

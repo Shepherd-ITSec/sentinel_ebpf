@@ -137,6 +137,7 @@ class TestDetectorConfig:
     os.environ["DETECTOR_MEMSTREAM_LATENT_DIM"] = "6"
     os.environ["DETECTOR_MEMSTREAM_MEMORY_SIZE"] = "64"
     os.environ["DETECTOR_MEMSTREAM_LR"] = "0.005"
+    os.environ["DETECTOR_MEMSTREAM_INPUT_MODE"] = "freq1d_z"
     os.environ["DETECTOR_ZSCORE_MIN_COUNT"] = "15"
     os.environ["DETECTOR_ZSCORE_STD_FLOOR"] = "0.002"
     os.environ["DETECTOR_KNN_K"] = "7"
@@ -161,6 +162,7 @@ class TestDetectorConfig:
     os.environ["DETECTOR_LATENTCLUSTER_REG"] = "0.5"
     os.environ["DETECTOR_LATENTCLUSTER_UPDATE_ALPHA"] = "0.2"
     os.environ["DETECTOR_LATENTCLUSTER_SPAWN_THRESHOLD"] = "7.5"
+    os.environ["DETECTOR_FEATURE_ENCODING"] = "hash"
     os.environ["DETECTOR_SCORE_MODE"] = "scaled"
     os.environ["DETECTOR_MODEL_DEVICE"] = "cpu"
     os.environ["DETECTOR_MODEL_SEED"] = "7"
@@ -181,6 +183,7 @@ class TestDetectorConfig:
       assert cfg.mem_latent_dim == 6
       assert cfg.mem_memory_size == 64
       assert cfg.mem_lr == 0.005
+      assert cfg.mem_input_mode == "freq1d_z"
       assert cfg.zscore_min_count == 15
       assert cfg.zscore_std_floor == 0.002
       assert cfg.knn_k == 7
@@ -205,6 +208,7 @@ class TestDetectorConfig:
       assert cfg.latentcluster_reg == 0.5
       assert cfg.latentcluster_update_alpha == 0.2
       assert cfg.latentcluster_spawn_threshold == 7.5
+      assert cfg.feature_encoding == "hash"
       assert cfg.score_mode == "scaled"
       assert cfg.model_device == "cpu"
       assert cfg.model_seed == 7
@@ -225,6 +229,7 @@ class TestDetectorConfig:
         "DETECTOR_MEMSTREAM_LATENT_DIM",
         "DETECTOR_MEMSTREAM_MEMORY_SIZE",
         "DETECTOR_MEMSTREAM_LR",
+        "DETECTOR_MEMSTREAM_INPUT_MODE",
         "DETECTOR_ZSCORE_MIN_COUNT",
         "DETECTOR_ZSCORE_STD_FLOOR",
         "DETECTOR_KNN_K",
@@ -249,6 +254,7 @@ class TestDetectorConfig:
         "DETECTOR_LATENTCLUSTER_REG",
         "DETECTOR_LATENTCLUSTER_UPDATE_ALPHA",
         "DETECTOR_LATENTCLUSTER_SPAWN_THRESHOLD",
+        "DETECTOR_FEATURE_ENCODING",
         "DETECTOR_SCORE_MODE",
         "DETECTOR_MODEL_DEVICE",
         "DETECTOR_MODEL_SEED",

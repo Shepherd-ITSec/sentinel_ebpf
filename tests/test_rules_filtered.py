@@ -13,10 +13,14 @@ class TestRuleEngineFiltered:
   def test_path_prefix_filtering_without_catchall(self, temp_dir):
     """Test that path prefix filtering works when there's no catch-all rule."""
     rules_file = temp_dir / "rules.yaml"
-    rules_file.write_text("""rules:
+    rules_file.write_text("""groups:
+  file: {}
+rules:
   - name: capture-sensitive-opens
     enabled: true
-    condition: "event_name in (open, openat, openat2) and (path startswith /etc or path startswith /bin)"
+    group: file
+    syscalls: [open, openat, openat2]
+    condition: "path startswith /etc or path startswith /bin"
 """)
     engine = RuleEngine(str(rules_file))
     # Should match sensitive paths
@@ -29,10 +33,14 @@ class TestRuleEngineFiltered:
   def test_comm_filtering_without_catchall(self, temp_dir):
     """Test that comm filtering works when there's no catch-all rule."""
     rules_file = temp_dir / "rules.yaml"
-    rules_file.write_text("""rules:
+    rules_file.write_text("""groups:
+  process: {}
+rules:
   - name: capture-specific-comm
     enabled: true
-    condition: "event_name = execve and comm in (bash, sh)"
+    group: process
+    syscalls: [execve]
+    condition: "comm in (bash, sh)"
 """)
     engine = RuleEngine(str(rules_file))
     # Should match allowed comms
@@ -45,10 +53,14 @@ class TestRuleEngineFiltered:
   def test_combined_filters_without_catchall(self, temp_dir):
     """Test combined path and comm filters without catch-all."""
     rules_file = temp_dir / "rules.yaml"
-    rules_file.write_text("""rules:
+    rules_file.write_text("""groups:
+  file: {}
+rules:
   - name: capture-sensitive-bash-opens
     enabled: true
-    condition: "event_name = openat and path startswith /etc and comm = bash"
+    group: file
+    syscalls: [openat]
+    condition: "path startswith /etc and comm = bash"
 """)
     engine = RuleEngine(str(rules_file))
     # Should match: both path and comm match
@@ -63,10 +75,14 @@ class TestRuleEngineFiltered:
   def test_disabled_rule_truly_ignored(self, temp_dir):
     """Test that disabled rules are completely ignored."""
     rules_file = temp_dir / "rules.yaml"
-    rules_file.write_text("""rules:
+    rules_file.write_text("""groups:
+  file: {}
+rules:
   - name: capture-tmp-opens
     enabled: false
-    condition: "event_name = openat and path startswith /tmp"
+    group: file
+    syscalls: [openat]
+    condition: "path startswith /tmp"
 """)
     engine = RuleEngine(str(rules_file))
     # Should NOT match because rule is disabled

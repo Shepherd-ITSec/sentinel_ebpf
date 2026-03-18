@@ -143,6 +143,17 @@ def _parse_prometheus_metrics(text: str) -> dict:
     line = line.strip()
     if not line or line.startswith("#"):
       continue
+    # Support labeled gauges like: sentinel_ebpf_detector_score_mode{mode="scaled"} 1
+    if line.startswith("sentinel_ebpf_detector_score_mode") and "mode=" in line:
+      m_mode = re.search(r'mode="([^"]+)"', line)
+      if m_mode:
+        try:
+          val = float(line.split()[-1])
+        except Exception:
+          val = 0.0
+        if val == 1.0:
+          metrics["sentinel_ebpf_detector_score_mode_label"] = m_mode.group(1)
+      continue
     m = re.match(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{[^}]*\})?\s+([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)$", line)
     if not m:
       continue
@@ -380,7 +391,7 @@ class Handler(BaseHTTPRequestHandler):
           "anomaly": bool(entry.get("anomaly", False)),
           "reason": entry.get("reason", ""),
           "event_name": entry.get("event_name", ""),
-          "event_type": entry.get("event_type", ""),
+          "event_group": entry.get("event_group", ""),
           "hostname": entry.get("hostname", ""),
           "path": path,
           "comm": comm,
@@ -556,13 +567,13 @@ class Handler(BaseHTTPRequestHandler):
           metrics_text = _http_get(detector_metrics_url, timeout=2.0)
           parsed = _parse_prometheus_metrics(metrics_text)
           threshold = parsed.get("sentinel_ebpf_detector_threshold")
-          sm = parsed.get("sentinel_ebpf_detector_score_mode")
-          if sm is not None and float(sm) == 1:
-            score_mode = "scaled"
-          elif threshold is not None and 0 < threshold < 1:
-            score_mode = "scaled"  # heuristic: threshold in (0,1) usually means scaled
-          else:
-            score_mode = "raw"
+          score_mode = parsed.get("sentinel_ebpf_detector_score_mode_label")
+          if not score_mode:
+            # Backward fallback if old unlabeled metric exists or threshold heuristic
+            if threshold is not None and 0 < threshold < 1:
+              score_mode = "scaled"
+            else:
+              score_mode = "raw"
         except Exception:
           pass
       # Format data for chart: time buckets with counts per event type and mean anomaly score (scaled + raw)

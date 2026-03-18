@@ -48,6 +48,7 @@ if __package__ is None or __package__ == "":
   sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import events_pb2
+from detector.config import load_config
 from detector.features import extract_feature_dict
 from detector.model import OnlineAnomalyDetector
 
@@ -84,10 +85,10 @@ def _dict_to_event_envelope(obj: dict) -> events_pb2.EventEnvelope:
     data_field = []
   if "event_name" in obj:
     event_name = obj.get("event_name", "") or (data_field[0] if data_field else "")
-    event_type = obj.get("event_type", "")
+    event_group = obj.get("event_group", "")
   else:
-    event_name = obj.get("event_type", "") or (data_field[0] if data_field else "")
-    event_type = ""
+    event_name = obj.get("event_name", "") or (data_field[0] if data_field else "")
+    event_group = ""
   pod_name = obj.get("pod_name", obj.get("pod", ""))
   return events_pb2.EventEnvelope(
     event_id=obj.get("event_id", ""),
@@ -97,7 +98,7 @@ def _dict_to_event_envelope(obj: dict) -> events_pb2.EventEnvelope:
     container_id=obj.get("container_id", ""),
     ts_unix_nano=int(obj.get("ts_unix_nano", 0)),
     event_name=event_name,
-    event_type=event_type,
+    event_group=event_group,
     data=data_field,
     attributes=dict(obj.get("attributes", {}) or {}),
   )
@@ -179,6 +180,7 @@ def _replay_and_get_target_features(
   start_from: int = 0,
   checkpoint_at: int | None = None,
   checkpoint_path: Path | None = None,
+  encoding: str = "encoded",
 ):
   """Replay events start_from..event_index-1 through score_and_learn, return (features, event_id) for event_index.
   If start_from > 0, detector is assumed pre-loaded from checkpoint (events 0..start_from-1 already learned)."""
@@ -193,7 +195,7 @@ def _replay_and_get_target_features(
     first = next(event_iter, None)
     if first is not None:
       evt = _dict_to_event_envelope(first)
-      features = extract_feature_dict(evt)
+      features = extract_feature_dict(evt, encoding=encoding)
       detector.score_and_learn(features)
       start_i = 1
       if checkpoint_at == 1 and checkpoint_path is not None:
@@ -206,7 +208,7 @@ def _replay_and_get_target_features(
   for j, obj in enumerate(it):
     i = start_i + j
     evt = _dict_to_event_envelope(obj)
-    features = extract_feature_dict(evt)
+    features = extract_feature_dict(evt, encoding=encoding)
     if i < event_index:
       if i >= start_from:
         detector.score_and_learn(features)
@@ -439,7 +441,62 @@ def main():
     log.error("--checkpoint-at requires --checkpoint")
     sys.exit(1)
 
-  detector = OnlineAnomalyDetector(algorithm=args.algorithm)
+  cfg = load_config()
+  detector = OnlineAnomalyDetector(
+    algorithm=args.algorithm,
+    hst_n_trees=cfg.hst_n_trees,
+    hst_height=cfg.hst_height,
+    hst_window_size=cfg.hst_window_size,
+    loda_n_projections=cfg.loda_n_projections,
+    loda_bins=cfg.loda_bins,
+    loda_range=cfg.loda_range,
+    loda_ema_alpha=cfg.loda_ema_alpha,
+    loda_hist_decay=cfg.loda_hist_decay,
+    kitnet_max_size_ae=cfg.kitnet_max_size_ae,
+    kitnet_grace_feature_mapping=cfg.kitnet_grace_feature_mapping,
+    kitnet_grace_anomaly_detector=cfg.kitnet_grace_anomaly_detector,
+    kitnet_learning_rate=cfg.kitnet_learning_rate,
+    kitnet_hidden_ratio=cfg.kitnet_hidden_ratio,
+    mem_hidden_dim=cfg.mem_hidden_dim,
+    mem_latent_dim=cfg.mem_latent_dim,
+    mem_memory_size=cfg.mem_memory_size,
+    mem_lr=cfg.mem_lr,
+    mem_input_mode=cfg.mem_input_mode,
+    zscore_min_count=cfg.zscore_min_count,
+    zscore_std_floor=cfg.zscore_std_floor,
+    knn_k=cfg.knn_k,
+    knn_memory_size=cfg.knn_memory_size,
+    knn_metric=cfg.knn_metric,
+    freq1d_bins=cfg.freq1d_bins,
+    freq1d_alpha=cfg.freq1d_alpha,
+    freq1d_decay=cfg.freq1d_decay,
+    freq1d_max_categories=cfg.freq1d_max_categories,
+    freq1d_aggregation=cfg.freq1d_aggregation,
+    freq1d_topk=cfg.freq1d_topk,
+    freq1d_soft_topk_temperature=cfg.freq1d_soft_topk_temperature,
+    gausscop_bins=cfg.gausscop_bins,
+    gausscop_alpha=cfg.gausscop_alpha,
+    gausscop_decay=cfg.gausscop_decay,
+    gausscop_max_categories=cfg.gausscop_max_categories,
+    gausscop_reg=cfg.gausscop_reg,
+    gausscop_u_clamp=cfg.gausscop_u_clamp,
+    gausscop_max_features=cfg.gausscop_max_features,
+    gausscop_importance_window=cfg.gausscop_importance_window,
+    copulatree_u_clamp=cfg.copulatree_u_clamp,
+    copulatree_reg=cfg.copulatree_reg,
+    copulatree_max_features=cfg.copulatree_max_features,
+    copulatree_importance_window=cfg.copulatree_importance_window,
+    copulatree_tree_update_interval=cfg.copulatree_tree_update_interval,
+    copulatree_edge_score_aggregation=cfg.copulatree_edge_score_aggregation,
+    copulatree_edge_score_topk=cfg.copulatree_edge_score_topk,
+    latentcluster_max_clusters=cfg.latentcluster_max_clusters,
+    latentcluster_u_clamp=cfg.latentcluster_u_clamp,
+    latentcluster_reg=cfg.latentcluster_reg,
+    latentcluster_update_alpha=cfg.latentcluster_update_alpha,
+    latentcluster_spawn_threshold=cfg.latentcluster_spawn_threshold,
+    model_device=cfg.model_device,
+    seed=cfg.model_seed,
+  )
   start_from = 0
   checkpoint_at = args.checkpoint_at
   checkpoint_path = args.checkpoint
@@ -463,6 +520,7 @@ def main():
       start_from=start_from,
       checkpoint_at=checkpoint_at,
       checkpoint_path=checkpoint_path,
+      encoding=cfg.feature_encoding,
     )
     if features is None:
       log.error("Event index %d beyond file bounds", event_index)
@@ -613,7 +671,7 @@ def main():
       continue
 
     evt = _dict_to_event_envelope(obj)
-    features = extract_feature_dict(evt)
+    features = extract_feature_dict(evt, encoding=cfg.feature_encoding)
     event_id = str(obj.get("event_id", ""))
 
     is_target = i in target_indices

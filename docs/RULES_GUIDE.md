@@ -42,12 +42,20 @@ Other event names in `probe/events.py` (e.g. `stat`, `access`) may be used in ru
 ## Source of truth
 
 - Chart deployments read rules from `charts/sentinel-ebpf/rules.yaml`.
-- Rules are mounted into the probe at `/etc/sentinel-ebpf/rules.yaml`.
-- Rules are DSL-only (`lists`, `macros`, `rules[].condition`).
+- Rules are mounted into the probe and detector at `/etc/sentinel-ebpf/rules.yaml`.
+- Rules use a hybrid format: explicit `rules[].syscalls`, optional `lists` and `macros`, optional `condition`, and optional `groups` metadata.
 
-## DSL model
+## Rule model
 
-Rules are boolean expressions over event fields.
+Each rule has:
+
+- `group`: the downstream category attached to matching events (written into `EventEnvelope.event_group`)
+- `syscalls`: the required syscall set for that rule; this is the source of selective probe attachment
+- `condition`: optional extra filter expressed in the DSL
+- `lists` / `macros`: optional helpers for reuse and readability
+- `groups`: optional metadata keyed by `group` (for example detector feature config)
+
+The `condition` part is a boolean expression over event fields.
 
 - **Supported operators:** `=`, `in`, `startswith`, `contains`, `and`, `or`, `not`, parentheses
 - **Supported fields:** `event_name`, `event_id`, `path`, `comm`, `pid`, `tid`, `uid`, `open_flags`, `arg0`, `arg1`, `arg_flags`, `return_value`, `hostname`, `namespace`
@@ -55,7 +63,7 @@ Rules are boolean expressions over event fields.
 
 ## Selective probe attachment
 
-At startup, the probe compiles rules and extracts the set of `event_id`s needed. Only tracepoints for those syscalls are attached (via preprocessor `#if ENABLE_*`). For example, if rules only reference `openat`, the read/write/execve probes are not attached, reducing kernel overhead. Rules with wildcard `event_id` enable all probes.
+At startup, the probe compiles the explicit `syscalls` from enabled rules and extracts the `event_id`s needed. Only tracepoints for those syscalls are attached (via preprocessor `#if ENABLE_*`). For example, if rules only declare `openat`, the read/write/execve probes are not attached, reducing kernel overhead.
 
 ## Execution model: kernel prefilter + userspace final decision
 
@@ -83,7 +91,7 @@ The current kernel tuple model only stores positive match dimensions, so negated
 
 Compiler output is not 1:1 with rule count. It expands conditions into DNF branches and then into tuple combinations.
 
-Typical expansion pattern:
+Typical expansion pattern for the optional `condition`:
 
 - `event_name in (...)` multiplies by number of events
 - `path startswith A or path startswith B` splits branches
@@ -91,10 +99,9 @@ Typical expansion pattern:
 
 Example from current default chart rules:
 
-- `capture-sensitive-file-events`: `9 event_names * 2 prefixes = 18 tuples`
-- `capture-shell-execve`: `1 event * 3 comms = 3 tuples`
-- `capture-network-connectivity`: `2 events = 2 tuples`
-- **Total compiled tuples: 23**
+- `capture-file-events`: explicit file syscall set, then extra path filters from the condition
+- `capture-shell-process-events`: explicit process syscall set, then extra comm filter
+- `capture-network-events`: explicit network syscall set, no extra condition
 
 ## Limits and truncation
 
@@ -115,8 +122,9 @@ Key metrics:
 
 ## Authoring guidance
 
-- Prefer reusable macros for readability and Falco-like style.
-- Keep expressions selective early (`event_name` + specific prefixes/comms).
+- Put syscall membership in `rules[].syscalls`, not hidden inside `condition`.
+- Prefer reusable `lists` and `macros` for readability when conditions repeat.
+- Keep conditions selective early (specific prefixes/comms).
 - Use `not ...` when needed for clarity, but expect userspace fallback for that part.
 - Watch tuple growth when adding wide `in (...)` lists combined with `or` branches.
 - Check metrics after rule changes to detect truncation or high fallback share.
@@ -125,15 +133,20 @@ Key metrics:
 
 ```yaml
 lists:
-  file_events: [open, openat, openat2]
+  file_syscalls: [open, openat, openat2]
+  noisy_paths: [/proc, /sys]
 
 macros:
-  file_evt: "event_name in (file_events)"
   sensitive_path: "path startswith /etc or path startswith /root"
-  noisy_path: "path startswith /proc or path startswith /sys"
+  noisy_path: "path startswithin (noisy_paths)"
+
+groups:
+  file: {}
 
 rules:
   - name: capture-sensitive-file-events
     enabled: true
-    condition: "file_evt and sensitive_path and not noisy_path"
+    group: file
+    syscalls: file_syscalls
+    condition: "sensitive_path and not noisy_path"
 ```

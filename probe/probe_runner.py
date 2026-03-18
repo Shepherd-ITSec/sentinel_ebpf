@@ -605,7 +605,7 @@ class FileSink:
       "namespace": env.namespace,
       "container_id": env.container_id,
       "event_name": env.event_name,
-      "event_type": env.event_type,
+      "event_group": env.event_group,
       "data": list(env.data),  # Ordered vector
       "attributes": dict(env.attributes),
     }
@@ -811,10 +811,10 @@ class ProbeRunner:
         "hostname": self._metadata["hostname"],
         "namespace": self._metadata["namespace"],
       }
-    allowed, event_type_val = self.rule_engine.classify_event(rule_ctx)
+    allowed, group_val = self.rule_engine.classify_event(rule_ctx)
     if not allowed:
       return
-    event_type_str = (event_type_val or "").strip()
+    event_group_str = (group_val or "").strip()
 
     # Use fast event ID generation (counter + timestamp instead of uuid.uuid4()).
     pid_str = str(event.pid)
@@ -832,7 +832,7 @@ class ProbeRunner:
       container_id=self._metadata["container_id"],
       ts_unix_nano=ts_unix_nano,
       event_name=event_name,
-      event_type=event_type_str,
+      event_group=event_group_str,
       # Canonical generic vector: [event_name, event_id, comm, pid, tid, uid, arg0, arg1, path, flags]
       data=[event_name, event_id_str, comm, pid_str, tid_str, uid_str, arg0_str, arg1_str, filename, flags_str],
       attributes=attributes,
@@ -841,7 +841,7 @@ class ProbeRunner:
     if self.cfg.stream.mode == "stdout":
       payload = {
         "event_name": env.event_name,
-        "event_type": env.event_type,
+        "event_group": env.event_group,
         "event_id": env.event_id,
         "ts_unix_nano": env.ts_unix_nano,
         "hostname": env.hostname,

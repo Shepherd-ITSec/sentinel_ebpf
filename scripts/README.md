@@ -20,7 +20,7 @@ This directory contains helper scripts for working with sentinel-ebpf. They are 
 
 **Testing the detector on a new synthetic network run**
 
-1. **Generate a new synthetic EVT1 + labels** (network-only rows by default, with `event_type: network`):
+1. **Generate a new synthetic EVT1 + labels** (network-only rows by default, with `group: network` stored in the `event_group` field):
    ```bash
    uv run python scripts/generate_synthetic_evt1_dataset.py \
      --out-prefix test_data/synthetic/run4 \

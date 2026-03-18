@@ -29,6 +29,8 @@ spec:
           image: "{{ .Values.detector.image.repository }}:{{ .Values.detector.image.tag }}"
           imagePullPolicy: {{ .Values.detector.image.pullPolicy }}
           env:
+            - name: DETECTOR_RULES_PATH
+              value: /etc/sentinel-ebpf/rules.yaml
             - name: DETECTOR_PORT
               value: "{{ .Values.detector.service.port }}"
             - name: DETECTOR_EVENTS_PORT
@@ -37,8 +39,14 @@ spec:
               value: {{ .Values.detector.model.algorithm | quote }}
             - name: DETECTOR_THRESHOLD
               value: {{ .Values.detector.model.threshold | quote }}
+            - name: DETECTOR_FEATURE_ENCODING
+              value: {{ .Values.detector.model.feature_encoding | default "encoded" | quote }}
             - name: DETECTOR_SCORE_MODE
               value: {{ .Values.detector.model.score_mode | quote }}
+            - name: DETECTOR_PERCENTILE_WINDOW_SIZE
+              value: {{ .Values.detector.model.percentile.window_size | default 2048 | quote }}
+            - name: DETECTOR_PERCENTILE_WARMUP
+              value: {{ .Values.detector.model.percentile.warmup | default 128 | quote }}
             - name: DETECTOR_HST_N_TREES
               value: {{ .Values.detector.model.hst_n_trees | quote }}
             - name: DETECTOR_HST_HEIGHT
@@ -145,6 +153,10 @@ spec:
             - name: EVENT_DUMP_PATH
               value: {{ .Values.detector.eventDumpPath | quote }}
             {{- end }}
+          volumeMounts:
+            - name: rules
+              mountPath: /etc/sentinel-ebpf/rules.yaml
+              subPath: rules.yaml
           ports:
             - containerPort: {{ .Values.detector.service.port }}
               name: grpc
@@ -163,6 +175,10 @@ spec:
             periodSeconds: 5
           resources:
             {{- toYaml .Values.detector.resources | nindent 12 }}
+      volumes:
+        - name: rules
+          configMap:
+            name: {{ include "sentinel-ebpf.fullname" . }}-config
       nodeSelector:
         {{- toYaml .Values.detector.nodeSelector | nindent 8 }}
       tolerations:

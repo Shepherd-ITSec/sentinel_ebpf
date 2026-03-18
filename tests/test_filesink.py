@@ -22,7 +22,7 @@ def sample_event():
     namespace="default",
     container_id="container-123",
     event_name="openat",
-    event_type="",
+    event_group="",
     ts_unix_nano=1234567890000000000,
     data=["openat", "2", "bash", "1234", "5678", "1000", "-100", "2", "/tmp/test.txt", "2"],
   )
@@ -52,7 +52,7 @@ class TestFileSink:
 
       assert payload["event_id"] == "test-event-123"
       assert payload["event_name"] == "openat"
-      assert payload["event_type"] == ""
+      assert payload["event_group"] == ""
       assert payload["data"] == ["openat", "2", "bash", "1234", "5678", "1000", "-100", "2", "/tmp/test.txt", "2"]
     finally:
       sink.close()
@@ -92,7 +92,7 @@ class TestFileSink:
         evt = events_pb2.EventEnvelope(
           event_id=f"event-{i}",
           event_name="openat",
-          event_type="",
+          event_group="",
           ts_unix_nano=1234567890000000000 + i,
           data=["openat", "2", "bash", "1234", "5678", "1000", "-100", "2", "/tmp/test.txt", "2"],
         )
@@ -129,7 +129,7 @@ class TestFileSink:
         evt = events_pb2.EventEnvelope(
           event_id=f"event-{i}",
           event_name="openat",
-          event_type="",
+          event_group="",
           ts_unix_nano=1234567890000000000 + i,
           data=["openat", "2", "bash", "1234", "5678", "1000", "-100", "2", "/tmp/test.txt", "2"],
         )
@@ -157,7 +157,7 @@ class TestFileSink:
         evt = events_pb2.EventEnvelope(
           event_id=f"event-{i}",
           event_name="openat",
-          event_type="",
+          event_group="",
           ts_unix_nano=1234567890000000000 + i,
           data=["openat", "2", "bash", "1234", "5678", "1000", "-100", "2", "/tmp/test.txt", "2"],
         )

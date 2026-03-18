@@ -18,12 +18,12 @@ from detector.config import load_config
 from detector.server import DeterministicScorer
 
 
-def make_event(i: int, event_type: str = "file") -> events_pb2.EventEnvelope:
+def make_event(i: int, event_group: str = "file") -> events_pb2.EventEnvelope:
     ts = 1700000000_000_000_000 + i * 1_000_000
     return events_pb2.EventEnvelope(
         event_id=f"evt-{i}",
         event_name="openat",
-        event_type=event_type,
+        event_group=event_group,
         hostname="node1",
         ts_unix_nano=ts,
         data=[

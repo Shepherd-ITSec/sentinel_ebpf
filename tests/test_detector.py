@@ -43,7 +43,7 @@ class TestDetector:
     evt = events_pb2.EventEnvelope(
       event_id="test-123",
       event_name="openat",
-      event_type="",
+      event_group="",
       ts_unix_nano=1234567890000000000,
       data=["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
     )
@@ -70,7 +70,7 @@ class TestDetector:
         yield events_pb2.EventEnvelope(
           event_id=f"test-{i}",
           event_name="openat",
-          event_type="",
+          event_group="",
           ts_unix_nano=1234567890000000000 + i,
           data=["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
         )
@@ -101,7 +101,7 @@ class TestDetector:
     evt = events_pb2.EventEnvelope(
       event_id="test-456",
       event_name="socket",
-      event_type="",
+      event_group="",
       ts_unix_nano=1234567890000000000,
       data=["socket", "5", "bash", "1", "2", "1000", "1", "2", "", "2"],
     )
@@ -126,7 +126,7 @@ class TestDetector:
     evt = events_pb2.EventEnvelope(
       event_id="test-789",
       event_name="execve",
-      event_type="",
+      event_group="",
       ts_unix_nano=1234567890000000000,
       data=["execve", "4", "bash", "1", "2", "1000", "0", "0", "/bin/bash", ""],
     )
@@ -149,7 +149,7 @@ class TestDetector:
     evt = events_pb2.EventEnvelope(
       event_id="test-zscore",
       event_name="execve",
-      event_type="",
+      event_group="",
       ts_unix_nano=1234567890000000000,
       data=["execve", "4", "bash", "1", "2", "1000", "0", "0", "/bin/bash", ""],
     )
@@ -174,7 +174,7 @@ class TestDetector:
     evt = events_pb2.EventEnvelope(
       event_id="test-freq1d",
       event_name="openat",
-      event_type="",
+      event_group="",
       ts_unix_nano=1234567890000000000,
       data=["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
     )
@@ -201,7 +201,7 @@ class TestDetector:
     evt = events_pb2.EventEnvelope(
       event_id="test-latentcluster",
       event_name="openat",
-      event_type="",
+      event_group="",
       ts_unix_nano=1234567890000000000,
       data=["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
     )
@@ -226,7 +226,7 @@ class TestDetector:
     evt = events_pb2.EventEnvelope(
       event_id="test-gausscop",
       event_name="openat",
-      event_type="",
+      event_group="",
       ts_unix_nano=1234567890000000000,
       data=["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
     )
@@ -253,7 +253,7 @@ class TestDetector:
     evt = events_pb2.EventEnvelope(
       event_id="test-copulatree",
       event_name="openat",
-      event_type="",
+      event_group="",
       ts_unix_nano=1234567890000000000,
       data=["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
     )
@@ -277,7 +277,7 @@ class TestDetector:
     evt = events_pb2.EventEnvelope(
       event_id="test-knn",
       event_name="openat",
-      event_type="",
+      event_group="",
       ts_unix_nano=1234567890000000000,
       data=["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
     )
@@ -320,7 +320,7 @@ class TestDetector:
         yield events_pb2.EventEnvelope(
           event_id="dump-me",
           event_name="openat",
-          event_type="",
+          event_group="",
           ts_unix_nano=1234567890000000000,
           data=["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
         )
