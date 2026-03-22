@@ -49,7 +49,7 @@ if __package__ is None or __package__ == "":
 
 import events_pb2
 from detector.config import load_config
-from detector.features import extract_feature_dict
+from detector.features import extract_feature_dict, feature_view_for_algorithm
 from detector.model import OnlineAnomalyDetector
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
@@ -180,7 +180,6 @@ def _replay_and_get_target_features(
   start_from: int = 0,
   checkpoint_at: int | None = None,
   checkpoint_path: Path | None = None,
-  encoding: str = "encoded",
 ):
   """Replay events start_from..event_index-1 through score_and_learn, return (features, event_id) for event_index.
   If start_from > 0, detector is assumed pre-loaded from checkpoint (events 0..start_from-1 already learned)."""
@@ -189,13 +188,14 @@ def _replay_and_get_target_features(
   target_features = None
   event_id = ""
   start_i = 0
+  view = feature_view_for_algorithm(detector.algorithm)
 
   # Prime detector before tqdm when starting from scratch (avoids lazy-init log mid-progress bar)
   if start_from == 0 and event_index > 0:
     first = next(event_iter, None)
     if first is not None:
       evt = _dict_to_event_envelope(first)
-      features = extract_feature_dict(evt, encoding=encoding)
+      features = extract_feature_dict(evt, feature_view=view)
       detector.score_and_learn(features)
       start_i = 1
       if checkpoint_at == 1 and checkpoint_path is not None:
@@ -208,7 +208,7 @@ def _replay_and_get_target_features(
   for j, obj in enumerate(it):
     i = start_i + j
     evt = _dict_to_event_envelope(obj)
-    features = extract_feature_dict(evt, encoding=encoding)
+    features = extract_feature_dict(evt, feature_view=view)
     if i < event_index:
       if i >= start_from:
         detector.score_and_learn(features)
@@ -457,11 +457,13 @@ def main():
     kitnet_grace_anomaly_detector=cfg.kitnet_grace_anomaly_detector,
     kitnet_learning_rate=cfg.kitnet_learning_rate,
     kitnet_hidden_ratio=cfg.kitnet_hidden_ratio,
-    mem_hidden_dim=cfg.mem_hidden_dim,
-    mem_latent_dim=cfg.mem_latent_dim,
     mem_memory_size=cfg.mem_memory_size,
+    mem_beta=cfg.mem_beta,
+    mem_k=cfg.mem_k,
+    mem_gamma=cfg.mem_gamma,
     mem_lr=cfg.mem_lr,
     mem_input_mode=cfg.mem_input_mode,
+    mem_warmup_accept=cfg.mem_warmup_accept,
     zscore_min_count=cfg.zscore_min_count,
     zscore_std_floor=cfg.zscore_std_floor,
     knn_k=cfg.knn_k,
@@ -520,7 +522,6 @@ def main():
       start_from=start_from,
       checkpoint_at=checkpoint_at,
       checkpoint_path=checkpoint_path,
-      encoding=cfg.feature_encoding,
     )
     if features is None:
       log.error("Event index %d beyond file bounds", event_index)
@@ -671,7 +672,10 @@ def main():
       continue
 
     evt = _dict_to_event_envelope(obj)
-    features = extract_feature_dict(evt, encoding=cfg.feature_encoding)
+    features = extract_feature_dict(
+      evt,
+      feature_view=feature_view_for_algorithm(cfg.model_algorithm),
+    )
     event_id = str(obj.get("event_id", ""))
 
     is_target = i in target_indices

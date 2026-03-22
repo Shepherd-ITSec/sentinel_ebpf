@@ -130,7 +130,7 @@ rules:
 
 Supported condition fields:
 
-- `event_name`, `event_id`, `path`, `comm`, `pid`, `tid`, `uid`, `open_flags`, `arg0`, `arg1`, `arg_flags`, `return_value`, `hostname`, `namespace`
+- `event_name`, `event_id`, `path`, `comm`, `pid`, `tid`, `uid`, `flags`, `arg0`, `arg1`, `arg_flags`, `return_value`, `hostname`, `namespace`
 
 Supported operators:
 
@@ -156,7 +156,7 @@ Probe sends `EventEnvelope` with:
 - `event_group`: rule-defined category (e.g. `network`, `file`, `process`) or empty.
 - `data`: ordered string vector with canonical format:
   `[event_name, event_id, comm, pid, tid, uid, arg0, arg1, path, flags]`.
-- `attributes.open_flags`: userspace-decoded open flags for open/openat/openat2 events.
+- `attributes.flags`: userspace-decoded flags for open/openat/openat2 events.
 - metadata: hostname/pod/namespace/container information and `event_id`.
 
 ## Detector model configuration
@@ -180,11 +180,12 @@ detector:
     loda_range: 3.0
     loda_ema_alpha: 0.01
     loda_hist_decay: 1.0
-    # MemStream
-    mem_hidden_dim: 32
-    mem_latent_dim: 8
-    mem_memory_size: 128
-    mem_lr: 0.001
+    # MemStream (paper-aligned: K-NN discounted L1, latent=2×input_dim)
+    mem_memory_size: 512
+    mem_lr: 0.01
+    mem_beta: 0.1
+    mem_k: 3
+    mem_gamma: 0.5
     seed: 42
 ```
 
@@ -209,7 +210,7 @@ Available algorithms:
 
 
 `memstream` implementation note:
-- Uses an in-repo online adaptation inspired by the MemStream paper and official repository.
+- Paper-aligned: single-layer encoder/decoder (latent=2×input_dim, Tanh), K-NN discounted L1 scoring, FIFO memory when score ≤ β. Optional `mem_warmup_path` for normal-only warmup.
 - References:
   - Paper: https://arxiv.org/abs/2106.03837
   - Official repo: https://github.com/Stream-AD/MemStream
@@ -225,14 +226,7 @@ Available algorithms:
 
 ### Feature extraction summary
 
-Events are converted to 10D feature vectors, including:
-
-- open flags (log-normalized),
-- path and command hashes,
-- pid/tid and uid,
-- sensitive-path indicator,
-- path depth,
-- hour/minute time features.
+Events are converted to numeric feature vectors. The **feature view** (chosen per algorithm: default, hash, loda, memstream) controls which encodings are used. Common elements across views: pid/tid/uid, path depth, hour/minute time features, sensitive-path indicator, online rate/interarrival stats. The `hash` view uses scalar hashes for categoricals (path, comm, event_name, etc.); `default` uses one-hot and bucket banks.
 
 ## Extending detector
 
@@ -306,9 +300,8 @@ Representative test areas:
 - `scripts/preflight-check.sh`: host checks for kernel/BCC prerequisites.
 - `scripts/decode_logs.py`: convert EVT1 (or gzip EVT1) to NDJSON.
 - `scripts/replay_logs.py`: replay EVT1 to detector gRPC endpoint with `fast`/`realtime` pacing and optional time-window filters.
-- `scripts/convert_beth_to_evt1.py`: convert BETH CSV rows into EVT1 records + labels.
-- `scripts/evaluate_beth_replay.py`: evaluate replay anomaly outputs against BETH labels.
-- `scripts/run_detector_eval.py`: run detector eval (BETH train+test or single-stream EVT1); train warmup, replay, report metrics.
+- `scripts/evaluate_replay.py`: evaluate replay anomaly outputs against labels NDJSON.
+- `scripts/run_detector_eval.py`: run detector eval (requires --evt1 and --labels); replay, report metrics.
 
 ## Optional debug UI
 

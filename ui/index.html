@@ -382,10 +382,21 @@
         <div class="section" data-widget-id="score-chart-raw">
           <h3>Anomaly Score (per poll) — Unscaled</h3>
           <div class="section-inner">
-            <div class="map-note" style="margin-bottom:8px;">Raw model output (can exceed 1). Threshold shown in raw space (scaled 0–1 threshold converted via −ln(1−s)).</div>
+            <div class="map-note" style="margin-bottom:8px;" id="scoreRawNote">Raw model output (can exceed 1).</div>
             <div class="chart-container score-chart-container score-chart-raw">
               <div class="chart-wrapper">
                 <canvas id="scoreChartRaw"></canvas>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="section" data-widget-id="anomaly-count-chart">
+          <h3>Anomalies (per poll)</h3>
+          <div class="section-inner">
+            <div class="map-note" style="margin-bottom:8px;">Number of events flagged as anomalous per poll interval.</div>
+            <div class="chart-container anomaly-count-chart-container">
+              <div class="chart-wrapper">
+                <canvas id="anomalyCountChart"></canvas>
               </div>
             </div>
           </div>
@@ -615,6 +626,15 @@
               inst.update("none");
             }
           });
+        } catch (e) {}
+        try {
+          if (anomalyCountChartInstance) {
+            applyOptions(anomalyCountChartInstance);
+            const d = anomalyCountChartInstance.data.datasets?.[0];
+            const anomalyColor = isDark ? "#f85149" : "#cf222e";
+            if (d) { d.borderColor = anomalyColor; d.backgroundColor = anomalyColor + "33"; }
+            anomalyCountChartInstance.update("none");
+          }
         } catch (e) {}
         try {
           if (scoreMapInstance) {
@@ -1610,9 +1630,15 @@
         // Update UI note for primary score interpretation.
         const noteEl = document.getElementById("scorePrimaryNote");
         if (noteEl) {
-          if (scoreMode === "percentile") noteEl.textContent = "Primary score = online percentile of log1p(raw) per event type (0–1).";
-          else if (scoreMode === "scaled") noteEl.textContent = "Primary score = bounded [0,1] (most models: 1 − exp(−raw)).";
-          else noteEl.textContent = "Primary score = raw model output (clipped to 0–1 for display).";
+          if (scoreMode === "percentile") noteEl.textContent = "Primary score = online percentile of log1p(raw) per event type (0–1). Thresholding uses this.";
+          else if (scoreMode === "scaled") noteEl.textContent = "Primary score = bounded [0,1]. Transform by model: 1−exp(−raw) for LODA/MemStream/KNN/Freq1D/KitNet/ZScore; raw/(1+raw) for copula/latent; raw for HST.";
+          else noteEl.textContent = "Thresholding uses raw (see Unscaled chart). This chart shows scaled (0–1) for display.";
+        }
+        const rawNoteEl = document.getElementById("scoreRawNote");
+        if (rawNoteEl) {
+          if (scoreMode === "scaled") rawNoteEl.textContent = "Raw model output (can exceed 1). Threshold line = −ln(1−s) in raw space.";
+          else if (scoreMode === "percentile") rawNoteEl.textContent = "Raw model output (can exceed 1). Threshold line in percentile space (0–1) shown for reference.";
+          else rawNoteEl.textContent = "Raw model output (can exceed 1). Threshold in raw space.";
         }
         const isDark = document.documentElement.getAttribute("data-theme") !== "light";
         const textColor = isDark ? "#e6edf3" : "#1f2328";
@@ -1691,6 +1717,66 @@
           scoreChartHasRendered = true;
         } catch (e) {
           console.error("Error rendering score chart:", e);
+        }
+      }
+
+      let anomalyCountChartInstance = null;
+      let anomalyCountChartLastSignature = "";
+      let anomalyCountChartHasRendered = false;
+      function renderAnomalyCountChart(data) {
+        if (typeof Chart === "undefined") return;
+        if (typeof data !== "object" || data === null || !data.time_buckets) {
+          if (anomalyCountChartInstance) { anomalyCountChartInstance.destroy(); anomalyCountChartInstance = null; }
+          return;
+        }
+        const timeBuckets = data.time_buckets || [];
+        const timeLabels = timeBuckets.map(bucket => {
+          const ts = bucket.timestamp != null ? bucket.timestamp * 1000 : null;
+          if (ts != null && Number.isFinite(ts)) {
+            const d = new Date(ts);
+            return formatTimestampLocal(d).split(" ")[1] || bucket.time;
+          }
+          return bucket.time || "";
+        });
+        const anomalyCounts = timeBuckets.map(bucket => bucket.anomaly_count ?? 0);
+        const isDark = document.documentElement.getAttribute("data-theme") !== "light";
+        const textColor = isDark ? "#e6edf3" : "#1f2328";
+        const gridColor = isDark ? "#2d3a4f" : "#d0d7de";
+        const anomalyColor = isDark ? "#f85149" : "#cf222e";
+        const sig = JSON.stringify({ labels: timeLabels, data: anomalyCounts });
+        if (anomalyCountChartInstance && anomalyCountChartLastSignature === sig) return;
+        const datasets = [
+          { label: "Anomalies", data: anomalyCounts, borderColor: anomalyColor, backgroundColor: anomalyColor + "33", borderWidth: 2, fill: true, tension: 0.2, spanGaps: true }
+        ];
+        try {
+          const canvas = document.getElementById("anomalyCountChart");
+          const wrapper = canvas ? canvas.closest(".chart-wrapper") : null;
+          if (canvas && wrapper) {
+            if (anomalyCountChartInstance) {
+              anomalyCountChartInstance.data.labels = timeLabels;
+              anomalyCountChartInstance.data.datasets = datasets;
+              anomalyCountChartInstance.update(anomalyCountChartHasRendered ? "none" : undefined);
+            } else {
+              anomalyCountChartInstance = new Chart(canvas, {
+                type: "line",
+                data: { labels: timeLabels, datasets },
+                options: {
+                  responsive: true,
+                  maintainAspectRatio: false,
+                  animation: { duration: 350 },
+                  plugins: { legend: { display: true, position: "top", labels: { color: textColor, usePointStyle: true } }, tooltip: { enabled: true, mode: "index", intersect: false } },
+                  scales: {
+                    y: { beginAtZero: true, min: 0, ticks: { color: textColor, precision: 0 }, grid: { color: gridColor } },
+                    x: { ticks: { color: textColor }, grid: { color: gridColor } }
+                  }
+                }
+              });
+            }
+            anomalyCountChartLastSignature = sig;
+            anomalyCountChartHasRendered = true;
+          }
+        } catch (e) {
+          console.error("Error rendering anomaly count chart:", e);
         }
       }
 
@@ -1784,6 +1870,7 @@
           const chart = await fetchJson("/api/calls_chart");
           renderChart(chart);
           renderScoreChart(chart);
+          renderAnomalyCountChart(chart);
         } catch (e) {
           const container = document.querySelector(".chart-container");
           if (container) {

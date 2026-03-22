@@ -31,7 +31,7 @@ rules:
       "pid": 1,
       "tid": 1,
       "uid": 0,
-      "open_flags": "O_RDONLY",
+      "flags": "O_RDONLY",
       "hostname": "node-a",
       "namespace": "default",
     }
@@ -44,7 +44,7 @@ rules:
       "pid": 1,
       "tid": 1,
       "uid": 0,
-      "open_flags": "O_RDONLY",
+      "flags": "O_RDONLY",
       "hostname": "node-a",
       "namespace": "default",
     }
@@ -74,7 +74,7 @@ rules:
       "pid": 123,
       "tid": 123,
       "uid": 1000,
-      "open_flags": "",
+      "flags": "",
       "arg0": 3,
       "arg1": 16,
       "arg_flags": "",
@@ -184,7 +184,7 @@ rules:
     enabled: true
     group: file
     syscalls: [openat]
-    condition: "path startswith /etc and open_flags contains O_RDONLY and hostname = node-a"
+    condition: "path startswith /etc and flags contains O_RDONLY and hostname = node-a"
 """
   )
   engine = RuleEngine(str(rules_file))
@@ -220,7 +220,7 @@ rules:
       "pid": 1,
       "tid": 1,
       "uid": 0,
-      "open_flags": "O_RDONLY",
+      "flags": "O_RDONLY",
       "hostname": "node-a",
       "namespace": "default",
     }
@@ -233,7 +233,7 @@ rules:
       "pid": 1,
       "tid": 1,
       "uid": 0,
-      "open_flags": "O_RDONLY",
+      "flags": "O_RDONLY",
       "hostname": "node-a",
       "namespace": "default",
     }
@@ -246,7 +246,7 @@ rules:
       "pid": 1,
       "tid": 1,
       "uid": 0,
-      "open_flags": "O_RDONLY",
+      "flags": "O_RDONLY",
       "hostname": "node-a",
       "namespace": "default",
     }

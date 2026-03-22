@@ -55,19 +55,18 @@ detector:
     pullPolicy: IfNotPresent
   service:
     type: ClusterIP
-    port: 50051
+    port: 50051<
   eventsPort: 50052  # HTTP API for recent events (UI log tail in gRPC mode)
   anomalyLogPath: ""  # Path to log anomalies to file (empty to disable, e.g., /var/log/sentinel-ebpf/anomalies.jsonl)
   eventDumpPath: "/var/log/sentinel-ebpf/events.jsonl"   # Path to dump all incoming events to file (empty to disable, e.g., /var/log/sentinel-ebpf/events.jsonl)
   # Model configurations
   model:
-    algorithm: "latentcluster"  # halfspacetrees | loda | loda_ema | memstream | kitnet | zscore | freq1d | gausscop | copulatree | latentcluster
-    feature_encoding: "encoded"  # hash (legacy scalar hashes) | encoded (event one-hot, bucket banks, path tokens)
-    threshold: 0.7  # Anomaly score threshold (0-1)
-    score_mode: "scaled"  # raw | scaled | percentile (percentile = per-event_type online percentile of log1p(raw))
+    algorithm: "loda_ema"  # halfspacetrees | loda | loda_ema | memstream | kitnet | zscore | freq1d | gausscop | copulatree | latentcluster
+    threshold: 0.98  # Anomaly score threshold
+    score_mode: "percentile"  # raw | scaled | percentile
     percentile:
-      window_size: 2048   # number of past scores kept per event_type
-      warmup: 128         # events before percentile thresholding becomes active
+      window_size: 16384   # number of past scores kept per event_type
+      warmup: 512         # events before percentile thresholding becomes active
     # Half-Space Trees parameters
     hst_n_trees: 25
     hst_height: 15
@@ -84,11 +83,13 @@ detector:
     kitnet_grace_anomaly_detector: 50000
     kitnet_learning_rate: 0.1
     kitnet_hidden_ratio: 0.75
-    # MemStream parameters
-    mem_hidden_dim: 32
-    mem_latent_dim: 8
-    mem_memory_size: 128
-    mem_lr: 0.001
+    # MemStream parameters (paper-aligned: Linear(in,2*in)+Tanh, K-NN discounted L1)
+    mem_memory_size: 512
+    mem_lr: 0.01
+    mem_beta: 0.1
+    mem_k: 3
+    mem_gamma: 0
+    mem_warmup_accept: 512  # grace period: first N events always accepted
     # ZScore baseline parameters
     zscore_min_count: 20
     zscore_std_floor: 0.001

@@ -165,7 +165,7 @@ rules:
     syscalls: [socket, connect]
 ```
 
-Supported fields: `event_name`, `event_id`, `path`, `comm`, `pid`, `tid`, `uid`, `open_flags`, `arg0`, `arg1`, `arg_flags`, `return_value`, `hostname`, `namespace`
+Supported fields: `event_name`, `event_id`, `path`, `comm`, `pid`, `tid`, `uid`, `flags`, `arg0`, `arg1`, `arg_flags`, `return_value`, `hostname`, `namespace`
 
 Supported operators: `=`, `in`, `startswith`, `contains`, `and`, `or`, `not`, parentheses
 
@@ -176,7 +176,6 @@ Supported operators: `=`, `in`, `startswith`, `contains`, `and`, `or`, `not`, pa
 Set via `detector.model.*` in Helm values:
 
 - `algorithm`: `halfspacetrees`, `loda`, `loda_ema`, `kitnet`, `memstream`, `zscore`, `knn`, `freq1d`, `gausscop`, `copulatree`, or `latentcluster`
-- `feature_encoding`: `encoded` (default; event one-hot + bucket banks + token buckets) or `hash` (legacy scalar hash features)
 - `threshold`: anomaly threshold (interpreted in the space selected by `score_mode`)
   - `score_mode` (env: `DETECTOR_SCORE_MODE`): `raw`, `scaled`, or `percentile`
 - per-algorithm params: `hst_*`, `loda_*`, `kitnet_*`, `mem_*`, `zscore_*`, `knn_*`, `freq1d_*`, `gausscop_*`, `copulatree_*`, `latentcluster_*`, plus `seed`

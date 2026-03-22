@@ -19,7 +19,6 @@ env DETECTOR_MEMSTREAM_INPUT_MODE=raw uv run python scripts/memstream_diagnostic
 env DETECTOR_MEMSTREAM_INPUT_MODE=freq1d_u uv run python scripts/memstream_diagnostic.py --limit ${LIMIT} --out-dir ${BASE_OUT}/freq1d_u ${EVENTS_PATH}
 env DETECTOR_MEMSTREAM_INPUT_MODE=freq1d_z uv run python scripts/memstream_diagnostic.py --limit ${LIMIT} --out-dir ${BASE_OUT}/freq1d_z ${EVENTS_PATH}
 env DETECTOR_MEMSTREAM_INPUT_MODE=freq1d_surprisal uv run python scripts/memstream_diagnostic.py --limit ${LIMIT} --out-dir ${BASE_OUT}/freq1d_surprisal ${EVENTS_PATH}
-env DETECTOR_MEMSTREAM_INPUT_MODE=freq1d_z_surprisal uv run python scripts/memstream_diagnostic.py --limit ${LIMIT} --out-dir ${BASE_OUT}/freq1d_z_surprisal ${EVENTS_PATH}
 EOF
 
 echo "Prepared MemStream ablation commands in ${CMD_FILE}"

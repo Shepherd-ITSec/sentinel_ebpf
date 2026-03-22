@@ -39,8 +39,6 @@ spec:
               value: {{ .Values.detector.model.algorithm | quote }}
             - name: DETECTOR_THRESHOLD
               value: {{ .Values.detector.model.threshold | quote }}
-            - name: DETECTOR_FEATURE_ENCODING
-              value: {{ .Values.detector.model.feature_encoding | default "encoded" | quote }}
             - name: DETECTOR_SCORE_MODE
               value: {{ .Values.detector.model.score_mode | quote }}
             - name: DETECTOR_PERCENTILE_WINDOW_SIZE
@@ -63,14 +61,18 @@ spec:
               value: {{ .Values.detector.model.loda_ema_alpha | quote }}
             - name: DETECTOR_LODA_HIST_DECAY
               value: {{ .Values.detector.model.loda_hist_decay | quote }}
-            - name: DETECTOR_MEMSTREAM_HIDDEN_DIM
-              value: {{ .Values.detector.model.mem_hidden_dim | quote }}
-            - name: DETECTOR_MEMSTREAM_LATENT_DIM
-              value: {{ .Values.detector.model.mem_latent_dim | quote }}
             - name: DETECTOR_MEMSTREAM_MEMORY_SIZE
               value: {{ .Values.detector.model.mem_memory_size | quote }}
             - name: DETECTOR_MEMSTREAM_LR
               value: {{ .Values.detector.model.mem_lr | quote }}
+            - name: DETECTOR_MEMSTREAM_BETA
+              value: {{ .Values.detector.model.mem_beta | quote }}
+            - name: DETECTOR_MEMSTREAM_K
+              value: {{ .Values.detector.model.mem_k | quote }}
+            - name: DETECTOR_MEMSTREAM_GAMMA
+              value: {{ .Values.detector.model.mem_gamma | quote }}
+            - name: DETECTOR_MEMSTREAM_WARMUP_ACCEPT
+              value: {{ .Values.detector.model.mem_warmup_accept | quote }}
             - name: DETECTOR_ZSCORE_MIN_COUNT
               value: {{ .Values.detector.model.zscore_min_count | quote }}
             - name: DETECTOR_ZSCORE_STD_FLOOR

@@ -22,7 +22,7 @@ import events_pb2
 import events_pb2_grpc
 from probe.config import AppConfig, load_config
 from probe.events import EVENT_ID_TO_NAME, EVENT_IDS_WITH_RETURN_VALUE
-from probe.open_flags import decode_open_flags
+from probe.flags import decode_flags
 from probe.bpf_build import build_bpf_program, enabled_event_ids_from_rules
 from probe.rules import RuleEngine
 
@@ -790,9 +790,10 @@ class ProbeRunner:
       attributes["return_value"] = str(return_val)
 
     flags_str = ""
-    if event_id in (2, 257, 437):
+    decoded_flags = decode_flags(int(event.flags), event_id)
+    if decoded_flags is not None:
       flags_str = str(int(event.flags))
-      attributes["open_flags"] = decode_open_flags(int(event.flags))
+      attributes["flags"] = decoded_flags
 
     rule_ctx = {
         "event_name": event_name,
@@ -803,10 +804,10 @@ class ProbeRunner:
         "pid": int(event.pid),
         "tid": int(event.tid),
         "uid": int(event.uid),
-        "open_flags": attributes.get("open_flags", ""),
+        "flags": attributes.get("flags", ""),
         "arg0": int(event.arg0),
         "arg1": int(event.arg1),
-        "arg_flags": attributes.get("open_flags", ""),
+        "arg_flags": attributes.get("flags", ""),
         "return_value": return_val if event_id in EVENT_IDS_WITH_RETURN_VALUE else None,
         "hostname": self._metadata["hostname"],
         "namespace": self._metadata["namespace"],

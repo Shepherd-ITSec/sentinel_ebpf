@@ -13,10 +13,11 @@ def _make_features(vec):
 def test_memstream_scores_in_unit_interval():
   detector = OnlineAnomalyDetector(
     algorithm="memstream",
-    mem_hidden_dim=16,
-    mem_latent_dim=4,
     mem_memory_size=32,
     mem_lr=0.005,
+    mem_beta=0.1,
+    mem_k=3,
+    mem_gamma=0.5,
     seed=7,
   )
   rng = np.random.default_rng(7)
@@ -28,10 +29,11 @@ def test_memstream_scores_in_unit_interval():
 def test_memstream_gates_memory_updates_for_extreme_anomalies():
   detector = OnlineAnomalyDetector(
     algorithm="memstream",
-    mem_hidden_dim=16,
-    mem_latent_dim=4,
     mem_memory_size=16,
     mem_lr=0.005,
+    mem_beta=0.1,
+    mem_k=3,
+    mem_gamma=0.5,
     seed=11,
   )
   rng = np.random.default_rng(11)
@@ -54,10 +56,11 @@ def test_memstream_gates_memory_updates_for_extreme_anomalies():
 def test_memstream_auto_selects_expected_device():
   detector = OnlineAnomalyDetector(
     algorithm="memstream",
-    mem_hidden_dim=16,
-    mem_latent_dim=4,
     mem_memory_size=16,
     mem_lr=0.005,
+    mem_beta=0.1,
+    mem_k=3,
+    mem_gamma=0.5,
     seed=13,
   )
   detector.score_and_learn(_make_features(np.zeros(9)))
@@ -68,45 +71,48 @@ def test_memstream_auto_selects_expected_device():
 
 
 def test_memstream_effective_dims_scale_with_input_dim():
+  """Paper: latent = 2×input_dim. Encoder is Linear(in, 2*in) + Tanh."""
   small = OnlineAnomalyDetector(
     algorithm="memstream",
-    mem_hidden_dim=8,
-    mem_latent_dim=4,
     mem_memory_size=16,
     mem_lr=0.005,
+    mem_beta=0.1,
+    mem_k=3,
+    mem_gamma=0.5,
     seed=23,
   )
   small.score_and_learn(_make_features(np.zeros(9)))
   small_impl = small.impl
   assert small_impl._model is not None
-  small_hidden = small_impl._model.encoder[0].out_features
-  small_latent = small_impl._model.encoder[2].out_features
+  small_latent = small_impl._model.encoder[0].out_features
+  assert small_latent == 18  # 2 * 9
 
   large = OnlineAnomalyDetector(
     algorithm="memstream",
-    mem_hidden_dim=8,
-    mem_latent_dim=4,
     mem_memory_size=16,
     mem_lr=0.005,
+    mem_beta=0.1,
+    mem_k=3,
+    mem_gamma=0.5,
     seed=23,
   )
   large.score_and_learn(_make_features(np.zeros(196)))
   large_impl = large.impl
   assert large_impl._model is not None
-  large_hidden = large_impl._model.encoder[0].out_features
-  large_latent = large_impl._model.encoder[2].out_features
+  large_latent = large_impl._model.encoder[0].out_features
+  assert large_latent == 392  # 2 * 196
 
-  assert large_hidden > small_hidden
   assert large_latent > small_latent
 
 
 def test_memstream_exposes_debug_signals_and_counters():
   detector = OnlineAnomalyDetector(
     algorithm="memstream",
-    mem_hidden_dim=16,
-    mem_latent_dim=4,
     mem_memory_size=8,
     mem_lr=0.005,
+    mem_beta=0.1,
+    mem_k=3,
+    mem_gamma=0.5,
     seed=31,
   )
   rng = np.random.default_rng(31)
@@ -116,9 +122,8 @@ def test_memstream_exposes_debug_signals_and_counters():
 
   debug = detector.get_last_debug()
   assert debug["mode"] == "score_and_learn"
-  assert debug["recon_error"] >= 0.0
-  assert debug["memory_error"] >= 0.0
-  assert debug["adaptive_beta"] >= 0.0
+  assert debug["score_raw"] >= 0.0
+  assert debug["beta"] >= 0.0
   assert debug["mem_filled_after"] <= 8
   assert 0.0 <= debug["memory_fill_fraction"] <= 1.0
   assert debug["accepted_updates_total"] >= 1
@@ -134,16 +139,17 @@ def test_memstream_exposes_debug_signals_and_counters():
 
 
 def test_memstream_transformed_input_modes_smoke():
-  modes = ("freq1d_u", "freq1d_z", "freq1d_surprisal", "freq1d_z_surprisal")
+  modes = ("freq1d_u", "freq1d_z", "freq1d_surprisal")
   rng = np.random.default_rng(41)
 
   for mode in modes:
     detector = OnlineAnomalyDetector(
       algorithm="memstream",
-      mem_hidden_dim=16,
-      mem_latent_dim=4,
       mem_memory_size=16,
       mem_lr=0.005,
+      mem_beta=0.1,
+      mem_k=3,
+      mem_gamma=0.5,
       mem_input_mode=mode,
       freq1d_bins=32,
       freq1d_alpha=1.0,
@@ -159,4 +165,4 @@ def test_memstream_transformed_input_modes_smoke():
     debug = detector.get_last_debug()
     assert debug["input_mode"] == mode
     assert debug["mem_filled_after"] <= 16
-    assert debug["memory_error"] >= 0.0
+    assert debug["score_raw"] >= 0.0

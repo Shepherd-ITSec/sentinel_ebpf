@@ -57,8 +57,12 @@ def _count_and_load_slice(
   start_event: int = 0,
   start_ms: Optional[int] = None,
   limit: int = 0,
-) -> Tuple[int, Dict[str, float]]:
-  """Count events from start, load original scores for full slice. Returns (total_in_slice, {event_id: score})."""
+) -> Tuple[int, Dict[str, float], Dict[str, bool]]:
+  """Count events from start, load original scores and is_one_off for full slice.
+
+  Returns (total_in_slice, {event_id: score}, {event_id: is_one_off}).
+  is_one_off is only present for events where the input has the key.
+  """
   total_in_slice = 0
   cap = limit if limit > 0 else None
   n_seen = 0
@@ -90,6 +94,7 @@ def _count_and_load_slice(
 
   total_in_slice = min(total_in_slice, cap) if cap else total_in_slice
   scores: Dict[str, float] = {}
+  is_one_off: Dict[str, bool] = {}
   n_in_slice = 0
   n_seen = 0
   with _open_text_lines(path) as f:
@@ -117,15 +122,20 @@ def _count_and_load_slice(
       eid = str(obj.get("event_id", ""))
       if "score" in obj:
         scores[eid] = float(obj["score"])
+      if "is_one_off" in obj:
+        is_one_off[eid] = bool(obj["is_one_off"])
       n_in_slice += 1
       if n_in_slice >= total_in_slice:
         break
 
-  return total_in_slice, scores
+  return total_in_slice, scores, is_one_off
 
 
-def _load_replay_scores(dump_path: Path, expected_count: int) -> Dict[str, float]:
-  """Load scores from event dump. The last expected_count lines are from the replay."""
+def _load_replay_scores(dump_path: Path, expected_count: int) -> Tuple[Dict[str, float], Dict[str, bool]]:
+  """Load scores and anomaly flags from event dump. The last expected_count lines are from the replay.
+
+  Returns (scores, anomalies). anomalies[eid] is True if event was flagged.
+  """
   lines: list[str] = []
   with dump_path.open("r", encoding="utf-8") as f:
     line_iter = iter(f)
@@ -137,6 +147,7 @@ def _load_replay_scores(dump_path: Path, expected_count: int) -> Dict[str, float
 
   # Last expected_count entries are from second-half replay
   scores: Dict[str, float] = {}
+  anomalies: Dict[str, bool] = {}
   score_iter = lines[-expected_count:]
   if tqdm:
     score_iter = tqdm(score_iter, desc="Parse scores", unit=" rec", file=sys.stderr)
@@ -148,7 +159,9 @@ def _load_replay_scores(dump_path: Path, expected_count: int) -> Dict[str, float
     eid = str(obj.get("event_id", ""))
     if "score" in obj:
       scores[eid] = float(obj["score"])
-  return scores
+    if "anomaly" in obj:
+      anomalies[eid] = bool(obj["anomaly"])
+  return scores, anomalies
 
 
 def _wait_for_detector(target: str, timeout_s: float) -> None:
@@ -186,6 +199,7 @@ def _start_detector(port: int, env_overrides: Optional[Dict[str, str]] = None) -
     )
   env = os.environ.copy()
   env["DETECTOR_PORT"] = str(port)
+  env["DETECTOR_EVENTS_PORT"] = str(port + 1)  # avoid HTTP port collision when using custom gRPC port
   env["DETECTOR_QUIET"] = "1"
   if env_overrides:
     env.update(env_overrides)
@@ -262,9 +276,9 @@ def main() -> None:
   ap.add_argument("--threshold", default=None, help="Anomaly threshold (e.g. 0.7)")
   ap.add_argument(
     "--score-mode",
-    choices=["raw", "scaled"],
+    choices=["raw", "scaled", "percentile"],
     default="raw",
-    help="Detector score space: raw (model.score_*_raw) or scaled (bounded [0,1] scores). Default: raw.",
+    help="Detector score space: raw (model.score_*_raw), scaled (bounded [0,1]), or percentile (per-event_group online percentile of log1p(raw)). Default: raw.",
   )
   ap.add_argument("--limit", type=int, default=0, help="Cap total events in slice for quick testing (0=all)")
   ap.add_argument("--start-event", type=int, default=0, help="Skip first N events; replay slice from there")
@@ -283,7 +297,7 @@ def main() -> None:
     dump_path.unlink()
 
   log.info("Loading slice (start_event=%s, start_ms=%s, limit=%s)...", args.start_event, args.start_ms, args.limit or "all")
-  total, original_scores = _count_and_load_slice(
+  total, original_scores, is_one_off = _count_and_load_slice(
     events_path,
     start_event=args.start_event,
     start_ms=args.start_ms,
@@ -322,42 +336,58 @@ def main() -> None:
     _stop_detector(detector)
 
   log.info("Loading replay scores from dump...")
-  replay_scores = _load_replay_scores(dump_path, total)
+  replay_scores, replay_anomalies = _load_replay_scores(dump_path, total)
 
-  # Compare
+  # Compare when input has scores; otherwise replay-only (dump has score + score_raw)
   common = set(original_scores.keys()) & set(replay_scores.keys())
-  if not common:
-    log.error("No common event_ids between original and replay")
-    sys.exit(1)
+  mae = max_diff = corr = None
+  if common:
+    diffs = [abs(original_scores[eid] - replay_scores[eid]) for eid in common]
+    mae = statistics.mean(diffs) if diffs else 0.0
+    max_diff = max(diffs) if diffs else 0.0
+    try:
+      orig_vals = [original_scores[e] for e in common]
+      rep_vals = [replay_scores[e] for e in common]
+      corr = statistics.correlation(orig_vals, rep_vals) if len(common) > 1 else 1.0
+    except Exception:
+      corr = float("nan")
+  else:
+    log.info(
+      "No original scores in input (raw events?); replay-only complete. Dump at %s has score + score_raw per event.",
+      dump_path,
+    )
 
-  diffs = []
-  for eid in common:
-    orig = original_scores[eid]
-    rep = replay_scores[eid]
-    diffs.append(abs(orig - rep))
-
-  mae = statistics.mean(diffs) if diffs else 0.0
-  max_diff = max(diffs) if diffs else 0.0
-  try:
-    orig_vals = [original_scores[e] for e in common]
-    rep_vals = [replay_scores[e] for e in common]
-    corr = statistics.correlation(orig_vals, rep_vals) if len(common) > 1 else 1.0
-  except Exception:
-    corr = float("nan")
+  # Singleton stats: when input has is_one_off, report singletons vs non-singletons flagged
+  singletons_flagged = non_singletons_flagged = None
+  if is_one_off and replay_anomalies:
+    # Only report when input contained is_one_off labels
+    singletons_flagged = sum(
+      1 for eid, flagged in replay_anomalies.items()
+      if flagged and is_one_off.get(eid) is True
+    )
+    non_singletons_flagged = sum(
+      1 for eid, flagged in replay_anomalies.items()
+      if flagged and is_one_off.get(eid) is False
+    )
 
   report = {
     "events_path": str(events_path),
     "start_event": args.start_event,
     "start_ms": args.start_ms,
     "total_events_in_slice": total,
-    "common_event_ids": len(common),
-    "mae": round(mae, 6),
-    "max_abs_diff": round(max_diff, 6),
-    "correlation": round(corr, 6) if not math.isnan(corr) else None,
+    "replay_event_ids": len(replay_scores),
+    "common_event_ids": len(common) if common else 0,
+    "mae": round(mae, 6) if mae is not None else None,
+    "max_abs_diff": round(max_diff, 6) if max_diff is not None else None,
+    "correlation": round(corr, 6) if corr is not None and not math.isnan(corr) else None,
     "algorithm": args.algorithm or "default",
     "threshold": args.threshold or "default",
     "detector_config": detector_cfg,
   }
+  if singletons_flagged is not None:
+    report["singletons_flagged"] = singletons_flagged
+  if non_singletons_flagged is not None:
+    report["non_singletons_flagged"] = non_singletons_flagged
   report_path = out_dir / "compare_report.json"
   report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
   log.info("Report: %s", json.dumps(report, indent=2))

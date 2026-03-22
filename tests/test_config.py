@@ -133,10 +133,11 @@ class TestDetectorConfig:
     os.environ["DETECTOR_LODA_RANGE"] = "2.5"
     os.environ["DETECTOR_LODA_EMA_ALPHA"] = "0.2"
     os.environ["DETECTOR_LODA_HIST_DECAY"] = "0.9"
-    os.environ["DETECTOR_MEMSTREAM_HIDDEN_DIM"] = "12"
-    os.environ["DETECTOR_MEMSTREAM_LATENT_DIM"] = "6"
     os.environ["DETECTOR_MEMSTREAM_MEMORY_SIZE"] = "64"
     os.environ["DETECTOR_MEMSTREAM_LR"] = "0.005"
+    os.environ["DETECTOR_MEMSTREAM_BETA"] = "0.2"
+    os.environ["DETECTOR_MEMSTREAM_K"] = "5"
+    os.environ["DETECTOR_MEMSTREAM_GAMMA"] = "0.6"
     os.environ["DETECTOR_MEMSTREAM_INPUT_MODE"] = "freq1d_z"
     os.environ["DETECTOR_ZSCORE_MIN_COUNT"] = "15"
     os.environ["DETECTOR_ZSCORE_STD_FLOOR"] = "0.002"
@@ -162,7 +163,6 @@ class TestDetectorConfig:
     os.environ["DETECTOR_LATENTCLUSTER_REG"] = "0.5"
     os.environ["DETECTOR_LATENTCLUSTER_UPDATE_ALPHA"] = "0.2"
     os.environ["DETECTOR_LATENTCLUSTER_SPAWN_THRESHOLD"] = "7.5"
-    os.environ["DETECTOR_FEATURE_ENCODING"] = "hash"
     os.environ["DETECTOR_SCORE_MODE"] = "scaled"
     os.environ["DETECTOR_MODEL_DEVICE"] = "cpu"
     os.environ["DETECTOR_MODEL_SEED"] = "7"
@@ -179,10 +179,11 @@ class TestDetectorConfig:
       assert cfg.loda_range == 2.5
       assert cfg.loda_ema_alpha == 0.2
       assert cfg.loda_hist_decay == 0.9
-      assert cfg.mem_hidden_dim == 12
-      assert cfg.mem_latent_dim == 6
       assert cfg.mem_memory_size == 64
       assert cfg.mem_lr == 0.005
+      assert cfg.mem_beta == 0.2
+      assert cfg.mem_k == 5
+      assert cfg.mem_gamma == 0.6
       assert cfg.mem_input_mode == "freq1d_z"
       assert cfg.zscore_min_count == 15
       assert cfg.zscore_std_floor == 0.002
@@ -208,7 +209,6 @@ class TestDetectorConfig:
       assert cfg.latentcluster_reg == 0.5
       assert cfg.latentcluster_update_alpha == 0.2
       assert cfg.latentcluster_spawn_threshold == 7.5
-      assert cfg.feature_encoding == "hash"
       assert cfg.score_mode == "scaled"
       assert cfg.model_device == "cpu"
       assert cfg.model_seed == 7
@@ -225,10 +225,11 @@ class TestDetectorConfig:
         "DETECTOR_LODA_RANGE",
         "DETECTOR_LODA_EMA_ALPHA",
         "DETECTOR_LODA_HIST_DECAY",
-        "DETECTOR_MEMSTREAM_HIDDEN_DIM",
-        "DETECTOR_MEMSTREAM_LATENT_DIM",
         "DETECTOR_MEMSTREAM_MEMORY_SIZE",
         "DETECTOR_MEMSTREAM_LR",
+        "DETECTOR_MEMSTREAM_BETA",
+        "DETECTOR_MEMSTREAM_K",
+        "DETECTOR_MEMSTREAM_GAMMA",
         "DETECTOR_MEMSTREAM_INPUT_MODE",
         "DETECTOR_ZSCORE_MIN_COUNT",
         "DETECTOR_ZSCORE_STD_FLOOR",
@@ -254,7 +255,6 @@ class TestDetectorConfig:
         "DETECTOR_LATENTCLUSTER_REG",
         "DETECTOR_LATENTCLUSTER_UPDATE_ALPHA",
         "DETECTOR_LATENTCLUSTER_SPAWN_THRESHOLD",
-        "DETECTOR_FEATURE_ENCODING",
         "DETECTOR_SCORE_MODE",
         "DETECTOR_MODEL_DEVICE",
         "DETECTOR_MODEL_SEED",

@@ -58,8 +58,8 @@ Each rule has:
 The `condition` part is a boolean expression over event fields.
 
 - **Supported operators:** `=`, `in`, `startswith`, `contains`, `and`, `or`, `not`, parentheses
-- **Supported fields:** `event_name`, `event_id`, `path`, `comm`, `pid`, `tid`, `uid`, `open_flags`, `arg0`, `arg1`, `arg_flags`, `return_value`, `hostname`, `namespace`
-- `arg_flags` is evaluated as an alias of `open_flags`.
+- **Supported fields:** `event_name`, `event_id`, `path`, `comm`, `pid`, `tid`, `uid`, `flags`, `arg0`, `arg1`, `arg_flags`, `return_value`, `hostname`, `namespace`
+- `arg_flags` is evaluated as an alias of `flags`.
 
 ## Selective probe attachment
 

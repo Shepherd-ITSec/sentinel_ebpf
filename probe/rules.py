@@ -17,7 +17,7 @@ SUPPORTED_FIELDS = {
   "pid",
   "tid",
   "uid",
-  "open_flags",
+  "flags",
   "arg0",
   "arg1",
   "arg_flags",
@@ -268,7 +268,7 @@ class RuleEngine:
     if field == "event_name":
       value = ctx.get("event_name")
     if field == "arg_flags" and value is None:
-      value = ctx.get("open_flags")
+      value = ctx.get("flags")
     if value is None:
       return False
 
@@ -338,7 +338,7 @@ class RuleEngine:
         "pid": None,
         "tid": None,
         "uid": None,
-        "open_flags": "",
+        "flags": "",
         "arg0": None,
         "arg1": None,
         "return_value": None,

@@ -22,7 +22,7 @@ from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 import events_pb2
 import events_pb2_grpc
 from detector.config import DetectorConfig, load_config
-from detector.features import extract_feature_dict
+from detector.features import extract_feature_dict, feature_view_for_algorithm
 from detector.model import OnlineAnomalyDetector
 from detector.model import OnlinePercentileCalibrator
 
@@ -109,22 +109,12 @@ def _event_result_fields(resp: events_pb2.DetectionResponse) -> dict:
   }
 
 
-def _event_entry(
-  evt: events_pb2.EventEnvelope,
-  resp: events_pb2.DetectionResponse,
-  *,
-  include_container: bool = False,
-  include_attributes: bool = False,
-  include_timestamp: bool = False,
-) -> dict:
+def _event_entry(evt: events_pb2.EventEnvelope, resp: events_pb2.DetectionResponse) -> dict:
   entry = _event_base_entry(evt)
   entry.update(_event_result_fields(resp))
-  if include_container:
-    entry["container_id"] = evt.container_id or ""
-  if include_attributes:
-    entry["attributes"] = dict(evt.attributes or {})
-  if include_timestamp:
-    entry["timestamp"] = datetime.now(timezone.utc).isoformat()
+  entry["container_id"] = evt.container_id or ""
+  entry["attributes"] = dict(evt.attributes or {})
+  entry["timestamp"] = datetime.now(timezone.utc).isoformat()
   return entry
 
 
@@ -133,7 +123,7 @@ def _log_anomaly(evt, resp) -> None:
   if not _anomaly_log_path or not resp.anomaly:
     return
   try:
-    entry = _event_entry(evt, resp, include_timestamp=True)
+    entry = _event_entry(evt, resp)
     with _anomaly_log_lock:
       with _anomaly_log_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
@@ -146,13 +136,7 @@ def _dump_event(evt, resp) -> None:
   if not _event_dump_path:
     return
   try:
-    entry = _event_entry(
-      evt,
-      resp,
-      include_container=True,
-      include_attributes=True,
-      include_timestamp=True,
-    )
+    entry = _event_entry(evt, resp)
     with _event_dump_lock:
       with _event_dump_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
@@ -221,11 +205,13 @@ class DeterministicScorer:
       "kitnet_grace_anomaly_detector": self.cfg.kitnet_grace_anomaly_detector,
       "kitnet_learning_rate": self.cfg.kitnet_learning_rate,
       "kitnet_hidden_ratio": self.cfg.kitnet_hidden_ratio,
-      "mem_hidden_dim": self.cfg.mem_hidden_dim,
-      "mem_latent_dim": self.cfg.mem_latent_dim,
       "mem_memory_size": self.cfg.mem_memory_size,
       "mem_lr": self.cfg.mem_lr,
+      "mem_beta": self.cfg.mem_beta,
+      "mem_k": self.cfg.mem_k,
+      "mem_gamma": self.cfg.mem_gamma,
       "mem_input_mode": self.cfg.mem_input_mode,
+      "mem_warmup_accept": self.cfg.mem_warmup_accept,
       "zscore_min_count": self.cfg.zscore_min_count,
       "zscore_std_floor": self.cfg.zscore_std_floor,
       "knn_k": self.cfg.knn_k,
@@ -297,7 +283,10 @@ class DeterministicScorer:
 
     try:
       with self._lock:
-        features = extract_feature_dict(evt, encoding=getattr(self.cfg, "feature_encoding", "encoded"))
+        features = extract_feature_dict(
+          evt,
+          feature_view=feature_view_for_algorithm(getattr(self.cfg, "model_algorithm", "")),
+        )
         model = self._get_model(evt.event_group or "")
         score_raw, score_scaled = model.score_and_learn(features)
         score_mode = getattr(self.cfg, "score_mode", "raw")

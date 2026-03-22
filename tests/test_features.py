@@ -201,7 +201,7 @@ def test_extract_file_features_flags_are_schema_stable():
     event_group="file",
     ts_unix_nano=1_700_000_000_000_000_000,
     data=["openat", "257", "cat", "1", "1", "0", "0", "524288", "/etc/passwd", "O_RDONLY"],
-    attributes={"open_flags": "O_RDONLY|O_CLOEXEC"},
+    attributes={"flags": "O_RDONLY|O_CLOEXEC"},
   )
   values_open = extract_feature_dict(evt_openat)
   assert any(name.startswith("file_flags_bucket_") for name in values_open)
@@ -284,7 +284,7 @@ def test_extract_network_features_socket_family_type():
 
 
 def test_extract_network_features_sockaddr_from_attributes():
-  """connect() with sin_port/sin_addr in attributes (or BETH data[7])."""
+  """connect() with sin_port/sin_addr in attributes."""
   evt = events_pb2.EventEnvelope(
     event_id="feat-connect-attr",
     event_name="connect",
@@ -299,10 +299,10 @@ def test_extract_network_features_sockaddr_from_attributes():
   assert values["net_af_af_inet"] == 1.0
 
 
-def test_extract_network_features_sockaddr_from_beth_data():
-  """BETH format: data[7] is stringified sockaddr dict."""
+def test_extract_network_features_sockaddr_from_data7():
+  """Legacy format: data[7] is stringified sockaddr dict."""
   evt = events_pb2.EventEnvelope(
-    event_id="feat-connect-beth",
+    event_id="feat-connect-data7",
     event_name="connect",
     event_group="network",
     ts_unix_nano=1_700_000_000_000_000_000,
@@ -316,8 +316,8 @@ def test_extract_network_features_sockaddr_from_beth_data():
   assert sum(value for name, value in values.items() if name.startswith("net_daddr_bucket_")) == 1.0
 
 
-def test_extract_feature_dict_hash_encoding_returns_legacy_schema():
-  """encoding='hash' produces legacy scalar hash features (event_hash, comm_hash, etc.)."""
+def test_extract_feature_dict_hash_view_returns_legacy_schema():
+  """feature_view='hash' produces scalar hash features (event_hash, comm_hash, etc.) for freq1d."""
   evt = events_pb2.EventEnvelope(
     event_id="feat-hash",
     event_name="openat",
@@ -327,7 +327,7 @@ def test_extract_feature_dict_hash_encoding_returns_legacy_schema():
     data=["openat", "257", "cat", "1", "1", "0", "0", "0", "/etc/passwd", "O_RDONLY"],
     attributes={"return_value": "0", "mount_namespace": "4026531840"},
   )
-  values = extract_feature_dict(evt, encoding="hash")
+  values = extract_feature_dict(evt, feature_view="hash")
   assert "event_hash" in values
   assert "comm_hash" in values
   assert "path_hash" in values
@@ -342,16 +342,16 @@ def test_extract_feature_dict_hash_encoding_returns_legacy_schema():
   assert len(values) == 23 + 5 * 4  # 23 generic + shared online stats
 
 
-def test_extract_feature_dict_hash_encoding_keeps_legacy_type_specific_hashes():
+def test_extract_feature_dict_hash_view_keeps_type_specific_hashes():
   file_evt = events_pb2.EventEnvelope(
     event_id="feat-file-hash",
     event_name="openat",
     event_group="file",
     ts_unix_nano=1_700_000_000_000_000_000,
     data=["openat", "257", "cat", "1", "1", "0", "0", "0", "/etc/passwd", "O_RDONLY"],
-    attributes={"open_flags": "O_RDONLY|O_CLOEXEC"},
+    attributes={"flags": "O_RDONLY|O_CLOEXEC"},
   )
-  file_values = extract_feature_dict(file_evt, encoding="hash")
+  file_values = extract_feature_dict(file_evt, feature_view="hash")
   assert "file_extension_hash" in file_values
   assert "file_event_name_hash" in file_values
   assert "file_flags_hash" in file_values
@@ -366,7 +366,7 @@ def test_extract_feature_dict_hash_encoding_keeps_legacy_type_specific_hashes():
     data=["connect", "42", "curl", "1", "1", "0", "3", "16", "", ""],
     attributes={"sin_port": "443", "sin_addr": "192.168.1.1", "sa_family": "AF_INET"},
   )
-  net_values = extract_feature_dict(net_evt, encoding="hash")
+  net_values = extract_feature_dict(net_evt, feature_view="hash")
   assert "net_socket_type_hash" in net_values
   assert "net_daddr_hash" in net_values
   assert "net_af_hash" in net_values
@@ -395,5 +395,69 @@ def test_extract_feature_dict_adds_process_features_when_event_type_process():
   assert "process_is_fork" in values
   assert values["process_is_fork"] == 0.0  # execve, not fork
   assert len(values) == len(extract_feature_dict(base_evt)) + 2
+
+
+def test_memstream_feature_view_drops_sparse_context_banks():
+  evt = events_pb2.EventEnvelope(
+    event_id="feat-mem-view",
+    event_name="openat",
+    event_group="file",
+    hostname="node-1",
+    ts_unix_nano=1_700_000_000_000_000_000,
+    data=["openat", "257", "cat", "1", "1", "0", "-100", "0", "/etc/passwd", "O_RDONLY"],
+    attributes={"return_value": "0", "mount_namespace": "4026531840", "flags": "O_RDONLY|O_CLOEXEC"},
+  )
+  values = extract_feature_dict(evt, feature_view="memstream")
+  assert "pid_norm" in values
+  assert "event_name_openat" in values
+  assert "file_sensitive_path" in values
+  assert "file_path_rate_5" in values
+  assert "file_event_name_openat" not in values
+  assert _count_prefix(values, "comm_bucket_") == 0
+  assert _count_prefix(values, "hostname_bucket_") == 0
+  assert _count_prefix(values, "mount_ns_bucket_") == 0
+  assert _count_path_depth_banks(values) == 0
+  assert _count_prefix(values, "file_extension_bucket_") == 0
+  assert _count_prefix(values, "file_flags_bucket_") == 0
+
+
+def test_loda_feature_view_keeps_small_network_identity_and_drops_open_world_banks():
+  evt = events_pb2.EventEnvelope(
+    event_id="feat-loda-view",
+    event_name="socket",
+    event_group="network",
+    hostname="node-1",
+    ts_unix_nano=1_700_000_000_000_000_000,
+    data=["socket", "41", "curl", "1", "1", "0", "2", "1", "", ""],
+  )
+  values = extract_feature_dict(evt, feature_view="loda")
+  assert "net_fd_norm" in values
+  assert "event_name_socket" in values
+  assert "net_af_af_inet" in values
+  assert _count_prefix(values, "net_socket_type_bucket_") == 16
+  assert _count_prefix(values, "net_daddr_bucket_") == 0
+  assert _count_prefix(values, "comm_bucket_") == 0
+  assert _count_path_depth_banks(values) == 0
+
+
+def test_hash_feature_view_matches_legacy_hash_schema():
+  evt = events_pb2.EventEnvelope(
+    event_id="feat-hash-view",
+    event_name="openat",
+    event_group="file",
+    hostname="node-1",
+    ts_unix_nano=1_700_000_000_000_000_000,
+    data=["openat", "257", "cat", "1", "1", "0", "0", "0", "/etc/passwd", "O_RDONLY"],
+    attributes={"return_value": "0", "mount_namespace": "4026531840", "flags": "O_RDONLY|O_CLOEXEC"},
+  )
+  values = extract_feature_dict(evt, feature_view="hash")
+  assert "event_hash" in values
+  assert "comm_hash" in values
+  assert "path_hash" in values
+  assert "file_event_name_hash" in values
+  assert "file_flags_hash" in values
+  assert "event_name_openat" not in values
+  assert _count_prefix(values, "comm_bucket_") == 0
+  assert _count_prefix(values, "file_flags_bucket_") == 0
 
 

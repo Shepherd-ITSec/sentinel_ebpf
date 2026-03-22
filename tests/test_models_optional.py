@@ -53,10 +53,11 @@ def test_memstream_detects_anomaly_shift():
 
   detector = OnlineAnomalyDetector(
     algorithm="memstream",
-    mem_hidden_dim=16,
-    mem_latent_dim=4,
     mem_memory_size=64,
     mem_lr=0.005,
+    mem_beta=0.1,
+    mem_k=3,
+    mem_gamma=0.5,
     seed=7,
   )
 

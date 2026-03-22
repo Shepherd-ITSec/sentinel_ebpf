@@ -34,16 +34,6 @@ def _auto_loda_projections(input_dim: int) -> int:
   return max(8, min(256, int(np.ceil(2.0 * np.sqrt(max(1, input_dim))))))
 
 
-def _auto_mem_hidden_dim(input_dim: int) -> int:
-  # Scale hidden size sub-linearly with input dimension.
-  d = float(max(1, input_dim))
-  return max(16, min(256, int(np.ceil(2.0 * np.sqrt(d) * np.log2(d + 1.0)))))
-
-
-def _auto_mem_latent_dim(hidden_dim: int) -> int:
-  return max(4, min(64, hidden_dim // 4))
-
-
 def _auto_kitnet_max_size_ae(input_dim: int) -> int:
   # Kitsune sub-autoencoders should not exceed input size.
   return max(2, min(32, int(np.ceil(np.sqrt(max(1, input_dim))))))
@@ -172,6 +162,7 @@ class OnlineLODAEMA(_BothScoresMixin):
     self._mean: Optional[torch.Tensor] = None
     self._var: Optional[torch.Tensor] = None
     self._counts: Optional[torch.Tensor] = None
+    self._last_debug: Dict[str, Any] = {}
     logging.info(
       "Initialized %s (projections=%d, bins=%d, range=%.2f, ema_alpha=%.3f, hist_decay=%.3f, device=%s)",
       self.algorithm,
@@ -241,6 +232,13 @@ class OnlineLODAEMA(_BothScoresMixin):
     baseline = math.log(float(self.bins))
     excess = torch.clamp(surprisal - baseline, min=0.0)
     score = float(torch.mean(excess).item())
+    excess_np = excess.cpu().numpy()
+    self._last_debug = {
+      "score_raw": score,
+      "mean_projection_excess": score,
+      "max_projection_excess": float(np.max(excess_np)),
+      "per_projection_excess": [float(x) for x in excess_np],
+    }
     return score
 
   def score_and_learn_raw(self, features: Dict[str, float]) -> float:
@@ -281,7 +279,17 @@ class OnlineLODAEMA(_BothScoresMixin):
     delta = projections - mean
     mean[:] = mean + alpha * delta
     var[:] = (1.0 - alpha) * var + alpha * (delta * delta)
+    excess_np = excess.cpu().numpy()
+    self._last_debug = {
+      "score_raw": score,
+      "mean_projection_excess": score,
+      "max_projection_excess": float(np.max(excess_np)),
+      "per_projection_excess": [float(x) for x in excess_np],
+    }
     return score
+
+  def get_last_debug(self) -> Dict[str, Any]:
+    return dict(self._last_debug)
 
   def get_state(self) -> Dict[str, Any]:
     """Return picklable state for checkpointing."""
@@ -549,25 +557,44 @@ class _AutoEncoder(torch.nn.Module):
     recon = self.decoder(z)
     return z, recon
 
+
+class _MemStreamAutoEncoder(torch.nn.Module):
+  """Paper architecture: Linear(in, 2*in) + Tanh, Linear(2*in, in). Latent = 2×input_dim."""
+
+  def __init__(self, input_dim: int):
+    super().__init__()
+    latent_dim = 2 * input_dim
+    self.encoder = torch.nn.Sequential(
+      torch.nn.Linear(input_dim, latent_dim),
+      torch.nn.Tanh(),
+    )
+    self.decoder = torch.nn.Linear(latent_dim, input_dim)
+
+  def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    z = self.encoder(x)
+    recon = self.decoder(z)
+    return z, recon
+
+
 class OnlineMemStream(_BothScoresMixin):
   """
-  Online MemStream-style detector using an autoencoder + latent memory. (Self-implementation)
+  MemStream-style detector: paper-aligned autoencoder + latent memory.
 
-  Reference design:
-  - Paper: MemStream (WWW'22): https://arxiv.org/abs/2106.03837
-  - Official code: https://github.com/Stream-AD/MemStream
+  Paper: MemStream (WWW'22) https://arxiv.org/abs/2106.03837
+  Official code: https://github.com/Stream-AD/MemStream
 
-  Adaptation for this project:
-  - No supervised warmup subset is available, so memory is filled online.
-  - Memory updates are threshold-gated to reduce poisoning from high-anomaly points.
+  Architecture: encoder Linear(in, 2*in) + Tanh, decoder Linear(2*in, in).
+  Score: K-NN discounted L1 distance to memory. Memory: FIFO when score ≤ β.
+  When no warmup path is set, memory is filled online (adaptive).
   """
 
   def __init__(
     self,
-    hidden_dim: int,
-    latent_dim: int,
     memory_size: int,
     lr: float,
+    beta: float,
+    k: int,
+    gamma: float,
     input_mode: str,
     freq1d_bins: int,
     freq1d_alpha: float,
@@ -575,12 +602,14 @@ class OnlineMemStream(_BothScoresMixin):
     freq1d_max_categories: int,
     model_device: str,
     seed: int,
+    warmup_accept: int = 512,
   ):
     self.algorithm = "memstream"
-    self.hidden_dim = hidden_dim
-    self.latent_dim = latent_dim
     self.memory_size = memory_size
     self.lr = lr
+    self.beta = beta
+    self.k = k
+    self.gamma = gamma
     self.seed = seed
     self.input_mode = str(input_mode).strip().lower()
     if self.input_mode not in ("raw", "freq1d_u", "freq1d_z", "freq1d_surprisal", "freq1d_z_surprisal"):
@@ -601,12 +630,7 @@ class OnlineMemStream(_BothScoresMixin):
     self._norm_std: Optional[torch.Tensor] = None
     self._mem_index = 0
     self._mem_filled = 0
-    self._score_ema: Optional[float] = None
-    self._score_var_ema: float = 0.0
-    self._ema_alpha = 0.05
-    self._beta_floor = 0.05
-    self._beta_sigma = 2.5
-    self._warmup_accept = max(8, min(32, self.memory_size // 4))
+    self._warmup_accept = warmup_accept
     self._noise_std = 1e-3
     self._accepted_updates = 0
     self._rejected_updates = 0
@@ -625,13 +649,15 @@ class OnlineMemStream(_BothScoresMixin):
         model_device="cpu",
         seed=0,
       )
+    self._exp: Optional[torch.Tensor] = None  # gamma^i for i in range(k), set on device when model inits
     logging.info(
-      "Initialized %s (hidden=%d, latent=%d, memory=%d, lr=%.5f, input_mode=%s, device=%s)",
+      "Initialized %s (memory=%d, lr=%.5f, beta=%.4f, k=%d, gamma=%.4f, input_mode=%s, device=%s)",
       self.algorithm,
-      hidden_dim,
-      latent_dim,
       memory_size,
       lr,
+      beta,
+      k,
+      gamma,
       self.input_mode,
       self._device.type,
     )
@@ -663,28 +689,21 @@ class OnlineMemStream(_BothScoresMixin):
   def _init_model_for_feature_names(self, feature_names: List[str]) -> None:
     self._feature_names = list(feature_names)
     input_dim = len(self._feature_names)
-    auto_hidden = _auto_mem_hidden_dim(input_dim)
-    auto_latent = _auto_mem_latent_dim(auto_hidden)
-    effective_hidden = max(self.hidden_dim, auto_hidden)
-    effective_latent = max(self.latent_dim, auto_latent)
-    # Keep latent bottleneck strictly below hidden size.
-    effective_latent = min(effective_latent, max(4, effective_hidden - 1))
-    self.hidden_dim = effective_hidden
-    self.latent_dim = effective_latent
+    latent_dim = 2 * input_dim  # Paper: latent = 2×input_dim
     torch.manual_seed(self.seed)
     if self._device.type == "cuda":
       torch.cuda.manual_seed_all(self.seed)
-    self._model = _AutoEncoder(input_dim=input_dim, hidden_dim=effective_hidden, latent_dim=effective_latent).to(self._device)
+    self._model = _MemStreamAutoEncoder(input_dim=input_dim).to(self._device)
     self._optimizer = torch.optim.Adam(self._model.parameters(), lr=self.lr)
-    self._memory_latent = torch.zeros(self.memory_size, effective_latent, dtype=torch.float32, device=self._device)
+    self._memory_latent = torch.zeros(self.memory_size, latent_dim, dtype=torch.float32, device=self._device)
     self._memory_input = torch.zeros(self.memory_size, input_dim, dtype=torch.float32, device=self._device)
     self._norm_mean = torch.zeros(input_dim, dtype=torch.float32, device=self._device)
     self._norm_std = torch.ones(input_dim, dtype=torch.float32, device=self._device)
+    self._exp = torch.tensor([self.gamma ** i for i in range(self.k)], dtype=torch.float32, device=self._device)
     logging.info(
-      "MemStream input_dim=%d effective_hidden=%d effective_latent=%d",
+      "MemStream input_dim=%d latent_dim=%d (paper: 2×input)",
       input_dim,
-      effective_hidden,
-      effective_latent,
+      latent_dim,
     )
 
   def _init_from_features(self, features: Dict[str, float]) -> None:
@@ -714,36 +733,22 @@ class OnlineMemStream(_BothScoresMixin):
     std = mem.std(dim=0, unbiased=False)
     self._norm_std = torch.where(std > 1e-6, std, torch.ones_like(std))
 
-  def _memory_distance(self, z: torch.Tensor, k: int = 3) -> float:
-    if self._memory_latent is None or self._mem_filled == 0:
+  def _memory_distance(self, z: torch.Tensor) -> float:
+    """K-NN discounted L1 distance (paper). (topk * gamma^i).sum() / exp.sum(). Raw output, no scaling."""
+    if self._memory_latent is None or self._mem_filled == 0 or self._exp is None:
       return 0.0
     memory = self._memory_latent[: self._mem_filled]
     dists = torch.norm(memory - z.unsqueeze(0), p=1, dim=1)
-    k_eff = max(1, min(k, int(self._mem_filled)))
-    topk = torch.topk(dists, k=k_eff, largest=False).values
-    return float(topk.mean().item())
-
-  def _adaptive_beta(self) -> float:
-    if self._score_ema is None:
-      return self._beta_floor
-    sigma = float(np.sqrt(max(0.0, self._score_var_ema)))
-    return max(self._beta_floor, self._score_ema + self._beta_sigma * sigma)
-
-  def _update_score_stats(self, score_raw: float) -> None:
-    if self._score_ema is None:
-      self._score_ema = score_raw
-      self._score_var_ema = 0.0
-      return
-    alpha = self._ema_alpha
-    prev = self._score_ema
-    self._score_ema = (1.0 - alpha) * self._score_ema + alpha * score_raw
-    delta = score_raw - prev
-    self._score_var_ema = max(0.0, (1.0 - alpha) * self._score_var_ema + alpha * (delta * delta))
+    k_eff = max(1, min(self.k, int(self._mem_filled)))
+    topk_vals = torch.topk(dists, k=k_eff, largest=False).values
+    exp = self._exp[:k_eff]
+    return float((topk_vals * exp).sum().item() / exp.sum().item())
 
   def _should_update_memory(self, score_raw: float) -> bool:
+    """Paper: update memory when anomaly score (raw K-NN distance) ≤ β."""
     if self._mem_filled < self._warmup_accept:
       return True
-    return score_raw <= self._adaptive_beta()
+    return score_raw <= self.beta
 
   def _write_memory(self, x: torch.Tensor, z: torch.Tensor) -> Dict[str, Any]:
     if self._memory_latent is None or self._memory_input is None:
@@ -774,7 +779,7 @@ class OnlineMemStream(_BothScoresMixin):
     return dict(self._last_debug)
 
   def score_only_raw(self, features: Dict[str, float]) -> float:
-    """Return the underlying (unsquashed) score."""
+    """Return the underlying (unsquashed) score. Paper: K-NN discounted L1 to memory."""
     if self._model is None or self._optimizer is None:
       self._init_from_features(features)
     if self._model is None or self._optimizer is None:
@@ -784,23 +789,18 @@ class OnlineMemStream(_BothScoresMixin):
     x_norm = self._normalize(x).unsqueeze(0)
     self._model.eval()
     with torch.no_grad():
-      z_eval, recon_eval = self._model(x_norm)
+      z_eval, _ = self._model(x_norm)
       z_eval = z_eval.squeeze(0)
-      recon_error = float(torch.mean((x_norm - recon_eval) ** 2).item())
-      memory_error = self._memory_distance(z_eval, k=3)
-      score_raw = (0.8 * memory_error) + (0.2 * recon_error)
+      score_raw = self._memory_distance(z_eval)
     score_raw = max(0.0, float(score_raw))
-    score_std = float(np.sqrt(max(0.0, self._score_var_ema)))
     self._last_debug = {
       "mode": "score_only",
       "score_raw": score_raw,
-      "recon_error": recon_error,
-      "memory_error": memory_error,
-      "adaptive_beta": float(self._adaptive_beta()),
-      "score_ema": None if self._score_ema is None else float(self._score_ema),
-      "score_std_ema": score_std,
+      "beta": float(self.beta),
       "update_allowed": None,
       "update_reason": "score_only",
+      "memory_error": score_raw,
+      "recon_error": 0.0,
       "mem_filled_before": int(self._mem_filled),
       "mem_filled_after": int(self._mem_filled),
       "memory_fill_fraction": float(self._mem_filled / max(1, self.memory_size)),
@@ -824,17 +824,12 @@ class OnlineMemStream(_BothScoresMixin):
     self._model.train()
 
     with torch.no_grad():
-      z_eval, recon_eval = self._model(x_norm)
+      z_eval, _ = self._model(x_norm)
       z_eval = z_eval.squeeze(0)
-      recon_error = float(torch.mean((x_norm - recon_eval) ** 2).item())
-      memory_error = self._memory_distance(z_eval, k=3)
-      # MemStream-style memory distance is primary; recon error stabilizes early phase.
-      score_raw = (0.8 * memory_error) + (0.2 * recon_error)
+      score_raw = self._memory_distance(z_eval)
 
     mem_filled_before = int(self._mem_filled)
     mem_index_before = int(self._mem_index)
-    self._update_score_stats(score_raw)
-    adaptive_beta = float(self._adaptive_beta())
     update_allowed = self._should_update_memory(score_raw)
     update_reason = "warmup" if mem_filled_before < self._warmup_accept else (
       "score_below_beta" if update_allowed else "score_above_beta"
@@ -847,6 +842,7 @@ class OnlineMemStream(_BothScoresMixin):
       "mem_index_after": mem_index_before,
     }
 
+    recon_error: float
     if update_allowed:
       noisy = x_norm + (self._noise_std * torch.randn_like(x_norm))
       self._optimizer.zero_grad()
@@ -855,23 +851,23 @@ class OnlineMemStream(_BothScoresMixin):
       loss.backward()
       self._optimizer.step()
       train_loss = float(loss.item())
+      recon_error = train_loss
       write_info = self._write_memory(x, z_train.squeeze(0))
       self._accepted_updates += 1
       if bool(write_info["overwrite"]):
         self._overwrite_updates += 1
     else:
       self._rejected_updates += 1
+      self._model.eval()
+      with torch.no_grad():
+        _, recon_eval = self._model(x_norm)
+        recon_error = float(torch.mean((x_norm - recon_eval) ** 2).item())
 
     score_raw = max(0.0, float(score_raw))
-    score_std = float(np.sqrt(max(0.0, self._score_var_ema)))
     self._last_debug = {
       "mode": "score_and_learn",
       "score_raw": score_raw,
-      "recon_error": recon_error,
-      "memory_error": memory_error,
-      "adaptive_beta": adaptive_beta,
-      "score_ema": None if self._score_ema is None else float(self._score_ema),
-      "score_std_ema": score_std,
+      "beta": float(self.beta),
       "update_allowed": bool(update_allowed),
       "update_reason": update_reason,
       "train_loss": train_loss,
@@ -888,6 +884,8 @@ class OnlineMemStream(_BothScoresMixin):
       "accepted_updates_total": int(self._accepted_updates),
       "rejected_updates_total": int(self._rejected_updates),
       "overwrite_updates_total": int(self._overwrite_updates),
+      "memory_error": score_raw,
+      "recon_error": recon_error,
     }
     return score_raw
 
@@ -907,8 +905,6 @@ class OnlineMemStream(_BothScoresMixin):
       "frontend_marginals_state": self._frontend_marginals.get_state() if self._frontend_marginals is not None and self.input_mode != "raw" else None,
       "mem_index": self._mem_index,
       "mem_filled": self._mem_filled,
-      "score_ema": self._score_ema,
-      "score_var_ema": self._score_var_ema,
       "accepted_updates": self._accepted_updates,
       "rejected_updates": self._rejected_updates,
       "overwrite_updates": self._overwrite_updates,
@@ -939,8 +935,6 @@ class OnlineMemStream(_BothScoresMixin):
       self._norm_std = torch.from_numpy(state["norm_std"]).to(self._device)
     self._mem_index = int(state["mem_index"])
     self._mem_filled = int(state["mem_filled"])
-    self._score_ema = state.get("score_ema")
-    self._score_var_ema = float(state.get("score_var_ema", 0.0))
     self._accepted_updates = int(state.get("accepted_updates", 0))
     self._rejected_updates = int(state.get("rejected_updates", 0))
     self._overwrite_updates = int(state.get("overwrite_updates", 0))
@@ -2372,11 +2366,13 @@ class OnlineAnomalyDetector:
     kitnet_grace_anomaly_detector: int = 50000,
     kitnet_learning_rate: float = 0.1,
     kitnet_hidden_ratio: float = 0.75,
-    mem_hidden_dim: int = 32,
-    mem_latent_dim: int = 8,
-    mem_memory_size: int = 128,
-    mem_lr: float = 0.001,
+    mem_memory_size: int = 512,
+    mem_lr: float = 0.01,
+    mem_beta: float = 0.1,
+    mem_k: int = 3,
+    mem_gamma: float = 0.0,
     mem_input_mode: str = "raw",
+    mem_warmup_accept: int = 512,
     zscore_min_count: int = 20,
     zscore_std_floor: float = 1e-3,
     knn_k: int = 5,
@@ -2448,10 +2444,11 @@ class OnlineAnomalyDetector:
       )
     elif algo == "memstream":
       self.impl = OnlineMemStream(
-        hidden_dim=mem_hidden_dim,
-        latent_dim=mem_latent_dim,
         memory_size=mem_memory_size,
         lr=mem_lr,
+        beta=mem_beta,
+        k=mem_k,
+        gamma=mem_gamma,
         input_mode=mem_input_mode,
         freq1d_bins=freq1d_bins,
         freq1d_alpha=freq1d_alpha,
@@ -2459,6 +2456,7 @@ class OnlineAnomalyDetector:
         freq1d_max_categories=freq1d_max_categories,
         model_device=model_device,
         seed=seed,
+        warmup_accept=mem_warmup_accept,
       )
     elif algo == "zscore":
       self.impl = OnlineZScore(

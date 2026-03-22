@@ -7,6 +7,7 @@ import pytest
 from google.protobuf.empty_pb2 import Empty
 
 import events_pb2
+import detector.server as server_mod
 from detector.config import DetectorConfig
 from detector.server import RuleBasedDetector, _init_event_dump, _now_timestamp
 
@@ -115,10 +116,11 @@ class TestDetector:
     """Test MemStream scoring path."""
     cfg = DetectorConfig(
       model_algorithm="memstream",
-      mem_hidden_dim=8,
-      mem_latent_dim=4,
       mem_memory_size=4,
       mem_lr=0.01,
+      mem_beta=0.1,
+      mem_k=3,
+      mem_gamma=0.5,
       score_mode="scaled",
     )
     detector = RuleBasedDetector(cfg)
@@ -134,6 +136,50 @@ class TestDetector:
     resp = detector._score_event(evt)
     assert resp.event_id == "test-789"
     assert 0.0 <= resp.score <= 1.0
+
+  def test_score_event_uses_model_specific_feature_view(self, monkeypatch):
+    captured = {}
+
+    def fake_extract(evt, feature_view="default"):
+      captured["feature_view"] = feature_view
+      return {"f0": 0.0, "f1": 1.0}
+
+    monkeypatch.setattr(server_mod, "extract_feature_dict", fake_extract)
+    cfg = DetectorConfig(model_algorithm="memstream", score_mode="scaled")
+    detector = RuleBasedDetector(cfg)
+    evt = events_pb2.EventEnvelope(
+      event_id="view-test",
+      event_name="execve",
+      event_group="process",
+      ts_unix_nano=1234567890000000000,
+      data=["execve", "59", "bash", "1", "2", "1000", "0", "0", "/bin/bash", ""],
+    )
+
+    resp = detector._score_event(evt)
+    assert resp.event_id == "view-test"
+    assert captured["feature_view"] == "memstream"
+
+  def test_freq1d_uses_hash_feature_view(self, monkeypatch):
+    captured = {}
+
+    def fake_extract(evt, feature_view="default"):
+      captured["feature_view"] = feature_view
+      return {"f0": 0.0, "f1": 1.0}
+
+    monkeypatch.setattr(server_mod, "extract_feature_dict", fake_extract)
+    cfg = DetectorConfig(model_algorithm="freq1d", score_mode="scaled")
+    detector = RuleBasedDetector(cfg)
+    evt = events_pb2.EventEnvelope(
+      event_id="freq-view-test",
+      event_name="openat",
+      event_group="file",
+      ts_unix_nano=1234567890000000000,
+      data=["openat", "257", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
+    )
+
+    resp = detector._score_event(evt)
+    assert resp.event_id == "freq-view-test"
+    assert captured["feature_view"] == "hash"
 
   @pytest.mark.asyncio
   async def test_score_event_zscore(self):

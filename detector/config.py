@@ -9,8 +9,6 @@ class DetectorConfig:
   recent_events_buffer_size: int = 10000  # Size of recent events ring buffer for UI (default: 10000)
   # River model configuration
   model_algorithm: str = "freq1d"  # halfspacetrees | loda_ema | kitnet | memstream | zscore | knn | freq1d | gausscop | copulatree | latentcluster
-  # Generic feature encoding: hash (legacy scalar hashes) | encoded (event one-hot, bucket banks, path tokens)
-  feature_encoding: str = "encoded"  # hash | encoded
   threshold: float = 0.7  # Anomaly score threshold (0-1). Lower (e.g. 0.3) to flag more events when scores are mostly low.
   hst_n_trees: int = 25
   hst_height: int = 15
@@ -25,11 +23,14 @@ class DetectorConfig:
   kitnet_grace_anomaly_detector: int = 50000
   kitnet_learning_rate: float = 0.1
   kitnet_hidden_ratio: float = 0.75
-  mem_hidden_dim: int = 32
-  mem_latent_dim: int = 8
-  mem_memory_size: int = 128
-  mem_lr: float = 0.001
+  mem_memory_size: int = 512
+  mem_lr: float = 0.01
+  mem_beta: float = 0.1
+  mem_k: int = 3
+  mem_gamma: float = 0.0  # 0 = 1-NN distance only (paper default)
   mem_input_mode: str = "raw"  # raw | freq1d_u | freq1d_z | freq1d_surprisal | freq1d_z_surprisal
+  mem_warmup_accept: int = 512  # grace period: first N events always accepted (no normal-only warmup)
+  mem_warmup_path: str = ""  # optional path to JSONL/EVT1 for normal-only warmup (empty = online only)
   zscore_min_count: int = 20
   zscore_std_floor: float = 1e-3
   knn_k: int = 5
@@ -90,11 +91,6 @@ def load_config() -> DetectorConfig:
   events_http_port = int(os.environ.get("DETECTOR_EVENTS_PORT", str(defaults.events_http_port)))
 
   model_algorithm = os.environ.get("DETECTOR_MODEL_ALGORITHM", defaults.model_algorithm)
-  feature_encoding = os.environ.get("DETECTOR_FEATURE_ENCODING", defaults.feature_encoding).strip().lower()
-  if feature_encoding not in ("hash", "encoded"):
-    raise ValueError(
-      f"Invalid DETECTOR_FEATURE_ENCODING={feature_encoding!r}; must be 'hash' or 'encoded'"
-    )
   threshold = float(os.environ.get("DETECTOR_THRESHOLD", str(defaults.threshold)))
   hst_n_trees = int(os.environ.get("DETECTOR_HST_N_TREES", str(defaults.hst_n_trees)))
   hst_height = int(os.environ.get("DETECTOR_HST_HEIGHT", str(defaults.hst_height)))
@@ -113,11 +109,14 @@ def load_config() -> DetectorConfig:
   )
   kitnet_learning_rate = float(os.environ.get("DETECTOR_KITNET_LEARNING_RATE", str(defaults.kitnet_learning_rate)))
   kitnet_hidden_ratio = float(os.environ.get("DETECTOR_KITNET_HIDDEN_RATIO", str(defaults.kitnet_hidden_ratio)))
-  mem_hidden_dim = int(os.environ.get("DETECTOR_MEMSTREAM_HIDDEN_DIM", str(defaults.mem_hidden_dim)))
-  mem_latent_dim = int(os.environ.get("DETECTOR_MEMSTREAM_LATENT_DIM", str(defaults.mem_latent_dim)))
   mem_memory_size = int(os.environ.get("DETECTOR_MEMSTREAM_MEMORY_SIZE", str(defaults.mem_memory_size)))
   mem_lr = float(os.environ.get("DETECTOR_MEMSTREAM_LR", str(defaults.mem_lr)))
+  mem_beta = float(os.environ.get("DETECTOR_MEMSTREAM_BETA", str(defaults.mem_beta)))
+  mem_k = int(os.environ.get("DETECTOR_MEMSTREAM_K", str(defaults.mem_k)))
+  mem_gamma = float(os.environ.get("DETECTOR_MEMSTREAM_GAMMA", str(defaults.mem_gamma)))
   mem_input_mode = os.environ.get("DETECTOR_MEMSTREAM_INPUT_MODE", defaults.mem_input_mode).strip().lower()
+  mem_warmup_accept = int(os.environ.get("DETECTOR_MEMSTREAM_WARMUP_ACCEPT", str(defaults.mem_warmup_accept)))
+  mem_warmup_path = (os.environ.get("DETECTOR_MEMSTREAM_WARMUP_PATH", defaults.mem_warmup_path) or "").strip()
   if mem_input_mode not in ("raw", "freq1d_u", "freq1d_z", "freq1d_surprisal", "freq1d_z_surprisal"):
     raise ValueError(
       "Invalid DETECTOR_MEMSTREAM_INPUT_MODE=%r; must be one of: raw, freq1d_u, freq1d_z, freq1d_surprisal, freq1d_z_surprisal"
@@ -244,7 +243,6 @@ def load_config() -> DetectorConfig:
     events_http_port=events_http_port,
     recent_events_buffer_size=recent_events_buffer_size,
     model_algorithm=model_algorithm,
-    feature_encoding=feature_encoding,
     threshold=threshold,
     hst_n_trees=hst_n_trees,
     hst_height=hst_height,
@@ -259,11 +257,14 @@ def load_config() -> DetectorConfig:
     kitnet_grace_anomaly_detector=kitnet_grace_anomaly_detector,
     kitnet_learning_rate=kitnet_learning_rate,
     kitnet_hidden_ratio=kitnet_hidden_ratio,
-    mem_hidden_dim=mem_hidden_dim,
-    mem_latent_dim=mem_latent_dim,
     mem_memory_size=mem_memory_size,
     mem_lr=mem_lr,
+    mem_beta=mem_beta,
+    mem_k=mem_k,
+    mem_gamma=mem_gamma,
     mem_input_mode=mem_input_mode,
+    mem_warmup_accept=mem_warmup_accept,
+    mem_warmup_path=mem_warmup_path,
     zscore_min_count=zscore_min_count,
     zscore_std_floor=zscore_std_floor,
     knn_k=knn_k,

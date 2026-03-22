@@ -31,6 +31,23 @@ class _DecayedMoments:
   sum_sq: float = 0.0
 
 
+@dataclass(frozen=True)
+class _FeatureViewSpec:
+  include_general_event_name: bool = True
+  include_general_context_buckets: bool = True
+  include_general_path_tokens: bool = True
+  include_general_online_stats: bool = True
+  include_file_event_name: bool = True
+  include_file_extension_bucket: bool = True
+  include_file_flags_bucket: bool = True
+  include_file_online_stats: bool = True
+  include_network_socket_type_bucket: bool = True
+  include_network_daddr_bucket: bool = True
+  include_network_af_onehot: bool = True
+  include_network_online_stats: bool = True
+  use_hash_for_categoricals: bool = False
+
+
 class _OnlineFeatureStats:
   """
   Generic online statistics layer with exponential time decay.
@@ -160,6 +177,26 @@ _ADDRLEN_SCALE = 10.0
 _SOCKET_FAMILY_MAX = 10.0
 _RATE_CAP = 50.0
 
+_FULL_FEATURE_VIEW = _FeatureViewSpec()
+_LODA_FEATURE_VIEW = _FeatureViewSpec(
+  include_general_context_buckets=False,
+  include_general_path_tokens=False,
+  include_file_event_name=False,
+  include_file_extension_bucket=False,
+  include_file_flags_bucket=False,
+  include_network_daddr_bucket=False,
+)
+_MEMSTREAM_FEATURE_VIEW = _FeatureViewSpec(
+  include_general_context_buckets=False,
+  include_general_path_tokens=False,
+  include_file_event_name=False,
+  include_file_extension_bucket=False,
+  include_file_flags_bucket=False,
+  include_network_socket_type_bucket=False,
+  include_network_daddr_bucket=False,
+)
+_HASH_FEATURE_VIEW = _FeatureViewSpec(use_hash_for_categoricals=True)
+
 
 def _safe_int(raw: str, default: int = 0) -> int:
   try:
@@ -256,6 +293,31 @@ def _group_feature_values(event_group: str, feature_name: str, fallback: tuple[s
   if not values:
     return tuple(sorted(set(fallback)))
   return tuple(sorted(set(values)))
+
+
+def feature_view_for_algorithm(algorithm: str | None) -> str:
+  """Map algorithm to feature view."""
+  algo = (algorithm or "").strip().lower()
+  if algo in ("freq1d", "gausscop", "copulatree", "latentcluster"):
+    return "hash"
+  if algo in ("loda", "loda_ema"):
+    return "loda"
+  if algo == "memstream":
+    return "memstream"
+  return "default"
+
+
+def _feature_view_spec(feature_view: str | None) -> _FeatureViewSpec:
+  normalized = (feature_view or "default").strip().lower()
+  if normalized == "hash":
+    return _HASH_FEATURE_VIEW
+  if normalized in ("default", "full", "encoded"):
+    return _FULL_FEATURE_VIEW
+  if normalized == "loda":
+    return _LODA_FEATURE_VIEW
+  if normalized == "memstream":
+    return _MEMSTREAM_FEATURE_VIEW
+  raise ValueError(f"Unknown feature_view={feature_view!r}; expected one of: default, hash, loda, memstream")
 
 
 @lru_cache(maxsize=1)
@@ -402,7 +464,7 @@ def _normalize_af_label(raw: str, family_val: int) -> str:
 
 def _parse_sockaddr_from_evt(evt: Any) -> Dict[str, str]:
   """
-  Try to get destination port, address, and family from event (BETH or attributes).
+  Try to get destination port, address, and family from event (attributes or data[7]).
   Returns dict with keys sin_port, sin_addr, sa_family (values may be empty).
   """
   out: Dict[str, str] = {"sin_port": "", "sin_addr": "", "sa_family": ""}
@@ -411,7 +473,7 @@ def _parse_sockaddr_from_evt(evt: Any) -> Dict[str, str]:
   out["sin_addr"] = (attrs.get("sin_addr") or attrs.get("dest_ip") or "").strip()
   out["sa_family"] = (attrs.get("sa_family") or "").strip()
 
-  # BETH sometimes puts sockaddr as string in data[7] (arg1)
+  # Fallback: data[7] may contain stringified sockaddr dict (legacy format)
   if not out["sin_port"] and not out["sin_addr"] and not out["sa_family"]:
     raw = (evt.data[7] if len(evt.data) > 7 else "").strip()
     if raw and raw.startswith("{"):
@@ -426,9 +488,9 @@ def _parse_sockaddr_from_evt(evt: Any) -> Dict[str, str]:
   return out
 
 
-def _extract_generic_features_hash(evt: Any) -> Dict[str, float]:
-  """Legacy generic features: scalar hashes for categorical fields."""
-  event_name = ((evt.event_name or "") or (evt.data[0] if len(evt.data) > 0 else "")).strip()
+def _extract_generic_features(evt: Any, view: _FeatureViewSpec) -> Dict[str, float]:
+  """Generic features shared across all event types."""
+  event_name = ((evt.event_name or "") or (evt.data[0] if len(evt.data) > 0 else "")).strip().lower()
   event_id_str = evt.data[1] if len(evt.data) > 1 else "0"
   comm = evt.data[2] if len(evt.data) > 2 else ""
   pid_str = evt.data[3] if len(evt.data) > 3 else "0"
@@ -445,6 +507,7 @@ def _extract_generic_features_hash(evt: Any) -> Dict[str, float]:
   uid_val = _safe_int(uid_str, default=0)
   arg0_val = _safe_int(arg0_str, default=0)
   arg1_val = _safe_int(arg1_str, default=0)
+  event_id_val = max(0, _safe_int(event_id_str, default=0))
 
   ts_ns = evt.ts_unix_nano
   ts_s = ts_ns // 1_000_000_000
@@ -460,68 +523,6 @@ def _extract_generic_features_hash(evt: Any) -> Dict[str, float]:
 
   components = _path_components(path)
   path_prefix = components[0] if components else ""
-  return_val = _safe_int(attrs.get("return_value", "0"), default=0)
-  event_id_val = max(0, _safe_int(event_id_str, default=0))
-  return_success, return_errno_norm = _norm_return_errno(return_val)
-
-  return {
-    "event_hash": _hash01(event_name),
-    "comm_hash": _hash01(comm),
-    "path_hash": _hash01(path),
-    "pid_norm": _norm_pid(pid_val),
-    "tid_norm": _norm_pid(tid_val),
-    "uid_norm": _norm_uid(uid_val),
-    "arg0_norm": _norm_arg(arg0_val),
-    "arg1_norm": _norm_arg(arg1_val),
-    "hour_sin": float(np.sin(hour_angle)),
-    "hour_cos": float(np.cos(hour_angle)),
-    "minute_sin": float(np.sin(minute_angle)),
-    "minute_cos": float(np.cos(minute_angle)),
-    "weekday_sin": float(np.sin(weekday_angle)),
-    "weekday_cos": float(np.cos(weekday_angle)),
-    "week_of_month_norm": (week_of_month - 1) / 3.0,
-    "event_id_norm": min(event_id_val / _EVENT_ID_MAX, 1.0),
-    "flags_hash": _hash01(flags),
-    "path_depth_norm": _norm_path_depth(components),
-    "path_prefix_hash": _hash01(path_prefix),
-    "return_success": return_success,
-    "return_errno_norm": return_errno_norm,
-    "mount_ns_hash": _hash01(attrs.get("mount_namespace", "") or ""),
-    "hostname_hash": _hash01(evt.hostname or ""),
-  }
-
-
-def _extract_generic_features(evt: Any) -> Dict[str, float]:
-  """Generic features shared across all event types."""
-  event_name = ((evt.event_name or "") or (evt.data[0] if len(evt.data) > 0 else "")).strip().lower()
-  comm = evt.data[2] if len(evt.data) > 2 else ""
-  pid_str = evt.data[3] if len(evt.data) > 3 else "0"
-  tid_str = evt.data[4] if len(evt.data) > 4 else "0"
-  uid_str = evt.data[5] if len(evt.data) > 5 else "0"
-  arg0_str = evt.data[6] if len(evt.data) > 6 else "0"
-  arg1_str = evt.data[7] if len(evt.data) > 7 else "0"
-  path = (evt.data[8] if len(evt.data) > 8 else "").strip()
-  attrs = dict(evt.attributes or {})
-
-  pid_val = _safe_int(pid_str, default=0)
-  tid_val = _safe_int(tid_str, default=0)
-  uid_val = _safe_int(uid_str, default=0)
-  arg0_val = _safe_int(arg0_str, default=0)
-  arg1_val = _safe_int(arg1_str, default=0)
-
-  ts_ns = evt.ts_unix_nano
-  ts_s = ts_ns // 1_000_000_000
-  hour_of_day = (ts_s // 3600) % 24
-  minute_of_hour = (ts_s // 60) % 60
-  hour_angle = 2.0 * float(np.pi) * (float(hour_of_day) / 24.0)
-  minute_angle = 2.0 * float(np.pi) * (float(minute_of_hour) / 60.0)
-  dt = datetime.fromtimestamp(ts_s, tz=timezone.utc)
-  weekday = dt.weekday()
-  weekday_angle = 2.0 * float(np.pi) * (float(weekday) / 7.0)
-  day_of_month = dt.day
-  week_of_month = min(4, (day_of_month - 1) // 7 + 1)
-
-  components = _path_components(path)
   return_val = _safe_int(attrs.get("return_value", "0"), default=0)
   mount_ns = attrs.get("mount_namespace", "") or ""
   return_success, return_errno_norm = _norm_return_errno(return_val)
@@ -544,94 +545,41 @@ def _extract_generic_features(evt: Any) -> Dict[str, float]:
     "return_errno_norm": return_errno_norm,
   }
 
-  out.update(_onehot_features("event_name", event_name, _known_event_names()))
-  out.update(_bucketize_value("comm_bucket", comm, _COMM_BUCKETS))
-  out.update(_bucketize_value("hostname_bucket", evt.hostname or "", _HOSTNAME_BUCKETS))
-  out.update(_bucketize_value("mount_ns_bucket", mount_ns, _MOUNT_NS_BUCKETS))
-  out.update(_bucketize_path_tokens_by_depth(path))
+  if view.use_hash_for_categoricals:
+    if view.include_general_event_name:
+      out["event_hash"] = _hash01(event_name)
+    out["event_id_norm"] = min(event_id_val / _EVENT_ID_MAX, 1.0)
+    if view.include_general_context_buckets:
+      out["comm_hash"] = _hash01(comm)
+      out["hostname_hash"] = _hash01(evt.hostname or "")
+      out["mount_ns_hash"] = _hash01(mount_ns)
+    if view.include_general_path_tokens:
+      out["path_hash"] = _hash01(path)
+      out["path_prefix_hash"] = _hash01(path_prefix)
+      out["flags_hash"] = _hash01(flags)
+  else:
+    if view.include_general_event_name:
+      out.update(_onehot_features("event_name", event_name, _known_event_names()))
+    if view.include_general_context_buckets:
+      out.update(_bucketize_value("comm_bucket", comm, _COMM_BUCKETS))
+      out.update(_bucketize_value("hostname_bucket", evt.hostname or "", _HOSTNAME_BUCKETS))
+      out.update(_bucketize_value("mount_ns_bucket", mount_ns, _MOUNT_NS_BUCKETS))
+    if view.include_general_path_tokens:
+      out.update(_bucketize_path_tokens_by_depth(path))
   return out
 
 
-def _extract_file_features_hash(evt: Any) -> Dict[str, float]:
-  path = (evt.data[8] if len(evt.data) > 8 else "").strip()
-  path_lower = path.lower()
-  comm = (evt.data[2] if len(evt.data) > 2 else "") or "unknown"
-  host = (evt.hostname or "") or "unknown"
-  event_name = (evt.event_name or "") or (evt.data[0] if len(evt.data) > 0 else "")
-  arg0_val = _safe_int(evt.data[6] if len(evt.data) > 6 else "0", default=0)
-  arg1_val = _safe_int(evt.data[7] if len(evt.data) > 7 else "0", default=0)
-  ts_s = float(evt.ts_unix_nano) / 1_000_000_000.0
-  attrs = dict(evt.attributes or {})
-
-  # Path semantics (all file syscalls have at least one path)
-  sensitive_prefixes = _group_feature_values("file", "sensitive_paths", _DEFAULT_SENSITIVE_PATH_PREFIXES)
-  tmp_prefixes = _group_feature_values("file", "tmp_paths", _DEFAULT_TMP_PATH_PREFIXES)
-  file_sensitive_path = 1.0 if any(path_lower.startswith(p) for p in sensitive_prefixes) else 0.0
-  file_tmp_path = 1.0 if any(path_lower.startswith(p) for p in tmp_prefixes) else 0.0
-  components = _path_components(path)
-  ext = ""
-  if components:
-    last = components[-1]
-    if "." in last:
-      ext = "." + last.split(".")[-1]
-  file_extension_hash = _hash01(ext)
-  path_depth_norm = _norm_path_depth(components)
-
-  # Syscall identity (open vs unlink vs rename vs chmod vs chown etc.)
-  file_event_name_hash = _hash01(event_name)
-  flags_str = (attrs.get("open_flags") or (evt.data[9] if len(evt.data) > 9 else "")) or ""
-  file_flags_hash = _hash01(flags_str)
-
-  # Online statistics: only type-specific streams (path, pair). proc/host rate and
-  # proc interarrival are in general features.
-  path_key = path or "unknown"
-  pair_key = f"{comm}|{path_key}"
-  path_rate = _ONLINE_STATS.update_value("file", "rate", path_key, ts_s, 1.0)
-  pair_rate = _ONLINE_STATS.update_value("file", "rate", pair_key, ts_s, 1.0)
-  pair_dt = _ONLINE_STATS.update_interarrival("file", "interarrival", pair_key, ts_s, dt_scale_s=30.0)
-  proc_path_depth = _ONLINE_STATS.update_value("file", "path_depth", comm, ts_s, path_depth_norm)
-  host_path_depth = _ONLINE_STATS.update_value("file", "path_depth", host, ts_s, path_depth_norm)
-  pair_path_depth = _ONLINE_STATS.update_value("file", "path_depth", pair_key, ts_s, path_depth_norm)
-
-  out: Dict[str, float] = {
-    "file_sensitive_path": file_sensitive_path,
-    "file_tmp_path": file_tmp_path,
-    "file_extension_hash": file_extension_hash,
-    "file_event_name_hash": file_event_name_hash,
-    "file_flags_hash": file_flags_hash,
-    "file_arg0_norm": _norm_arg(arg0_val),
-    "file_arg1_norm": _norm_arg(arg1_val),
-  }
-  for w in _ONLINE_WINDOWS:
-    wn = w[0]
-    out[f"file_path_rate_{wn}"] = _rate01(path_rate[wn][2])
-    out[f"file_pair_rate_{wn}"] = _rate01(pair_rate[wn][2])
-    out[f"file_pair_interarrival_{wn}"] = pair_dt[wn][0]
-    out[f"file_pair_interarrival_std_{wn}"] = pair_dt[wn][1]
-    out[f"file_proc_path_depth_mean_{wn}"] = proc_path_depth[wn][0]
-    out[f"file_proc_path_depth_std_{wn}"] = proc_path_depth[wn][1]
-    out[f"file_host_path_depth_mean_{wn}"] = host_path_depth[wn][0]
-    out[f"file_host_path_depth_std_{wn}"] = host_path_depth[wn][1]
-    out[f"file_pair_path_depth_mean_{wn}"] = pair_path_depth[wn][0]
-    out[f"file_pair_path_depth_std_{wn}"] = pair_path_depth[wn][1]
-  return out
-
-
-def _extract_file_features(evt: Any, encoding: str = "encoded") -> Dict[str, float]:
+def _extract_file_features(evt: Any, view: _FeatureViewSpec = _FULL_FEATURE_VIEW) -> Dict[str, float]:
   """
   Type-specific features for event_group == 'file'.
 
   Covers all file syscalls that trigger this extractor: open, openat, openat2,
   unlink, unlinkat, rename, renameat, chmod, chown. They share the same event layout
-  (data[8]=path, data[6]/[7]=arg0/arg1, attributes open_flags for open*). One unified
+  (data[8]=path, data[6]/[7]=arg0/arg1, attributes flags for open*). One unified
   feature set: path semantics, syscall identity, open flags (when applicable), and
   Kitsune-style online stats (rate, interarrival, path-depth streams) per process,
   host, path, and (comm, path) pair.
   """
-  enc = (encoding or "encoded").strip().lower()
-  if enc == "hash":
-    return _extract_file_features_hash(evt)
-
   path = (evt.data[8] if len(evt.data) > 8 else "").strip()
   path_lower = path.lower()
   comm = (evt.data[2] if len(evt.data) > 2 else "") or "unknown"
@@ -646,25 +594,13 @@ def _extract_file_features(evt: Any, encoding: str = "encoded") -> Dict[str, flo
   tmp_prefixes = _group_feature_values("file", "tmp_paths", _DEFAULT_TMP_PATH_PREFIXES)
   file_sensitive_path = 1.0 if any(path_lower.startswith(p) for p in sensitive_prefixes) else 0.0
   file_tmp_path = 1.0 if any(path_lower.startswith(p) for p in tmp_prefixes) else 0.0
-  components = _path_components(path)
+  components = _path_components(path) if (view.include_file_extension_bucket or view.include_file_online_stats) else []
   ext = ""
   if components:
     last = components[-1]
     if "." in last:
       ext = "." + last.split(".")[-1]
-  path_depth_norm = _norm_path_depth(components)
-
-  flags_str = (attrs.get("open_flags") or (evt.data[9] if len(evt.data) > 9 else "")) or ""
-  flag_tokens = _tokenize_flags(flags_str)
-
-  path_key = path or "unknown"
-  pair_key = f"{comm}|{path_key}"
-  path_rate = _ONLINE_STATS.update_value("file", "rate", path_key, ts_s, 1.0)
-  pair_rate = _ONLINE_STATS.update_value("file", "rate", pair_key, ts_s, 1.0)
-  pair_dt = _ONLINE_STATS.update_interarrival("file", "interarrival", pair_key, ts_s, dt_scale_s=30.0)
-  proc_path_depth = _ONLINE_STATS.update_value("file", "path_depth", comm, ts_s, path_depth_norm)
-  host_path_depth = _ONLINE_STATS.update_value("file", "path_depth", host, ts_s, path_depth_norm)
-  pair_path_depth = _ONLINE_STATS.update_value("file", "path_depth", pair_key, ts_s, path_depth_norm)
+  flags_str = (attrs.get("flags") or (evt.data[9] if len(evt.data) > 9 else "")) or ""
 
   out: Dict[str, float] = {
     "file_sensitive_path": file_sensitive_path,
@@ -672,116 +608,48 @@ def _extract_file_features(evt: Any, encoding: str = "encoded") -> Dict[str, flo
     "file_arg0_norm": _norm_arg(arg0_val),
     "file_arg1_norm": _norm_arg(arg1_val),
   }
-  out.update(_onehot_features("file_event_name", event_name, _group_syscalls("file", _DEFAULT_FILE_EVENT_NAMES)))
-  out.update(_bucketize_value("file_extension_bucket", ext, _FILE_EXTENSION_BUCKETS))
-  out.update(_bucketize_tokens("file_flags_bucket", flag_tokens, _FILE_FLAGS_BUCKETS))
-  for w in _ONLINE_WINDOWS:
-    wn = w[0]
-    out[f"file_path_rate_{wn}"] = _rate01(path_rate[wn][2])
-    out[f"file_pair_rate_{wn}"] = _rate01(pair_rate[wn][2])
-    out[f"file_pair_interarrival_{wn}"] = pair_dt[wn][0]
-    out[f"file_pair_interarrival_std_{wn}"] = pair_dt[wn][1]
-    out[f"file_proc_path_depth_mean_{wn}"] = proc_path_depth[wn][0]
-    out[f"file_proc_path_depth_std_{wn}"] = proc_path_depth[wn][1]
-    out[f"file_host_path_depth_mean_{wn}"] = host_path_depth[wn][0]
-    out[f"file_host_path_depth_std_{wn}"] = host_path_depth[wn][1]
-    out[f"file_pair_path_depth_mean_{wn}"] = pair_path_depth[wn][0]
-    out[f"file_pair_path_depth_std_{wn}"] = pair_path_depth[wn][1]
-  return out
-
-
-def _extract_network_features_hash(evt: Any) -> Dict[str, float]:
-  """Legacy type-specific features for event_group == 'network'."""
-  arg0_val = _safe_int(evt.data[6] if len(evt.data) > 6 else "0", default=0)
-  arg1_val = _safe_int(evt.data[7] if len(evt.data) > 7 else "0", default=0)
-  event_name = (evt.event_name or "") or (evt.data[0] if len(evt.data) > 0 else "")
-  comm = (evt.data[2] if len(evt.data) > 2 else "") or "unknown"
-  host = (evt.hostname or "") or "unknown"
-  ts_s = float(evt.ts_unix_nano) / 1_000_000_000.0
-
-  # connect(): arg0=fd, arg1=addrlen. socket(): arg0=family, arg1=type (same data slots).
-  net_fd_norm = _norm_arg(arg0_val)
-  net_addrlen_norm = min(np.log1p(abs(arg1_val)) / _ADDRLEN_SCALE, 1.0)
-
-  sockaddr = _parse_sockaddr_from_evt(evt)
-
-  # socket() arg0 = family (AF_INET=2, AF_INET6=10); connect() from parsed sockaddr/attributes.
-  family_val = 0
-  if event_name == "socket":
-    family_val = arg0_val
+  if view.use_hash_for_categoricals:
+    if view.include_file_event_name:
+      out["file_event_name_hash"] = _hash01(event_name)
+    if view.include_file_extension_bucket:
+      out["file_extension_hash"] = _hash01(ext)
+    if view.include_file_flags_bucket:
+      out["file_flags_hash"] = _hash01(flags_str)
   else:
-    af = (sockaddr.get("sa_family") or "").upper()
-    if "INET6" in af or af == "10":
-      family_val = 10
-    elif "INET" in af or af == "2":
-      family_val = 2
-  net_socket_family_norm = min(family_val / _SOCKET_FAMILY_MAX, 1.0)
-
-  # socket() arg1 = type: SOCK_STREAM=1, SOCK_DGRAM=2.
-  type_val = arg1_val if event_name == "socket" else 0
-  net_socket_type_hash = _hash01(str(type_val))
-
-  # Destination port from parsed sockaddr (BETH data[7] or attributes sin_port/dest_port).
-  port_str = sockaddr.get("sin_port") or ""
-  dport = _safe_int(port_str, default=0) if port_str else 0
-  net_dport_norm = min(dport / _PORT_MAX, 1.0) if dport else 0.0
-
-  # Destination IP and address family hashes (host/socket-pair identity).
-  daddr = sockaddr.get("sin_addr") or ""
-  net_daddr_hash = _hash01(daddr)
-  net_af_hash = _hash01(sockaddr.get("sa_family") or ("AF_INET" if family_val == 2 else "AF_INET6" if family_val == 10 else ""))
-
-  # --- Online statistics: only type-specific streams (pair, daddr). proc/host rate
-  # and proc interarrival are in general features.
-  pair_key = f"{comm}|{daddr}|{dport}"
-  daddr_key = daddr or "unknown"
-  pair_rate = _ONLINE_STATS.update_value("network", "rate", pair_key, ts_s, 1.0)
-  daddr_rate = _ONLINE_STATS.update_value("network", "rate", daddr_key, ts_s, 1.0)
-  pair_dt = _ONLINE_STATS.update_interarrival("network", "interarrival", pair_key, ts_s, dt_scale_s=30.0)
-  proc_dport = _ONLINE_STATS.update_value("network", "dport", comm, ts_s, net_dport_norm)
-  proc_addrlen = _ONLINE_STATS.update_value("network", "addrlen", comm, ts_s, net_addrlen_norm)
-  host_dport = _ONLINE_STATS.update_value("network", "dport", host, ts_s, net_dport_norm)
-  host_addrlen = _ONLINE_STATS.update_value("network", "addrlen", host, ts_s, net_addrlen_norm)
-  daddr_dport = _ONLINE_STATS.update_value("network", "dport", daddr_key, ts_s, net_dport_norm)
-  proc_daddr_key = f"{comm}|{daddr}"
-  proc_daddr_dport = _ONLINE_STATS.update_value("network", "dport", proc_daddr_key, ts_s, net_dport_norm)
-
-  out: Dict[str, float] = {
-    "net_addrlen_norm": net_addrlen_norm,
-    "net_fd_norm": net_fd_norm,
-    "net_socket_family_norm": net_socket_family_norm,
-    "net_socket_type_hash": net_socket_type_hash,
-    "net_dport_norm": net_dport_norm,
-    "net_daddr_hash": net_daddr_hash,
-    "net_af_hash": net_af_hash,
-  }
-  for w in _ONLINE_WINDOWS:
-    wn = w[0]
-    out[f"net_pair_rate_{wn}"] = _rate01(pair_rate[wn][2])
-    out[f"net_daddr_rate_{wn}"] = _rate01(daddr_rate[wn][2])
-    out[f"net_pair_interarrival_{wn}"] = pair_dt[wn][0]
-    out[f"net_pair_interarrival_std_{wn}"] = pair_dt[wn][1]
-    out[f"net_proc_dport_mean_{wn}"] = proc_dport[wn][0]
-    out[f"net_proc_dport_std_{wn}"] = proc_dport[wn][1]
-    out[f"net_proc_addrlen_mean_{wn}"] = proc_addrlen[wn][0]
-    out[f"net_proc_addrlen_std_{wn}"] = proc_addrlen[wn][1]
-    out[f"net_host_dport_mean_{wn}"] = host_dport[wn][0]
-    out[f"net_host_dport_std_{wn}"] = host_dport[wn][1]
-    out[f"net_host_addrlen_mean_{wn}"] = host_addrlen[wn][0]
-    out[f"net_host_addrlen_std_{wn}"] = host_addrlen[wn][1]
-    out[f"net_daddr_dport_mean_{wn}"] = daddr_dport[wn][0]
-    out[f"net_daddr_dport_std_{wn}"] = daddr_dport[wn][1]
-    out[f"net_proc_daddr_dport_mean_{wn}"] = proc_daddr_dport[wn][0]
-    out[f"net_proc_daddr_dport_std_{wn}"] = proc_daddr_dport[wn][1]
+    if view.include_file_event_name:
+      out.update(_onehot_features("file_event_name", event_name, _group_syscalls("file", _DEFAULT_FILE_EVENT_NAMES)))
+    if view.include_file_extension_bucket:
+      out.update(_bucketize_value("file_extension_bucket", ext, _FILE_EXTENSION_BUCKETS))
+    if view.include_file_flags_bucket:
+      flag_tokens = _tokenize_flags(flags_str)
+      out.update(_bucketize_tokens("file_flags_bucket", flag_tokens, _FILE_FLAGS_BUCKETS))
+  if view.include_file_online_stats:
+    path_depth_norm = _norm_path_depth(components)
+    path_key = path or "unknown"
+    pair_key = f"{comm}|{path_key}"
+    path_rate = _ONLINE_STATS.update_value("file", "rate", path_key, ts_s, 1.0)
+    pair_rate = _ONLINE_STATS.update_value("file", "rate", pair_key, ts_s, 1.0)
+    pair_dt = _ONLINE_STATS.update_interarrival("file", "interarrival", pair_key, ts_s, dt_scale_s=30.0)
+    proc_path_depth = _ONLINE_STATS.update_value("file", "path_depth", comm, ts_s, path_depth_norm)
+    host_path_depth = _ONLINE_STATS.update_value("file", "path_depth", host, ts_s, path_depth_norm)
+    pair_path_depth = _ONLINE_STATS.update_value("file", "path_depth", pair_key, ts_s, path_depth_norm)
+    for w in _ONLINE_WINDOWS:
+      wn = w[0]
+      out[f"file_path_rate_{wn}"] = _rate01(path_rate[wn][2])
+      out[f"file_pair_rate_{wn}"] = _rate01(pair_rate[wn][2])
+      out[f"file_pair_interarrival_{wn}"] = pair_dt[wn][0]
+      out[f"file_pair_interarrival_std_{wn}"] = pair_dt[wn][1]
+      out[f"file_proc_path_depth_mean_{wn}"] = proc_path_depth[wn][0]
+      out[f"file_proc_path_depth_std_{wn}"] = proc_path_depth[wn][1]
+      out[f"file_host_path_depth_mean_{wn}"] = host_path_depth[wn][0]
+      out[f"file_host_path_depth_std_{wn}"] = host_path_depth[wn][1]
+      out[f"file_pair_path_depth_mean_{wn}"] = pair_path_depth[wn][0]
+      out[f"file_pair_path_depth_std_{wn}"] = pair_path_depth[wn][1]
   return out
 
 
-def _extract_network_features(evt: Any, encoding: str = "encoded") -> Dict[str, float]:
+def _extract_network_features(evt: Any, view: _FeatureViewSpec = _FULL_FEATURE_VIEW) -> Dict[str, float]:
   """Type-specific features for event_group == 'network'."""
-  enc = (encoding or "encoded").strip().lower()
-  if enc == "hash":
-    return _extract_network_features_hash(evt)
-
   arg0_val = _safe_int(evt.data[6] if len(evt.data) > 6 else "0", default=0)
   arg1_val = _safe_int(evt.data[7] if len(evt.data) > 7 else "0", default=0)
   event_name = (evt.event_name or "") or (evt.data[0] if len(evt.data) > 0 else "")
@@ -812,52 +680,63 @@ def _extract_network_features(evt: Any, encoding: str = "encoded") -> Dict[str, 
   daddr = sockaddr.get("sin_addr") or ""
   af_label = _normalize_af_label(sockaddr.get("sa_family") or "", family_val)
 
-  pair_key = f"{comm}|{daddr}|{dport}"
-  daddr_key = daddr or "unknown"
-  pair_rate = _ONLINE_STATS.update_value("network", "rate", pair_key, ts_s, 1.0)
-  daddr_rate = _ONLINE_STATS.update_value("network", "rate", daddr_key, ts_s, 1.0)
-  pair_dt = _ONLINE_STATS.update_interarrival("network", "interarrival", pair_key, ts_s, dt_scale_s=30.0)
-  proc_dport = _ONLINE_STATS.update_value("network", "dport", comm, ts_s, net_dport_norm)
-  proc_addrlen = _ONLINE_STATS.update_value("network", "addrlen", comm, ts_s, net_addrlen_norm)
-  host_dport = _ONLINE_STATS.update_value("network", "dport", host, ts_s, net_dport_norm)
-  host_addrlen = _ONLINE_STATS.update_value("network", "addrlen", host, ts_s, net_addrlen_norm)
-  daddr_dport = _ONLINE_STATS.update_value("network", "dport", daddr_key, ts_s, net_dport_norm)
-  proc_daddr_key = f"{comm}|{daddr}"
-  proc_daddr_dport = _ONLINE_STATS.update_value("network", "dport", proc_daddr_key, ts_s, net_dport_norm)
-
   out: Dict[str, float] = {
     "net_addrlen_norm": net_addrlen_norm,
     "net_fd_norm": net_fd_norm,
     "net_socket_family_norm": net_socket_family_norm,
     "net_dport_norm": net_dport_norm,
   }
-  out.update(_bucketize_value("net_socket_type_bucket", str(type_val), _NET_SOCKET_TYPE_BUCKETS))
-  out.update(_bucketize_value("net_daddr_bucket", daddr, _NET_DADDR_BUCKETS))
-  out.update(_onehot_features("net_af", af_label, _NET_AF_VALUES))
-  for w in _ONLINE_WINDOWS:
-    wn = w[0]
-    out[f"net_pair_rate_{wn}"] = _rate01(pair_rate[wn][2])
-    out[f"net_daddr_rate_{wn}"] = _rate01(daddr_rate[wn][2])
-    out[f"net_pair_interarrival_{wn}"] = pair_dt[wn][0]
-    out[f"net_pair_interarrival_std_{wn}"] = pair_dt[wn][1]
-    out[f"net_proc_dport_mean_{wn}"] = proc_dport[wn][0]
-    out[f"net_proc_dport_std_{wn}"] = proc_dport[wn][1]
-    out[f"net_proc_addrlen_mean_{wn}"] = proc_addrlen[wn][0]
-    out[f"net_proc_addrlen_std_{wn}"] = proc_addrlen[wn][1]
-    out[f"net_host_dport_mean_{wn}"] = host_dport[wn][0]
-    out[f"net_host_dport_std_{wn}"] = host_dport[wn][1]
-    out[f"net_host_addrlen_mean_{wn}"] = host_addrlen[wn][0]
-    out[f"net_host_addrlen_std_{wn}"] = host_addrlen[wn][1]
-    out[f"net_daddr_dport_mean_{wn}"] = daddr_dport[wn][0]
-    out[f"net_daddr_dport_std_{wn}"] = daddr_dport[wn][1]
-    out[f"net_proc_daddr_dport_mean_{wn}"] = proc_daddr_dport[wn][0]
-    out[f"net_proc_daddr_dport_std_{wn}"] = proc_daddr_dport[wn][1]
+  if view.use_hash_for_categoricals:
+    if view.include_network_socket_type_bucket:
+      out["net_socket_type_hash"] = _hash01(str(type_val))
+    if view.include_network_daddr_bucket:
+      out["net_daddr_hash"] = _hash01(daddr)
+    if view.include_network_af_onehot:
+      af_str = sockaddr.get("sa_family") or ("AF_INET" if family_val == 2 else "AF_INET6" if family_val == 10 else "")
+      out["net_af_hash"] = _hash01(af_str)
+  else:
+    if view.include_network_socket_type_bucket:
+      out.update(_bucketize_value("net_socket_type_bucket", str(type_val), _NET_SOCKET_TYPE_BUCKETS))
+    if view.include_network_daddr_bucket:
+      out.update(_bucketize_value("net_daddr_bucket", daddr, _NET_DADDR_BUCKETS))
+    if view.include_network_af_onehot:
+      out.update(_onehot_features("net_af", af_label, _NET_AF_VALUES))
+  if view.include_network_online_stats:
+    pair_key = f"{comm}|{daddr}|{dport}"
+    daddr_key = daddr or "unknown"
+    pair_rate = _ONLINE_STATS.update_value("network", "rate", pair_key, ts_s, 1.0)
+    daddr_rate = _ONLINE_STATS.update_value("network", "rate", daddr_key, ts_s, 1.0)
+    pair_dt = _ONLINE_STATS.update_interarrival("network", "interarrival", pair_key, ts_s, dt_scale_s=30.0)
+    proc_dport = _ONLINE_STATS.update_value("network", "dport", comm, ts_s, net_dport_norm)
+    proc_addrlen = _ONLINE_STATS.update_value("network", "addrlen", comm, ts_s, net_addrlen_norm)
+    host_dport = _ONLINE_STATS.update_value("network", "dport", host, ts_s, net_dport_norm)
+    host_addrlen = _ONLINE_STATS.update_value("network", "addrlen", host, ts_s, net_addrlen_norm)
+    daddr_dport = _ONLINE_STATS.update_value("network", "dport", daddr_key, ts_s, net_dport_norm)
+    proc_daddr_key = f"{comm}|{daddr}"
+    proc_daddr_dport = _ONLINE_STATS.update_value("network", "dport", proc_daddr_key, ts_s, net_dport_norm)
+    for w in _ONLINE_WINDOWS:
+      wn = w[0]
+      out[f"net_pair_rate_{wn}"] = _rate01(pair_rate[wn][2])
+      out[f"net_daddr_rate_{wn}"] = _rate01(daddr_rate[wn][2])
+      out[f"net_pair_interarrival_{wn}"] = pair_dt[wn][0]
+      out[f"net_pair_interarrival_std_{wn}"] = pair_dt[wn][1]
+      out[f"net_proc_dport_mean_{wn}"] = proc_dport[wn][0]
+      out[f"net_proc_dport_std_{wn}"] = proc_dport[wn][1]
+      out[f"net_proc_addrlen_mean_{wn}"] = proc_addrlen[wn][0]
+      out[f"net_proc_addrlen_std_{wn}"] = proc_addrlen[wn][1]
+      out[f"net_host_dport_mean_{wn}"] = host_dport[wn][0]
+      out[f"net_host_dport_std_{wn}"] = host_dport[wn][1]
+      out[f"net_host_addrlen_mean_{wn}"] = host_addrlen[wn][0]
+      out[f"net_host_addrlen_std_{wn}"] = host_addrlen[wn][1]
+      out[f"net_daddr_dport_mean_{wn}"] = daddr_dport[wn][0]
+      out[f"net_daddr_dport_std_{wn}"] = daddr_dport[wn][1]
+      out[f"net_proc_daddr_dport_mean_{wn}"] = proc_daddr_dport[wn][0]
+      out[f"net_proc_daddr_dport_std_{wn}"] = proc_daddr_dport[wn][1]
   return out
 
 
-def _extract_process_features(evt: Any, encoding: str = "encoded") -> Dict[str, float]:
+def _extract_process_features(evt: Any) -> Dict[str, float]:
   """Type-specific features for event_group == 'process' (exec/spawn)."""
-  del encoding  # Process features are already binary/AE-friendly.
   event_name = (evt.event_name or "") or (evt.data[0] if len(evt.data) > 0 else "")
   process_is_execve = 1.0 if event_name == "execve" else 0.0
   process_is_fork = 1.0 if event_name == "fork" else 0.0
@@ -890,29 +769,29 @@ def _extract_general_online_stats(evt: Any) -> Dict[str, float]:
   return out
 
 
-def extract_feature_dict(
-  evt: Any,
-  encoding: str = "encoded",
-) -> Dict[str, float]:
+def extract_feature_dict(evt: Any, feature_view: str = "default") -> Dict[str, float]:
   """
   Extract features as a dict for streaming models.
 
-  encoding: "hash" (legacy scalar hashes) | "encoded" (event one-hot, bucket banks, path tokens).
-  Always includes general features (including shared online stats: proc/host rate,
-  proc interarrival). If evt.event_group is set (e.g. 'file', 'network', 'process'),
-  appends type-specific features. Features and thus vector size can differ per event.
+  feature_view:
+    - default: full encoded schema (one-hot, bucket banks, path tokens)
+    - hash: scalar-hash schema (event_hash, comm_hash, etc.)
+    - loda: bounded numerics + compact identity/boolean blocks
+    - memstream: dense-ish bounded numerics + smallest identity/boolean blocks
+
+  Always includes general features. If evt.event_group is set (e.g. 'file', 'network',
+  'process'), appends type-specific features. Features and thus vector size can differ
+  per event group and per selected feature view.
   """
-  enc = (encoding or "encoded").strip().lower()
-  if enc == "hash":
-    out = _extract_generic_features_hash(evt)
-  else:
-    out = _extract_generic_features(evt)
-  out.update(_extract_general_online_stats(evt))
+  view = _feature_view_spec(feature_view or "default")
+  out = _extract_generic_features(evt, view=view)
+  if view.include_general_online_stats:
+    out.update(_extract_general_online_stats(evt))
   event_group = (evt.event_group or "").strip().lower()
   if event_group == "file":
-    out.update(_extract_file_features(evt, encoding=enc))
+    out.update(_extract_file_features(evt, view=view))
   elif event_group == "network":
-    out.update(_extract_network_features(evt, encoding=enc))
+    out.update(_extract_network_features(evt, view=view))
   elif event_group == "process":
-    out.update(_extract_process_features(evt, encoding=enc))
+    out.update(_extract_process_features(evt))
   return out

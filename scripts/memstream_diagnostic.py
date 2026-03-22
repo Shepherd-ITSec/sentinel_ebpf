@@ -24,8 +24,8 @@ if __package__ is None or __package__ == "":
 
 import events_pb2
 from detector.config import load_config
-from detector.features import extract_feature_dict
-from detector.model import OnlineAnomalyDetector
+from detector.features import extract_feature_dict, feature_view_for_algorithm
+from detector.model import OnlineAnomalyDetector, OnlinePercentileCalibrator
 from replay_logs import _detect_format, iter_events, iter_events_jsonl
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
@@ -33,7 +33,6 @@ log = logging.getLogger(Path(__file__).stem)
 
 DEFAULT_LIMIT = 500_000
 DEFAULT_OUT_DIR = Path("test_data") / "memstream_diagnostic"
-HASHLIKE_FEATURE_MARKERS = ("_hash", "event_hash", "comm_hash", "path_hash", "flags_hash")
 
 
 def _dict_to_event_envelope(obj: dict) -> events_pb2.EventEnvelope:
@@ -245,10 +244,6 @@ def _run_attribution_samples(
     subprocess.run(cmd, cwd=Path(__file__).resolve().parent.parent, check=True)
 
 
-def _is_hashlike_feature(name: str) -> bool:
-  return any(marker in name for marker in HASHLIKE_FEATURE_MARKERS)
-
-
 def _load_attribution_notes(samples_dir: Path) -> dict[str, dict[str, Any]]:
   notes: dict[str, dict[str, Any]] = {}
   for path in sorted(samples_dir.glob("*.json")):
@@ -257,7 +252,6 @@ def _load_attribution_notes(samples_dir: Path) -> dict[str, dict[str, Any]]:
     attrs = payload.get("attribution", {})
     ordered = sorted(attrs.items(), key=lambda item: abs(float(item[1])), reverse=True)
     top = ordered[:5]
-    hashlike = sum(1 for name, _ in top if _is_hashlike_feature(name))
     notes[path.stem] = {
       "event_index": payload.get("event_index"),
       "event_id": payload.get("event_id"),
@@ -267,8 +261,6 @@ def _load_attribution_notes(samples_dir: Path) -> dict[str, dict[str, Any]]:
         {"name": name, "attribution": _round_float(float(value))}
         for name, value in top
       ],
-      "hashlike_top5": hashlike,
-      "hashlike_top5_ratio": _round_float(hashlike / max(1, len(top))),
     }
   return notes
 
@@ -291,14 +283,7 @@ def _build_report(
   rejected_rate = memory["rejected_update_rate"]
   overwrite_rate = memory["overwrite_rate_among_accepted"]
   score_memory_corr = memory["score_vs_memory_error_corr"]
-  score_recon_corr = memory["score_vs_recon_error_corr"]
   tail_gap = None if p50 is None or p99 is None else float(p99 - p50)
-  hashlike_ratios = [
-    note["hashlike_top5_ratio"]
-    for note in attribution_notes.values()
-    if note.get("hashlike_top5_ratio") is not None
-  ]
-  high_hashlike = max(hashlike_ratios) if hashlike_ratios else None
 
   issues: list[str] = []
   positives: list[str] = []
@@ -318,14 +303,6 @@ def _build_report(
     issues.append("memory distance has weak correlation with final score")
   else:
     positives.append(f"memory distance contributes meaningfully (`corr={score_memory_corr:.3f}`)")
-  if score_recon_corr is None or abs(score_recon_corr) < 0.1:
-    issues.append("reconstruction error has weak correlation with final score")
-  else:
-    positives.append(f"reconstruction error moves with score (`corr={score_recon_corr:.3f}`)")
-  if high_hashlike is not None and high_hashlike >= 0.6:
-    issues.append("top attribution features are mostly hash-like dimensions")
-  elif high_hashlike is not None:
-    positives.append("attribution is not dominated by hash-only features")
 
   if len(issues) >= 3 and len(positives) <= 2:
     verdict = "Current MemStream looks weak as implemented; the diagnostic does not justify more AE-family work without changing the input representation."
@@ -384,9 +361,7 @@ def _build_report(
   if attribution_notes:
     for stem, note in attribution_notes.items():
       top_names = ", ".join(item["name"] for item in note["top_features"][:3]) or "n/a"
-      lines.append(
-        f"- `{stem}`: top features = {top_names}; hash-like share in top-5 = `{note['hashlike_top5_ratio']}`"
-      )
+      lines.append(f"- `{stem}`: top features = {top_names}")
   else:
     lines.append("- Attribution artifacts were not produced.")
   lines.extend([
@@ -407,7 +382,7 @@ def _build_report(
     "## Interpretation",
     "",
     "This diagnostic is unlabeled, so it cannot prove benchmark usefulness on its own.",
-    "It does answer whether the current implementation produces a score tail, whether memory gating is active, and whether high-score explanations look semantic or mostly hash-driven.",
+    "It does answer whether the current implementation produces a score tail and whether memory gating is active.",
     "",
   ])
   return "\n".join(lines) + "\n"
@@ -437,11 +412,13 @@ def main() -> None:
 
   detector = OnlineAnomalyDetector(
     algorithm="memstream",
-    mem_hidden_dim=cfg.mem_hidden_dim,
-    mem_latent_dim=cfg.mem_latent_dim,
     mem_memory_size=cfg.mem_memory_size,
     mem_lr=cfg.mem_lr,
+    mem_beta=cfg.mem_beta,
+    mem_k=cfg.mem_k,
+    mem_gamma=cfg.mem_gamma,
     mem_input_mode=cfg.mem_input_mode,
+    mem_warmup_accept=cfg.mem_warmup_accept,
     freq1d_bins=cfg.freq1d_bins,
     freq1d_alpha=cfg.freq1d_alpha,
     freq1d_decay=cfg.freq1d_decay,
@@ -449,6 +426,18 @@ def main() -> None:
     model_device=cfg.model_device,
     seed=cfg.model_seed,
   )
+
+  score_mode = getattr(cfg, "score_mode", "raw").strip().lower()
+  percentile_calibrators: dict[str, OnlinePercentileCalibrator] = {}
+
+  def _get_percentile(event_group: str) -> OnlinePercentileCalibrator:
+    key = (event_group or "").strip().lower() or "__default__"
+    if key not in percentile_calibrators:
+      percentile_calibrators[key] = OnlinePercentileCalibrator(
+        window_size=getattr(cfg, "percentile_window_size", 2048),
+        warmup=getattr(cfg, "percentile_warmup", 128),
+      )
+    return percentile_calibrators[key]
 
   scaled_scores: list[float] = []
   raw_scores: list[float] = []
@@ -469,20 +458,31 @@ def main() -> None:
   with timeseries_path.open("w", encoding="utf-8") as timeseries_file:
     for i, obj in enumerate(_iter_event_dicts(events_path, args.limit)):
       evt = _dict_to_event_envelope(obj)
-      features = extract_feature_dict(evt, encoding=cfg.feature_encoding)
+      features = extract_feature_dict(
+        evt,
+        feature_view=feature_view_for_algorithm(cfg.model_algorithm),
+      )
       raw, scaled = detector.score_and_learn(features)
       debug = detector.get_last_debug()
       scaled_scores.append(float(scaled))
       raw_scores.append(float(raw))
       recon_errors.append(float(debug.get("recon_error", 0.0)))
       memory_errors.append(float(debug.get("memory_error", 0.0)))
-      event_group = (evt.event_group or "").strip().lower()
-      overall_event_groups[event_group or "__default__"] += 1
+      event_group_key = (evt.event_group or "").strip().lower() or "__default__"
+      overall_event_groups[event_group_key] += 1
       overall_event_names[(evt.event_name or "").strip().lower() or "__unknown__"] += 1
+
+      if score_mode == "percentile":
+        cal = _get_percentile(evt.event_group or "")
+        score_primary = float(cal.percentile_prequential(float(raw)))
+      elif score_mode == "scaled":
+        score_primary = float(scaled)
+      else:
+        score_primary = float(raw)
 
       for threshold in thresholds:
         key = str(threshold)
-        if scaled >= threshold:
+        if score_primary >= threshold:
           overall_threshold_counts[key] += 1
           window_threshold_counts[key] += 1
 
@@ -493,10 +493,10 @@ def main() -> None:
         "event_group": evt.event_group,
         "score_raw": round(float(raw), 6),
         "score_scaled": round(float(scaled), 6),
-        "anomaly": bool(scaled >= cfg.threshold),
+        "score_primary": round(score_primary, 6),
+        "anomaly": bool(score_primary >= cfg.threshold),
         "recon_error": _round_float(float(debug.get("recon_error", 0.0))),
         "memory_error": _round_float(float(debug.get("memory_error", 0.0))),
-        "adaptive_beta": _round_float(float(debug.get("adaptive_beta", 0.0))),
         "update_allowed": debug.get("update_allowed"),
         "update_reason": debug.get("update_reason"),
         "mem_filled_after": debug.get("mem_filled_after"),
@@ -505,7 +505,8 @@ def main() -> None:
       timeseries_file.write(json.dumps(record) + "\n")
 
       top_tail_events.append(record)
-      top_tail_events.sort(key=lambda item: float(item["score_scaled"]), reverse=True)
+      sort_key = "score_primary" if score_mode in ("percentile", "scaled") else "score_raw"
+      top_tail_events.sort(key=lambda item: float(item.get(sort_key, item["score_scaled"])), reverse=True)
       del top_tail_events[20:]
 
       chunk_events += 1
@@ -568,11 +569,13 @@ def main() -> None:
     "events_path": str(events_path),
     "events_processed": total_events,
     "threshold": float(cfg.threshold),
+    "score_mode": score_mode,
     "config": {
-      "mem_hidden_dim": cfg.mem_hidden_dim,
-      "mem_latent_dim": cfg.mem_latent_dim,
       "mem_memory_size": cfg.mem_memory_size,
       "mem_lr": cfg.mem_lr,
+      "mem_beta": cfg.mem_beta,
+      "mem_k": cfg.mem_k,
+      "mem_gamma": cfg.mem_gamma,
       "model_device": cfg.model_device,
       "model_seed": cfg.model_seed,
     },
@@ -606,9 +609,7 @@ def main() -> None:
     "overwrite_rate_among_accepted": _round_float(
       int(state.get("overwrite_updates", 0)) / max(1, int(state.get("accepted_updates", 0)))
     ),
-    "score_ema_final": _round_float(None if impl._score_ema is None else float(impl._score_ema)),
-    "score_std_ema_final": _round_float(float(np.sqrt(max(0.0, impl._score_var_ema)))),
-    "adaptive_beta_final": _round_float(float(impl._adaptive_beta())),
+    "beta": _round_float(float(impl.beta)),
     "mean_recon_error": _round_float(statistics.fmean(recon_errors)),
     "mean_memory_error": _round_float(statistics.fmean(memory_errors)),
     "score_vs_recon_error_corr": _round_float(_safe_corr(scaled_scores, recon_errors)),

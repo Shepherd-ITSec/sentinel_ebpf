@@ -2,21 +2,20 @@
 
 This directory contains helper scripts for working with sentinel-ebpf. They are grouped by purpose below.
 
-### BETH / detector evaluation
+### Detector evaluation
 
-- **`convert_beth_to_evt1.py`**: Convert BETH CSV logs into EVT1 binary plus labels NDJSON, used for BETH replay/evaluation.
-- **`run_detector_eval.py`**: Unified eval script. **BETH mode** (default): convert train/test CSV, warm up on train, replay test, evaluate; **single-stream mode** (`--evt1` + `--labels`): replay one EVT1 (e.g. synthetic), evaluate. Supports single-run and `--run-all` matrix; single-stream matrix is 14 runs (evil_only only), BETH matrix is 28 runs. Accepts `--score-mode {raw,scaled}` to control detector score space via `DETECTOR_SCORE_MODE`. The run-all matrix includes `knn` and `freq1d` as additional simple baselines.
-- **`evaluate_beth_replay.py`**: Compute classification metrics (precision, recall, F1, etc.) by comparing a detector anomaly log (`anomalies.jsonl`) against BETH-style labels.
+- **`run_detector_eval.py`**: Replay EVT1 to detector, evaluate against labels. Requires `--evt1` and `--labels` (e.g. from `generate_synthetic_evt1_dataset.py`). Supports single-run and `--run-all` matrix (14 runs). Accepts `--score-mode {raw,scaled,percentile}` to control detector score space via `DETECTOR_SCORE_MODE`. The run-all matrix includes `knn` and `freq1d` as additional simple baselines.
+- **`evaluate_replay.py`**: Compute classification metrics (precision, recall, F1, etc.) by comparing a detector anomaly log (`anomalies.jsonl`) against labels NDJSON.
 
 ### EVT1 utilities
 
 - **`replay_logs.py`**: Replay EVT1 logs to the detector over gRPC, either as fast as possible or in realtime pacing.
 - **`decode_logs.py`**: Decode EVT1 binary logs (optionally gzipped) into human-readable NDJSON for inspection or debugging.
-- **`compare_replay_scores.py`**: Take a slice of `detector-events` JSONL, replay it to a fresh detector instance, and compare original vs replayed scores to sanity‑check determinism and state handling. Accepts `--score-mode {raw,scaled}` to control detector score space via `DETECTOR_SCORE_MODE`.
+- **`compare_replay_scores.py`**: Take a slice of `detector-events` JSONL, replay it to a fresh detector instance, and compare original vs replayed scores to sanity‑check determinism and state handling. Accepts `--score-mode {raw,scaled,percentile}` to control detector score space via `DETECTOR_SCORE_MODE`.
 
 ### Synthetic / activity generation
 
-- **`generate_synthetic_evt1_dataset.py`**: Generate a synthetic EVT1 log plus matching labels with configurable total size, positive fraction, and warmup region (no positives at the start). By default it samples only network syscall rows from BETH (`--network-only`, disable with `--no-network-only`). Useful for controlled FPR/recall experiments.
+- **`generate_synthetic_evt1_dataset.py`**: Generate an EVT1 log plus matching labels by sampling from labelled CSV files. Configurable total size, positive fraction, and warmup region (no positives at the start). By default it samples only network syscall rows (`--network-only`, disable with `--no-network-only`). Useful for controlled FPR/recall experiments.
 
 **Testing the detector on a new synthetic network run**
 
@@ -56,8 +55,7 @@ This directory contains helper scripts for working with sentinel-ebpf. They are 
 
 ### Long-running / orchestration helpers
 
-- **`run_beth_overnight.sh`**: Fire-and-forget wrapper that starts `run_detector_eval.py --run-all` (BETH mode) under `nohup`, logs to `run_all.log`.
-- **`run_synthetic_overnight.sh`**: Same in single-stream mode: `run_detector_eval.py --evt1/--labels --run-all`. No args = defaults to `test_data/synthetic/run3.evt1` and `run3.labels.ndjson`; optional args: `[evt1] [labels] [log]`. Warmup is in the data: generate the EVT1 with `--warmup-fraction 0.75` so the first part of the stream has no positives and the detector can learn normal behavior.
+- **`run_synthetic_overnight.sh`**: Fire-and-forget wrapper that starts `run_detector_eval.py --evt1/--labels --run-all` under `nohup`. No args = defaults to `test_data/synthetic/run3.evt1` and `run3.labels.ndjson`; optional args: `[evt1] [labels] [log]`. Warmup is in the data: generate the EVT1 with `--warmup-fraction 0.75` so the first part of the stream has no positives and the detector can learn normal behavior.
 - **`run_commands_overnight.sh`**: Run multiple commands in sequence overnight (backgrounds with nohup like the other overnight scripts). **From file:** `-f <command-file> [logfile]` — one command per line; empty lines and `#` comments ignored. **From args:** `[logfile] "command 1" "command 2" ...`. Watch with `tail -f <logfile>`. Failed commands are logged; remaining commands still run; failure summary at end.
 
 ### Analysis / visualization

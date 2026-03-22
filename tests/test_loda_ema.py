@@ -117,6 +117,21 @@ def test_loda_ema_checkpoint_save_load_preserves_scores():
     ckpt.unlink(missing_ok=True)
 
 
+def test_loda_ema_get_last_debug():
+  """get_last_debug returns per-projection excess signals after score_and_learn."""
+  det = OnlineAnomalyDetector(algorithm="loda_ema", seed=11)
+  det.score_and_learn(_make_features(np.zeros(9)))
+  debug_before = det.get_last_debug()
+  assert isinstance(debug_before, dict)
+  assert "score_raw" in debug_before
+  assert "mean_projection_excess" in debug_before
+  assert "max_projection_excess" in debug_before
+  assert "per_projection_excess" in debug_before
+  assert abs(debug_before["score_raw"] - debug_before["mean_projection_excess"]) < 1e-9
+  assert debug_before["max_projection_excess"] >= debug_before["mean_projection_excess"]
+  assert len(debug_before["per_projection_excess"]) == det.impl._effective_n_projections
+
+
 def test_loda_ema_attribution_space_lograw_matches_log1p_raw_score():
   det = OnlineAnomalyDetector(algorithm="loda_ema", seed=11)
   det.score_and_learn(_make_features(np.zeros(9)))

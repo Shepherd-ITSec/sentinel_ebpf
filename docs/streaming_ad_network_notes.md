@@ -4,15 +4,15 @@
 
 | Aspect | Original (paper/code) | Our implementation |
 |--------|----------------------|---------------------|
-| **Encoder** | 1 layer: `Linear(in, 2*in)` + Tanh | 2 layers: Linear(10, 32) → ReLU → Linear(32, 8) |
-| **Decoder** | 1 layer: `Linear(2*in, in)` | 2 layers: Linear(8, 32) → ReLU → Linear(32, 10) |
-| **Latent** | **2× input dim** (e.g. 20 for 10 features) | **8** (smaller bottleneck) |
-| **Memory size** | 256–2048 in demos | 128 |
-| **Warmup** | Offline: train AE on **normal-only** subset, then init memory | Online only: no normal subset; memory filled as stream arrives |
-| **Score** | min L1 distance(encoder(x), memory) | 0.8 × mean k-NN distance + 0.2 × recon error |
-| **Update** | FIFO when score ≤ β | Adaptive β; FIFO when score ≤ β |
+| **Encoder** | 1 layer: `Linear(in, 2*in)` + Tanh | 1 layer: `Linear(in, 2*in)` + Tanh |
+| **Decoder** | 1 layer: `Linear(2*in, in)` | 1 layer: `Linear(2*in, in)` |
+| **Latent** | **2× input dim** | **2× input dim** |
+| **Memory size** | 256–2048 in demos | 512 (configurable) |
+| **Warmup** | Offline: train AE on **normal-only** subset, then init memory | Online by default; optional `mem_warmup_path` for normal-only warmup |
+| **Score** | K-NN discounted L1: `(topk L1 × γ^i).sum() / exp.sum()` | Same: K-NN discounted L1 only |
+| **Update** | FIFO when score ≤ β | FIFO when score ≤ β (fixed β=0.1) |
 
-So we are **shallower in width** (smaller latent, smaller memory) and **fully online** (no normal-only warmup). The paper’s setup assumes an initial batch of normal data to pretrain the AE and seed memory; we don’t have that, so our AE and memory are trained on a mix that can include anomalies (we mitigate with threshold-gated updates).
+Our implementation is now **aligned with the paper**. Config: `mem_beta`, `mem_k`, `mem_gamma` for scoring; `mem_memory_size`, `mem_lr`; optional `mem_warmup_path` for normal-only warmup.
 
 ## Other network ideas (from quick research)
 
@@ -26,25 +26,19 @@ So we are **shallower in width** (smaller latent, smaller memory) and **fully on
   Some work suggests Mean Absolute Error for reconstruction is more robust to outliers when training on contaminated streams. Easy to try alongside MSE.
 
 - **Paper-closer MemStream**  
-  Single-layer encoder/decoder with **latent_dim = 2 × input_dim**, Tanh, and larger memory (e.g. 512–2048). Keeps the same “min distance to memory” style scoring. Optionally support a “normal-only” warmup phase if we ever have labels or a trusted initial window.
+  Implemented: single-layer encoder/decoder with latent = 2×input_dim, Tanh, K-NN discounted L1 scoring, FIFO memory when score ≤ β. Optional `mem_warmup_path` for normal-only warmup.
 
 ## Recommended next steps
 
-1. **Add a “paper-like” MemStream variant**  
-   - One hidden layer, width = 2× input_dim, Tanh.  
-   - Larger default memory (e.g. 512).  
-   - Score = min L1 distance to memory (like original); keep optional recon term for stability.  
-   - Expose as a config option (e.g. `memstream_paper` or `memstream_wide`) so we can A/B against current MemStream.
-
-2. **Add a deeper AE variant**  
+1. **Add a deeper AE variant**  
    - e.g. 10 → 64 → 32 → 16 → 32 → 64 → 10 (or 10 → 64 → 32 → 64 → 10).  
    - Same memory + k-NN scoring on latent as now.  
    - Expose as `memstream_deep` (or similar) and tune depth/width via config.
 
-3. **Optional: MAE loss**  
-   - Config flag to use MAE instead of MSE for AE training; compare on BETH.
+2. **Optional: MAE loss**  
+   - Config flag to use MAE instead of MSE for AE training; compare on synthetic eval.
 
-4. **Later: LSTM/sequence**  
+3. **Later: LSTM/sequence**  
    - Only if we want to exploit temporal order explicitly; requires windowing and more engineering.
 
-Implementing (1) and (2) gives two additional network backends we can compare on the same eval pipeline (BETH, evil_only / sus_or_evil) without changing the rest of the stack.
+Implementing (1) gives an additional network backend to compare on the same eval pipeline (evil_only / sus_or_evil) without changing the rest of the stack.

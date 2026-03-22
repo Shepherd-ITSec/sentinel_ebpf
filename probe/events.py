@@ -58,7 +58,7 @@ EVENT_NAME_TO_ID: Dict[str, int] = {
   "memfd_create": 319,
   "bpf": 321,
   "openat2": 437,
-  # BETH/LSM-style event id (not a syscall number).
+  # LSM-style event id (not a syscall number).
   "cap_capable": 1003,
   "security_bprm_check": 1004,
   "security_file_open": 1005,

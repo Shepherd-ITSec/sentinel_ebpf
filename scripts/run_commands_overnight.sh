@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run multiple commands one after another overnight. Backgrounds with nohup so
-# it survives SSH disconnect (same pattern as run_beth_overnight.sh).
+# it survives SSH disconnect (same pattern as run_synthetic_overnight.sh).
 #
 # Usage:
 #   ./scripts/run_commands_overnight.sh -f <command-file> [logfile]

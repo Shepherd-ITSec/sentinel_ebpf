@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Build a BETH-only subset EVT1 dataset plus labels for detector evaluation.
+Build a subset EVT1 dataset plus labels for detector evaluation.
 
-This script does NOT fabricate events or labels. It samples real rows from one
-or more BETH CSV files, without replacement, and writes:
+Samples rows from labelled CSV files (eventName, evil, sus, etc.), without
+replacement, and writes:
 - <out_prefix>.evt1
 - <out_prefix>.labels.ndjson
 
@@ -12,8 +12,8 @@ Dataset shape controls:
 - warmup prefix with no positives via --warmup-fraction
 - default filter to network-relevant syscall rows only
 
-If requested constraints cannot be satisfied with available BETH rows, the
-script exits with a clear error.
+If requested constraints cannot be satisfied with available rows, the script
+exits with a clear error.
 """
 
 import argparse
@@ -32,12 +32,55 @@ try:
 except ImportError:
   tqdm = None
 
-try:
-  from .convert_beth_to_evt1 import _build_evt
-except ImportError:
-  from convert_beth_to_evt1 import _build_evt
-
 MAGIC = b"EVT1"
+
+
+def _build_evt(row: Dict[str, str], out_idx: int, start_ts_unix_nano: int, event_id_prefix: str) -> Tuple[dict, dict]:
+  """Convert a labelled CSV row to (evt dict, label dict) for EVT1/labels NDJSON."""
+  event_name = (row.get("eventName") or row.get("event_name") or "unknown").strip()
+  event_id = f"{event_id_prefix}-{out_idx}"
+  ts = start_ts_unix_nano + out_idx * 1_000_000
+
+  data = [
+    event_name,
+    str(row.get("event_id", out_idx)),
+    (row.get("comm") or "").strip(),
+    str(row.get("pid", "0")),
+    str(row.get("tid", "0")),
+    str(row.get("uid", "0")),
+    str(row.get("arg0", "0")),
+    str(row.get("arg1", "0")),
+    (row.get("path") or "").strip(),
+    (row.get("flags") or "").strip(),
+  ]
+  # Pad to 10 slots
+  while len(data) < 10:
+    data.append("")
+
+  attrs: Dict[str, str] = {}
+  if row.get("sin_port") or row.get("sin_addr") or row.get("sa_family"):
+    attrs["sin_port"] = str(row.get("sin_port", ""))
+    attrs["sin_addr"] = str(row.get("sin_addr", ""))
+    attrs["sa_family"] = str(row.get("sa_family", ""))
+  elif row.get("sockaddr"):
+    data[7] = str(row["sockaddr"])
+
+  evt: dict = {
+    "event_id": event_id,
+    "event_name": event_name,
+    "event_group": "network",
+    "ts_unix_nano": ts,
+    "data": data,
+  }
+  if attrs:
+    evt["attributes"] = attrs
+
+  label: dict = {
+    "event_id": event_id,
+    "sus": int(row.get("sus", 0) or 0),
+    "evil": int(row.get("evil", 0) or 0),
+  }
+  return evt, label
 NETWORK_EVENT_NAMES = {
   "accept",
   "accept4",
@@ -74,7 +117,7 @@ def _parse_int(raw: str, default: int = 0) -> int:
     return default
 
 
-def _load_beth_rows(csv_paths: List[Path]) -> List[SourceRow]:
+def _load_csv_rows(csv_paths: List[Path]) -> List[SourceRow]:
   all_rows: List[SourceRow] = []
   for csv_path in csv_paths:
     if not csv_path.exists():
@@ -170,7 +213,6 @@ def _build_output_from_selected(
   labels: List[dict] = []
   for out_idx, src in enumerate(selected_rows):
     evt, label = _build_evt(src.row, out_idx, start_ts_unix_nano, event_id_prefix=event_id_prefix)
-    # Synthetic dataset inherits BETH rows; mark category consistently.
     evt["event_group"] = "network"
     # Keep provenance to make debugging easier while preserving original label semantics.
     evt.setdefault("attributes", {})
@@ -207,18 +249,15 @@ def _write_labels_ndjson(path: Path, labels: List[dict]) -> None:
 
 
 def main() -> None:
-  ap = argparse.ArgumentParser(description="Build a BETH-only EVT1 subset dataset (no fabricated events/labels).")
+  ap = argparse.ArgumentParser(description="Build an EVT1 subset dataset from labelled CSVs (no fabricated events/labels).")
   ap.add_argument(
     "--source-csv",
     nargs="+",
     default=[
-      "test_data/beth/labelled_training_data.csv",
-      "test_data/beth/labelled_testing_data.csv",
+      "test_data/synthetic/labelled_training_data.csv",
+      "test_data/synthetic/labelled_testing_data.csv",
     ],
-    help=(
-      "One or more BETH CSV inputs to sample from. "
-      "Default uses both train and test CSVs."
-    ),
+    help="One or more labelled CSV inputs (eventName, evil, sus, etc.) to sample from.",
   )
   ap.add_argument(
     "--out-prefix",
@@ -257,7 +296,7 @@ def main() -> None:
   )
   ap.add_argument(
     "--event-id-prefix",
-    default="beth-subset",
+    default="synth",
     help="Prefix for generated event_ids in output EVT1/labels.",
   )
   ap.add_argument(
@@ -277,7 +316,7 @@ def main() -> None:
   start_ts_unix_nano = start_ts_ms * 1_000_000
 
   source_csvs = [Path(p) for p in args.source_csv]
-  source_rows = _load_beth_rows(source_csvs)
+  source_rows = _load_csv_rows(source_csvs)
   total_source_rows = len(source_rows)
   if args.network_only:
     source_rows = [r for r in source_rows if _is_network_row(r.row)]

@@ -12,7 +12,7 @@ COPY pyproject.toml uv.lock ./
 COPY probe /app/probe
 COPY detector /app/detector
 COPY scripts /app/scripts
-COPY events_pb2.py events_pb2_grpc.py /app/
+COPY events_pb2.py events_pb2_grpc.py rules_config.py /app/
 RUN uv sync --no-dev --frozen --extra detector
 
 ENV VIRTUAL_ENV=/app/.venv
