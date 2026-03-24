@@ -626,14 +626,6 @@ class FileSink:
 
 class HealthHandler(BaseHTTPRequestHandler):
   def do_GET(self):  # noqa: N802
-    if self.path.startswith("/metrics"):
-      self.send_response(200)
-      self.send_header("Content-Type", "text/plain; version=0.0.4")
-      self.end_headers()
-      probe_runner = getattr(self.server, "_probe_runner", None)
-      metrics = _probe_metrics_snapshot(probe_runner)
-      self.wfile.write(_render_probe_metrics(metrics).encode("utf-8"))
-      return
     self.send_response(200)
     self.end_headers()
     self.wfile.write(b"ok")
@@ -642,9 +634,35 @@ class HealthHandler(BaseHTTPRequestHandler):
     return
 
 
+class MetricsHandler(BaseHTTPRequestHandler):
+  """Prometheus metrics on dedicated port (see config.metrics.port)."""
+
+  def do_GET(self):  # noqa: N802
+    if not self.path.startswith("/metrics"):
+      self.send_response(404)
+      self.end_headers()
+      return
+    self.send_response(200)
+    self.send_header("Content-Type", "text/plain; version=0.0.4")
+    self.end_headers()
+    probe_runner = getattr(self.server, "_probe_runner", None)
+    metrics = _probe_metrics_snapshot(probe_runner)
+    self.wfile.write(_render_probe_metrics(metrics).encode("utf-8"))
+
+  def log_message(self, format, *args):  # noqa: A003
+    return
+
+
 def start_health_server(port: int, probe_runner=None) -> HTTPServer:
   server = HTTPServer(("0.0.0.0", port), HealthHandler)
-  # Store probe runner reference so metrics handler can access it
+  server._probe_runner = probe_runner
+  thread = threading.Thread(target=server.serve_forever, daemon=True)
+  thread.start()
+  return server
+
+
+def start_metrics_server(port: int, probe_runner=None) -> HTTPServer:
+  server = HTTPServer(("0.0.0.0", port), MetricsHandler)
   server._probe_runner = probe_runner
   thread = threading.Thread(target=server.serve_forever, daemon=True)
   thread.start()
@@ -889,11 +907,16 @@ def main():
   configure_logging(cfg.log_level)
   runner = ProbeRunner(cfg)
   health_server = start_health_server(cfg.health_port, probe_runner=runner)
+  metrics_server: Optional[HTTPServer] = None
+  if cfg.metrics_enabled:
+    metrics_server = start_metrics_server(cfg.metrics_port, probe_runner=runner)
 
   def handle_signal(signum, frame):  # noqa: ANN001
     logging.info("received signal %s", signum)
     runner.stop()
     health_server.shutdown()
+    if metrics_server is not None:
+      metrics_server.shutdown()
 
   signal.signal(signal.SIGTERM, handle_signal)
   signal.signal(signal.SIGINT, handle_signal)

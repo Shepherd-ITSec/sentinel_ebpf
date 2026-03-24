@@ -55,7 +55,7 @@ detector:
     pullPolicy: IfNotPresent
   service:
     type: ClusterIP
-    port: 50051<
+    port: 50051
   eventsPort: 50052  # HTTP API for recent events (UI log tail in gRPC mode)
   anomalyLogPath: ""  # Path to log anomalies to file (empty to disable, e.g., /var/log/sentinel-ebpf/anomalies.jsonl)
   eventDumpPath: "/var/log/sentinel-ebpf/events.jsonl"   # Path to dump all incoming events to file (empty to disable, e.g., /var/log/sentinel-ebpf/events.jsonl)

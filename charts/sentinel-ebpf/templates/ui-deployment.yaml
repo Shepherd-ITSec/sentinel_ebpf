@@ -36,7 +36,7 @@ spec:
             - name: PROBE_HEALTH_URL
               value: {{ .Values.ui.probeHealthUrl | default (printf "http://%s-probe:%d/healthz" (include "sentinel-ebpf.fullname" .) (int .Values.config.health.port)) | quote }}
             - name: PROBE_METRICS_URL
-              value: {{ .Values.ui.probeMetricsUrl | default (printf "http://%s-probe:%d/metrics" (include "sentinel-ebpf.fullname" .) (int .Values.config.health.port)) | quote }}
+              value: {{ .Values.ui.probeMetricsUrl | default (printf "http://%s-probe:%d/metrics" (include "sentinel-ebpf.fullname" .) (int .Values.config.metrics.port)) | quote }}
             - name: DETECTOR_METRICS_URL
               value: {{ .Values.ui.detectorMetricsUrl | default (printf "http://%s-detector:%d/metrics" (include "sentinel-ebpf.fullname" .) (int .Values.detector.eventsPort)) | quote }}
             - name: DETECTOR_EVENTS_URL

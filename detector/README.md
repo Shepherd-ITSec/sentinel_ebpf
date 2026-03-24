@@ -40,7 +40,7 @@ Optional `attributes` (preferred for structured fields when present):
 **Public API:**
 
 - `extract_feature_dict(evt, feature_view="default") -> Dict[str, float]`: general features always; if the event has an **event_group** (in `evt.event_group`) of `file`, `network`, or `process`, appends type-specific features. Key set (and “vector size”) can differ per event_group and per **feature view**.
-- `feature_view_for_algorithm(algorithm) -> str`: maps algorithm to feature view. Only freq1d → hash (scalar hashes); loda/loda_ema → loda; memstream → memstream; else → default.
+- `feature_view_for_algorithm(algorithm) -> str`: maps algorithm to feature view. `freq1d`, `gausscop`, `copulatree`, `latentcluster` → hash (scalar hashes); `loda` / `loda_ema` → loda; `memstream` → memstream; else → default.
 
 **Feature views:** A single extraction path produces features; the view controls which categorical encodings are used (one-hot/bucket vs scalar hash). `default` = one-hot + bucket banks (AE-family); `hash` = scalar hashes (`*_hash`) + `event_id_norm` (freq1d only); `loda` = compact identity blocks; `memstream` = minimal identity blocks. The view is chosen per algorithm via `feature_view_for_algorithm(algorithm)`.
 
@@ -141,6 +141,7 @@ Feature coverage is intentionally scoped to the currently supported/traced sysca
 | Feature             | Source                 | Description                            | Discrete | Range  |
 | ------------------- | ---------------------- | -------------------------------------- | -------- | ------ |
 | `process_is_execve` | `data[0]` (event_name) | 1.0 if event_name is execve; else 0.0. | yes      | {0, 1} |
+| `process_is_fork`   | `data[0]` (event_name) | 1.0 if event_name is fork; else 0.0.   | yes      | {0, 1} |
 
 
 Missing or invalid fields use safe defaults. Each per-event_group model sees a consistent feature set for its group, and the **feature view** (chosen per algorithm) is fixed for that model instance.
