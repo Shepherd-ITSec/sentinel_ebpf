@@ -13,7 +13,7 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 COPY probe /app/probe
 COPY detector /app/detector
-COPY events_pb2.py events_pb2_grpc.py rules_config.py /app/
+COPY events_pb2.py events_pb2_grpc.py rules_config.py event_envelope_codec.py /app/
 RUN uv venv --python /usr/bin/python3 /app/.venv && uv sync --no-dev --frozen
 
 # Stage 2: runtime image with bcc, no compilers
@@ -27,7 +27,7 @@ WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
 COPY probe /app/probe
 COPY detector /app/detector
-COPY events_pb2.py events_pb2_grpc.py rules_config.py /app/
+COPY events_pb2.py events_pb2_grpc.py rules_config.py event_envelope_codec.py /app/
 
 ENV VIRTUAL_ENV=/app/.venv
 ENV PATH="/app/.venv/bin:${PATH}"

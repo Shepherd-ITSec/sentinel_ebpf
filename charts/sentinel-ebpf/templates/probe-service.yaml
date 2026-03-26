@@ -1,4 +1,3 @@
-{{- if .Values.ui.enabled }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -13,9 +12,10 @@ spec:
     app.kubernetes.io/component: probe
   ports:
     - name: health
-      port: 9101
+      port: {{ int .Values.config.health.port }}
       targetPort: health
+    {{- if and .Values.ui.enabled .Values.config.metrics.enabled }}
     - name: metrics
-      port: 9102
+      port: {{ int .Values.config.metrics.port }}
       targetPort: metrics
-{{- end }}
+    {{- end }}

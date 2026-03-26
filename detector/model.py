@@ -1616,6 +1616,434 @@ class OnlineFreq1D(_BothScoresMixin):
     self._cat_slot = cat_slot
 
 
+class OnlineIndepMarginalProduct:
+  """
+  Standalone online 1D marginals (same binning / categorical rules as the freq1d-style
+  baseline). Raw score is 1 minus the geometric mean of marginal probabilities:
+
+      1 - (∏_i P(x_i))^(1/d)   with d = number of features,
+
+  i.e. the same independence structure as the full product, but per-dimension
+  geometric mean instead of the joint (which underflows to ~0 in float64 for
+  large d, making 1 - joint saturate at 1.0).
+
+  Raw score is in [0, 1]; scaled == raw when used via OnlineAnomalyDetector.
+  Not a subclass of OnlineFreq1D (intentional decoupling).
+  """
+
+  _BINARY_FEATURES = frozenset({"return_success", "file_sensitive_path", "file_tmp_path", "process_is_execve", "process_is_fork"})
+  _HASH_KEY_SPACE = 10000
+
+  def __init__(
+    self,
+    bins: int,
+    alpha: float,
+    decay: float,
+    max_categories: int,
+    model_device: str,
+    seed: int,
+  ):
+    del seed
+    self.algorithm = "indep_marginal"
+    requested_device = _resolve_torch_device(model_device)
+    self.device = "cpu"
+    if requested_device.type == "cuda":
+      logging.warning(
+        "algorithm=%s requested on CUDA, but indep_marginal is CPU-only; using CPU",
+        self.algorithm,
+      )
+
+    self.bins = int(max(2, bins))
+    self.alpha = float(alpha)
+    if not (self.alpha > 0.0):
+      raise ValueError("indep_marginal alpha must be > 0")
+    self.decay = float(decay)
+    if not (0.0 < self.decay <= 1.0):
+      raise ValueError("indep_marginal decay must be in (0, 1]")
+    self.max_categories = int(max(4, max_categories))
+
+    self._feature_names: Optional[List[str]] = None
+    self._kind: Optional[List[str]] = None
+    self._cat_mode: Optional[List[Optional[str]]] = None
+
+    self._num_slot: Optional[List[int]] = None
+    self._num_counts: List[np.ndarray] = []
+    self._num_fenwick: List[FenwickTree] = []
+    self._num_scale: List[float] = []
+
+    self._cat_slot: Optional[List[int]] = None
+    self._cat_counts: List[Any] = []
+    self._cat_hash_fenwick: List[Optional[FenwickTree]] = []
+    self._cat_other: List[float] = []
+    self._cat_scale: List[float] = []
+
+    logging.info(
+      "Initialized %s (bins=%d, alpha=%.3f, decay=%.4f, max_categories=%d)",
+      self.algorithm,
+      self.bins,
+      self.alpha,
+      self.decay,
+      self.max_categories,
+    )
+
+  _BINARY_PREFIXES = (
+    "comm_bucket_",
+    "hostname_bucket_",
+    "path_tok_d",
+    "file_event_name_",
+    "net_event_name_",
+    "file_extension_bucket_",
+    "file_flags_bucket_",
+    "net_socket_type_bucket_",
+    "net_daddr_bucket_",
+    "net_af_",
+  )
+
+  def _is_categorical(self, name: str) -> tuple[bool, Optional[str]]:
+    if name.endswith("_hash"):
+      return True, "hash"
+    if name in self._BINARY_FEATURES or name.startswith(self._BINARY_PREFIXES):
+      return True, "binary"
+    return False, None
+
+  def _init_from_features(self, features: Dict[str, float]) -> None:
+    self._feature_names = sorted(features.keys())
+    kinds: List[str] = []
+    cat_modes: List[Optional[str]] = []
+    num_slot: List[int] = [-1] * len(self._feature_names)
+    cat_slot: List[int] = [-1] * len(self._feature_names)
+
+    for i, name in enumerate(self._feature_names):
+      is_cat, mode = self._is_categorical(name)
+      if is_cat:
+        kinds.append("cat")
+        cat_modes.append(mode)
+        cat_slot[i] = len(self._cat_counts)
+        if mode == "hash" and self.max_categories >= self._HASH_KEY_SPACE:
+          arr = np.zeros(self._HASH_KEY_SPACE, dtype=np.float64)
+          self._cat_counts.append(arr)
+          self._cat_hash_fenwick.append(FenwickTree(self._HASH_KEY_SPACE))
+        else:
+          self._cat_counts.append({})
+          self._cat_hash_fenwick.append(None)
+        self._cat_other.append(0.0)
+        self._cat_scale.append(1.0)
+      else:
+        kinds.append("num")
+        cat_modes.append(None)
+        num_slot[i] = len(self._num_counts)
+        self._num_counts.append(np.zeros(self.bins, dtype=np.float64))
+        self._num_fenwick.append(FenwickTree(self.bins))
+        self._num_scale.append(1.0)
+
+    self._kind = kinds
+    self._cat_mode = cat_modes
+    self._num_slot = num_slot
+    self._cat_slot = cat_slot
+    logging.info(
+      "IndepMarginalProduct initialized with %d features (%d numeric, %d categorical)",
+      len(self._feature_names),
+      len(self._num_counts),
+      len(self._cat_counts),
+    )
+
+  def _maybe_rescale_numeric(self, slot: int) -> None:
+    scale = self._num_scale[slot]
+    if scale >= 1e-6:
+      return
+    self._num_counts[slot] *= scale
+    self._num_fenwick[slot].init(list(self._num_counts[slot]))
+    self._num_scale[slot] = 1.0
+
+  def _maybe_rescale_categorical(self, slot: int) -> None:
+    scale = self._cat_scale[slot]
+    if scale >= 1e-6:
+      return
+    counts = self._cat_counts[slot]
+    if isinstance(counts, np.ndarray):
+      counts *= scale
+      self._cat_hash_fenwick[slot].init(list(counts))
+    elif counts:
+      for k in list(counts.keys()):
+        counts[k] *= scale
+    self._cat_other[slot] *= scale
+    self._cat_scale[slot] = 1.0
+
+  def _bin_numeric(self, x: float) -> int:
+    v = float(x)
+    if v <= 0.0:
+      return 0
+    if v >= 1.0:
+      return self.bins - 1
+    idx = int(v * self.bins)
+    if idx < 0:
+      return 0
+    if idx >= self.bins:
+      return self.bins - 1
+    return idx
+
+  def _cat_key(self, mode: str, x: float) -> int:
+    v = float(x)
+    if mode == "binary":
+      return 1 if v >= 0.5 else 0
+    if v <= 0.0:
+      return 0
+    if v >= 1.0:
+      return 9999
+    k = int(v * 10000.0 + 1e-6)
+    if k < 0:
+      return 0
+    if k > 9999:
+      return 9999
+    return k
+
+  def _prob_numeric_slot(self, slot: int, x: float) -> float:
+    counts = self._num_counts[slot]
+    fenwick = self._num_fenwick[slot]
+    total = _fenwick_prefix_sum(fenwick, self.bins - 1)
+    idx = self._bin_numeric(x)
+    c = float(counts[idx])
+    p = (c + self.alpha) / (total + self.alpha * self.bins) if total >= 0.0 else 1.0 / float(self.bins)
+    return max(1e-300, float(p))
+
+  def _prob_cat_slot(self, slot: int, mode: str, x: float) -> float:
+    counts = self._cat_counts[slot]
+    k = self._cat_key(mode, x)
+    if isinstance(counts, np.ndarray):
+      fenwick = self._cat_hash_fenwick[slot]
+      total = _fenwick_prefix_sum(fenwick, self._HASH_KEY_SPACE - 1)
+      c = float(counts[k])
+      alphabet = max(2, int(np.count_nonzero(counts)) + 1)
+    else:
+      other = float(self._cat_other[slot])
+      total = other + float(sum(counts.values()))
+      c = float(counts.get(k, 0.0))
+      alphabet = max(2, len(counts) + 1)
+    p = (c + self.alpha) / (total + self.alpha * alphabet) if total >= 0.0 else 1.0 / float(alphabet)
+    return max(1e-300, float(p))
+
+  def _cdf_numeric_slot(self, slot: int, x: float) -> float:
+    fenwick = self._num_fenwick[slot]
+    total = _fenwick_prefix_sum(fenwick, self.bins - 1)
+    idx = self._bin_numeric(x)
+    cum = _fenwick_prefix_sum(fenwick, idx)
+    cdf = (cum + self.alpha) / (total + self.alpha * self.bins) if total >= 0.0 else (idx + 1) / float(self.bins)
+    return float(np.clip(cdf, 1e-12, 1.0 - 1e-12))
+
+  def _cdf_cat_slot(self, slot: int, mode: str, x: float) -> float:
+    counts = self._cat_counts[slot]
+    k = self._cat_key(mode, x)
+    if isinstance(counts, np.ndarray):
+      fenwick = self._cat_hash_fenwick[slot]
+      total = _fenwick_prefix_sum(fenwick, self._HASH_KEY_SPACE - 1)
+      cum = _fenwick_prefix_sum(fenwick, k)
+      alphabet = max(2, int(np.count_nonzero(counts)) + 1)
+    else:
+      other = float(self._cat_other[slot])
+      total = other + float(sum(counts.values()))
+      cum = float(sum(c for key, c in counts.items() if key <= k))
+      alphabet = max(2, len(counts) + 1)
+    cdf = (cum + self.alpha) / (total + self.alpha * alphabet) if total >= 0.0 else 0.5
+    return float(np.clip(cdf, 1e-12, 1.0 - 1e-12))
+
+  def get_cdf_vector(self, features: Dict[str, float]) -> np.ndarray:
+    self._ensure_init(features)
+    if self._feature_names is None or self._kind is None or self._num_slot is None or self._cat_slot is None or self._cat_mode is None:
+      raise RuntimeError("IndepMarginalProduct not initialized")
+    out = np.zeros(len(self._feature_names), dtype=np.float64)
+    for i, name in enumerate(self._feature_names):
+      x = float(features.get(name, 0.0))
+      if self._kind[i] == "num":
+        slot = self._num_slot[i]
+        if slot >= 0:
+          out[i] = self._cdf_numeric_slot(slot, x)
+        else:
+          out[i] = 0.5
+      else:
+        slot = self._cat_slot[i]
+        mode = self._cat_mode[i] or "hash"
+        if slot >= 0:
+          out[i] = self._cdf_cat_slot(slot, mode, x)
+        else:
+          out[i] = 0.5
+    return out
+
+  def get_excess_vector(self, features: Dict[str, float]) -> np.ndarray:
+    """Per-feature -log P(x_i); sum_i equals -log P(X) under independence."""
+    self._ensure_init(features)
+    if self._feature_names is None or self._kind is None or self._num_slot is None or self._cat_slot is None or self._cat_mode is None:
+      raise RuntimeError("IndepMarginalProduct not initialized")
+    out = np.zeros(len(self._feature_names), dtype=np.float64)
+    for i, name in enumerate(self._feature_names):
+      x = float(features.get(name, 0.0))
+      if self._kind[i] == "num":
+        slot = self._num_slot[i]
+        if slot >= 0:
+          p = self._prob_numeric_slot(slot, x)
+          out[i] = -math.log(p)
+      else:
+        slot = self._cat_slot[i]
+        mode = self._cat_mode[i] or "hash"
+        if slot >= 0:
+          p = self._prob_cat_slot(slot, mode, x)
+          out[i] = -math.log(p)
+    return out
+
+  def _learn_numeric_slot(self, slot: int, x: float) -> None:
+    self._num_scale[slot] *= self.decay
+    self._maybe_rescale_numeric(slot)
+    scale = self._num_scale[slot]
+    idx = self._bin_numeric(x)
+    delta = 1.0 / max(scale, 1e-12)
+    self._num_counts[slot][idx] += delta
+    self._num_fenwick[slot].add(idx, delta)
+
+  def _learn_cat_slot(self, slot: int, mode: str, x: float) -> None:
+    self._cat_scale[slot] *= self.decay
+    self._maybe_rescale_categorical(slot)
+    scale = self._cat_scale[slot]
+    k = self._cat_key(mode, x)
+    delta = 1.0 / max(scale, 1e-12)
+    counts = self._cat_counts[slot]
+    if isinstance(counts, np.ndarray):
+      counts[k] += delta
+      self._cat_hash_fenwick[slot].add(k, delta)
+    else:
+      if k in counts:
+        counts[k] = float(counts[k]) + delta
+        return
+      if len(counts) < self.max_categories:
+        counts[k] = delta
+        return
+      self._cat_other[slot] = float(self._cat_other[slot]) + delta
+
+  def _ensure_init(self, features: Dict[str, float]) -> None:
+    if self._feature_names is None:
+      self._init_from_features(features)
+
+  def score_only_raw(self, features: Dict[str, float]) -> float:
+    self._ensure_init(features)
+    if self._feature_names is None or self._kind is None or self._num_slot is None or self._cat_slot is None or self._cat_mode is None:
+      raise RuntimeError("IndepMarginalProduct not initialized")
+    probs: List[float] = []
+    for i, name in enumerate(self._feature_names):
+      x = float(features.get(name, 0.0))
+      if self._kind[i] == "num":
+        slot = self._num_slot[i]
+        if slot >= 0:
+          probs.append(self._prob_numeric_slot(slot, x))
+      else:
+        slot = self._cat_slot[i]
+        mode = self._cat_mode[i] or "hash"
+        if slot >= 0:
+          probs.append(self._prob_cat_slot(slot, mode, x))
+    if not probs:
+      return 0.0
+    log_sum = math.fsum(math.log(p) for p in probs)
+    n = len(probs)
+    log_mean = log_sum / float(n)
+    # 1 - exp(log_mean) = 1 - (prod p_i)^(1/n); -expm1 is stable for log_mean near 0
+    raw = float(-math.expm1(log_mean)) if log_mean < 0.0 else 0.0
+    return float(np.clip(raw, 0.0, 1.0))
+
+  def learn_only(self, features: Dict[str, float]) -> None:
+    self._ensure_init(features)
+    if self._feature_names is None or self._kind is None or self._num_slot is None or self._cat_slot is None or self._cat_mode is None:
+      raise RuntimeError("IndepMarginalProduct not initialized")
+    for i, name in enumerate(self._feature_names):
+      x = float(features.get(name, 0.0))
+      if self._kind[i] == "num":
+        slot = self._num_slot[i]
+        if slot >= 0:
+          self._learn_numeric_slot(slot, x)
+      else:
+        slot = self._cat_slot[i]
+        mode = self._cat_mode[i] or "hash"
+        if slot >= 0:
+          self._learn_cat_slot(slot, mode, x)
+
+  def score_and_learn_raw(self, features: Dict[str, float]) -> float:
+    self._ensure_init(features)
+    raw = self.score_only_raw(features)
+    self.learn_only(features)
+    return float(np.clip(raw, 0.0, 1.0))
+
+  def score_only(self, features: Dict[str, float]) -> tuple[float, float]:
+    raw = self.score_only_raw(features)
+    r = float(np.clip(raw, 0.0, 1.0))
+    return (r, r)
+
+  def score_and_learn(self, features: Dict[str, float]) -> tuple[float, float]:
+    raw = self.score_and_learn_raw(features)
+    r = float(np.clip(raw, 0.0, 1.0))
+    return (r, r)
+
+  def get_state(self) -> Dict[str, Any]:
+    if self._feature_names is None or self._kind is None or self._cat_mode is None or self._num_slot is None or self._cat_slot is None:
+      raise RuntimeError("IndepMarginalProduct not initialized; cannot save empty state")
+    return {
+      "feature_names": list(self._feature_names),
+      "bins": self.bins,
+      "alpha": self.alpha,
+      "decay": self.decay,
+      "max_categories": self.max_categories,
+      "kind": list(self._kind),
+      "cat_mode": list(self._cat_mode),
+      "num_counts": [c for c in self._num_counts],
+      "num_scale": list(self._num_scale),
+      "cat_counts": [
+        d.tolist() if isinstance(d, np.ndarray) else dict(d) for d in self._cat_counts
+      ],
+      "cat_other": list(self._cat_other),
+      "cat_scale": list(self._cat_scale),
+    }
+
+  def set_state(self, state: Dict[str, Any]) -> None:
+    self.bins = int(state.get("bins", self.bins))
+    self.alpha = float(state.get("alpha", self.alpha))
+    self.decay = float(state.get("decay", self.decay))
+    self.max_categories = int(state.get("max_categories", self.max_categories))
+    self._feature_names = list(state["feature_names"])
+    self._kind = list(state["kind"])
+    self._cat_mode = list(state["cat_mode"])
+
+    self._num_counts = [np.asarray(c, dtype=np.float64) for c in state.get("num_counts", [])]
+    self._num_fenwick = [FenwickTree(len(c)) for c in self._num_counts]
+    for i, c in enumerate(self._num_counts):
+      self._num_fenwick[i].init(list(c))
+    self._num_scale = [float(s) for s in state.get("num_scale", [])]
+
+    raw_cat = state.get("cat_counts", [])
+    self._cat_counts = []
+    self._cat_hash_fenwick = []
+    for i, d in enumerate(raw_cat):
+      if isinstance(d, list) and len(d) == self._HASH_KEY_SPACE:
+        arr = np.asarray(d, dtype=np.float64)
+        self._cat_counts.append(arr)
+        fw = FenwickTree(self._HASH_KEY_SPACE)
+        fw.init(list(arr))
+        self._cat_hash_fenwick.append(fw)
+      else:
+        self._cat_counts.append(dict(d))
+        self._cat_hash_fenwick.append(None)
+    self._cat_other = [float(v) for v in state.get("cat_other", [])]
+    self._cat_scale = [float(s) for s in state.get("cat_scale", [])]
+
+    num_slot: List[int] = [-1] * len(self._feature_names)
+    cat_slot: List[int] = [-1] * len(self._feature_names)
+    n_num = 0
+    n_cat = 0
+    for i, k in enumerate(self._kind):
+      if k == "num":
+        num_slot[i] = n_num
+        n_num += 1
+      else:
+        cat_slot[i] = n_cat
+        n_cat += 1
+    self._num_slot = num_slot
+    self._cat_slot = cat_slot
+
+
 class OnlineGaussCop(_BothScoresMixin):
   """
   Online Gaussian copula anomaly detector. Composes OnlineFreq1D for marginals,
@@ -2484,6 +2912,15 @@ class OnlineAnomalyDetector:
         model_device=model_device,
         seed=seed,
       )
+    elif algo == "indep_marginal":
+      self.impl = OnlineIndepMarginalProduct(
+        bins=freq1d_bins,
+        alpha=freq1d_alpha,
+        decay=freq1d_decay,
+        max_categories=freq1d_max_categories,
+        model_device=model_device,
+        seed=seed,
+      )
     elif algo == "gausscop":
       self.impl = OnlineGaussCop(
         bins=gausscop_bins,
@@ -2528,7 +2965,10 @@ class OnlineAnomalyDetector:
         seed=seed,
       )
     else:
-      raise ValueError("Unknown algorithm: %s. Choose from: halfspacetrees, loda_ema, kitnet, memstream, zscore, knn, freq1d, gausscop, copulatree, latentcluster" % algorithm)
+      raise ValueError(
+        "Unknown algorithm: %s. Choose from: halfspacetrees, loda_ema, kitnet, memstream, zscore, knn, freq1d, indep_marginal, gausscop, copulatree, latentcluster"
+        % algorithm
+      )
     self.algorithm = self.impl.algorithm
 
   def score_only(self, features: Dict[str, float]) -> tuple[float, float]:
@@ -2536,6 +2976,8 @@ class OnlineAnomalyDetector:
     raw = self.impl.score_only_raw(features)
     if self.algorithm == "halfspacetrees":
       scaled = float(raw)
+    elif self.algorithm == "indep_marginal":
+      scaled = float(np.clip(raw, 0.0, 1.0))
     elif self.algorithm in ("gausscop", "copulatree", "latentcluster"):
       scaled = float(max(0.0, raw) / (1.0 + max(0.0, raw)))
     else:
@@ -2547,6 +2989,8 @@ class OnlineAnomalyDetector:
     raw = self.impl.score_and_learn_raw(features)
     if self.algorithm == "halfspacetrees":
       scaled = float(raw)
+    elif self.algorithm == "indep_marginal":
+      scaled = float(np.clip(raw, 0.0, 1.0))
     elif self.algorithm in ("gausscop", "copulatree", "latentcluster"):
       scaled = float(max(0.0, raw) / (1.0 + max(0.0, raw)))
     else:

@@ -285,7 +285,7 @@ def main():
   ap.add_argument(
     "--algorithm",
     default="kitnet",
-    choices=["kitnet", "memstream", "loda_ema", "halfspacetrees", "zscore", "knn", "freq1d", "gausscop", "copulatree", "latentcluster"],
+    choices=["kitnet", "memstream", "loda_ema", "halfspacetrees", "zscore", "knn", "freq1d", "indep_marginal", "gausscop", "copulatree", "latentcluster"],
     help="Detector algorithm (default: kitnet).",
   )
   g = ap.add_mutually_exclusive_group()

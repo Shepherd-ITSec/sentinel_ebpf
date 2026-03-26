@@ -61,7 +61,7 @@ detector:
   eventDumpPath: "/var/log/sentinel-ebpf/events.jsonl"   # Path to dump all incoming events to file (empty to disable, e.g., /var/log/sentinel-ebpf/events.jsonl)
   # Model configurations
   model:
-    algorithm: "loda_ema"  # halfspacetrees | loda | loda_ema | memstream | kitnet | zscore | freq1d | gausscop | copulatree | latentcluster
+    algorithm: "indep_marginal"  # halfspacetrees | loda | loda_ema | memstream | kitnet | zscore | freq1d | indep_marginal | gausscop | copulatree | latentcluster
     threshold: 0.98  # Anomaly score threshold
     score_mode: "percentile"  # raw | scaled | percentile
     percentile:
@@ -168,6 +168,7 @@ ui:
 config:
   logLevel: info
   metrics:
+    # Probe serves /metrics only when ui.enabled is true (Service exposes it then too). Health is always on.
     enabled: true
     port: 9102
   health:

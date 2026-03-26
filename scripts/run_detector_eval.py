@@ -135,7 +135,7 @@ def _count_labels(path: Path) -> int:
 
 def _run_all_matrix() -> List[tuple]:
   """Yield (run_id, label_mode, env_overrides). 14 runs (evil_only only)."""
-  algorithms = ["kitnet", "halfspacetrees", "loda_ema", "memstream", "zscore", "knn", "freq1d", "gausscop", "copulatree", "latentcluster"]
+  algorithms = ["kitnet", "halfspacetrees", "loda_ema", "memstream", "zscore", "knn", "freq1d", "indep_marginal", "gausscop", "copulatree", "latentcluster"]
   thresholds = [0.7, 0.5, 0.3]
   label_modes = ["evil_only"]
   runs: List[tuple] = []

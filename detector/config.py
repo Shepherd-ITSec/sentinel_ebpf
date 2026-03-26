@@ -8,7 +8,7 @@ class DetectorConfig:
   events_http_port: int = 50052  # 0 to disable; serves GET /recent_events for UI log tail in gRPC mode
   recent_events_buffer_size: int = 10000  # Size of recent events ring buffer for UI (default: 10000)
   # River model configuration
-  model_algorithm: str = "freq1d"  # halfspacetrees | loda_ema | kitnet | memstream | zscore | knn | freq1d | gausscop | copulatree | latentcluster
+  model_algorithm: str = "freq1d"  # halfspacetrees | loda_ema | kitnet | memstream | zscore | knn | freq1d | indep_marginal | gausscop | copulatree | latentcluster
   threshold: float = 0.7  # Anomaly score threshold (0-1). Lower (e.g. 0.3) to flag more events when scores are mostly low.
   hst_n_trees: int = 25
   hst_height: int = 15

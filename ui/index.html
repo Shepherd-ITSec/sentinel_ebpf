@@ -988,6 +988,19 @@
       let lastLogsData = null;
       let lastWatchData = null;
       let lastLogsSignature = "";
+      /** Flat detector JSON (recent_events) uses comm/path/pid/…; legacy EVT1 rows used entry.data[] slots. */
+      function extractEventRowFields(entry) {
+        const d = Array.isArray(entry?.data) ? entry.data : [];
+        const attrs = entry?.attributes || {};
+        return {
+          syscall: entry?.event_name ?? (d.length > 0 ? d[0] : ""),
+          comm: (d.length > 2 ? d[2] : "") || (attrs.comm != null ? String(attrs.comm) : "") || (entry?.comm != null ? String(entry.comm) : ""),
+          pid: (d.length > 3 ? d[3] : "") || (entry?.pid != null ? String(entry.pid) : ""),
+          tid: (d.length > 4 ? d[4] : "") || (entry?.tid != null ? String(entry.tid) : ""),
+          uid: (d.length > 5 ? d[5] : "") || (entry?.uid != null ? String(entry.uid) : ""),
+          path: (d.length > 8 ? d[8] : "") || (attrs.path != null ? String(attrs.path) : "") || (attrs.filename != null ? String(attrs.filename) : "") || (entry?.path != null ? String(entry.path) : ""),
+        };
+      }
       function renderLogs(data) {
         lastLogsData = data;
         const el = document.getElementById("logs");
@@ -1001,23 +1014,13 @@
         if (logsSig === lastLogsSignature) return;
         const tableWrap = el.querySelector(".table-wrap");
         const savedScrollTop = tableWrap ? tableWrap.scrollTop : 0;
-        function extractEventFields(entry) {
-          const d = Array.isArray(entry?.data) ? entry.data : [];
-          return {
-            syscall: entry.event_name ?? "",
-            comm: d.length > 2 ? d[2] : "",
-            pid: d.length > 3 ? d[3] : "",
-            tid: d.length > 4 ? d[4] : "",
-            uid: d.length > 5 ? d[5] : "",
-            path: d.length > 8 ? d[8] : "",
-          };
-        }
         function getCell(entry, key) {
-          const fields = extractEventFields(entry);
+          const fields = extractEventRowFields(entry);
           if (key === "ts_unix_nano") {
             return formatTimestampNs(entry.ts_unix_nano);
           }
           if (key === "event_name") return fields.syscall;
+          if (key === "event_id") return entry.event_id != null ? String(entry.event_id) : "";
           if (key === "comm") return fields.comm;
           if (key === "path") return fields.path;
           if (key === "pid_tid_uid") return `${fields.pid}/${fields.tid}/${fields.uid}`;
@@ -1047,6 +1050,7 @@
           { key: "event_group", label: "Group" },
           { key: "event_name", label: "Syscall" },
           { key: "hostname", label: "Host" },
+          { key: "event_id", label: "Event ID" },
           { key: "comm", label: "Comm" },
           { key: "path", label: "Path" },
           { key: "pid_tid_uid", label: "PID/TID/UID" },
@@ -1082,7 +1086,7 @@
           if (entries.length === 0) {
             table += "<p class=\"logs-message\">No entries.</p>";
           } else {
-            const colWidths = ["10%", "7%", "8%", "8%", "7%", "18%", "10%", "6%", "6%", "6%", "14%"];
+            const colWidths = ["9%", "6%", "7%", "7%", "6%", "9%", "12%", "14%", "6%", "6%", "6%", "12%"];
             table += "<div class=\"table-wrap\"><table class=\"logs-table\"><colgroup>";
             colWidths.forEach(function(w) { table += "<col style=\"width:" + w + "\">"; });
             table += "</colgroup><thead><tr>";
@@ -1117,16 +1121,7 @@
       const seenEventKeys = new Set();
       let lastScanCount = 0;
       function getWatchEventFields(entry) {
-        const d = Array.isArray(entry?.data) ? entry.data : [];
-        const attrs = entry?.attributes || {};
-        return {
-          syscall: entry?.event_name ?? "",
-          comm: (d.length > 2 ? d[2] : "") || attrs.comm || entry?.comm || "",
-          pid: d.length > 3 ? d[3] : "",
-          tid: d.length > 4 ? d[4] : "",
-          uid: d.length > 5 ? d[5] : "",
-          path: (d.length > 8 ? d[8] : "") || attrs.path || attrs.filename || entry?.path || "",
-        };
+        return extractEventRowFields(entry);
       }
       function getWatchEventKey(entry) {
         const f = getWatchEventFields(entry);
@@ -1152,9 +1147,10 @@
             else if ((field === "event" || field === "event_name" || field === "syscall") && eventName.includes(value)) match = true;
             else if (field === "hostname" && hostname.includes(value)) match = true;
             else if (field === "type" && eventType.includes(value)) match = true;
+            else if ((field === "event_id" || field === "id") && String(entry.event_id || "").toLowerCase().includes(value)) match = true;
             if (!match) return false;
           } else if (part.length > 0) {
-            const haystack = [eventName, comm, path, hostname, eventType, (entry.data || []).join(" ")].join(" ").toLowerCase();
+            const haystack = [eventName, comm, path, hostname, eventType, String(entry.event_id || ""), (entry.data || []).join(" ")].join(" ").toLowerCase();
             if (!haystack.includes(part.toLowerCase())) return false;
           }
         }
@@ -1164,6 +1160,7 @@
         const fields = getWatchEventFields(entry);
         if (key === "ts_unix_nano") return formatTimestampNs(entry.ts_unix_nano);
         if (key === "event_name") return fields.syscall;
+        if (key === "event_id") return entry.event_id != null ? String(entry.event_id) : "";
         if (key === "comm") return fields.comm;
         if (key === "path") return fields.path;
         if (key === "pid_tid_uid") return `${fields.pid}/${fields.tid}/${fields.uid}`;
@@ -1176,6 +1173,7 @@
         { key: "event_group", label: "Group" },
         { key: "event_name", label: "Syscall" },
         { key: "hostname", label: "Host" },
+        { key: "event_id", label: "Event ID" },
         { key: "comm", label: "Comm" },
         { key: "path", label: "Path" },
         { key: "pid_tid_uid", label: "PID/TID/UID" },
@@ -1213,7 +1211,7 @@
           });
           return row + "</tr>";
         });
-        const colWidths = ["10%", "7%", "8%", "8%", "7%", "22%", "12%", "6%", "6%", "14%"];
+        const colWidths = ["9%", "6%", "7%", "7%", "6%", "9%", "13%", "16%", "6%", "6%", "11%"];
         el.innerHTML = "<div class=\"table-wrap\"><table class=\"logs-table\"><colgroup>" +
           colWidths.map(w => "<col style=\"width:" + w + "\">").join("") +
           "</colgroup><thead><tr>" +
@@ -1794,13 +1792,14 @@
           if (entries.length === 0) return "<div class=\"metrics-empty\">No anomalies detected</div>";
           let html = "";
           entries.slice().reverse().forEach(entry => {
-            const d = Array.isArray(entry.data) ? entry.data : [];
+            const f = extractEventRowFields(entry);
             const ts = formatTimestampNs(entry.ts_unix_nano);
-            const syscall = entry.event_name || (d.length > 0 ? d[0] : "");
-            const comm = d.length > 2 ? d[2] : "";
-            const pid = d.length > 3 ? d[3] : "";
-            const tid = d.length > 4 ? d[4] : "";
-            const path = d.length > 8 ? d[8] : "";
+            const syscall = f.syscall || "";
+            const comm = f.comm || "";
+            const pid = f.pid || "";
+            const tid = f.tid || "";
+            const path = f.path || "";
+            const eid = entry.event_id != null ? String(entry.event_id) : "";
             const host = entry.hostname || "";
             const pod = entry.pod_name || "";
             const ns = entry.namespace || "";
@@ -1812,6 +1811,7 @@
             html += `<div><strong>${escapeHtml(ts)}</strong> <span class="anomaly-score">${escapeHtml(scoreStr)}</span>`;
             if (syscall) html += ` <span style="font-weight:600;">${escapeHtml(syscall)}</span>`;
             if (host) html += ` · ${escapeHtml(host)}`;
+            if (eid) html += ` · <span style="font-size:0.75rem;">id=${escapeHtml(eid)}</span>`;
             html += `</div>`;
             if (reason) html += `<div style="color: var(--text-muted); font-size: 0.75rem; margin-top: 2px;">${escapeHtml(reason)}</div>`;
             const details = [comm && `comm=${escapeHtml(comm)}`, (pid || tid) && `pid/tid=${escapeHtml(pid)}/${escapeHtml(tid)}`, path && `path=${escapeHtml(path)}`, pod && `pod=${escapeHtml(pod)}`, ns && `ns=${escapeHtml(ns)}`].filter(Boolean).join(" ");

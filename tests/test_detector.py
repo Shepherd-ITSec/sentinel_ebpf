@@ -194,7 +194,8 @@ class TestDetector:
     assert resp.event_id == "view-test"
     assert captured["feature_view"] == "memstream"
 
-  def test_freq1d_uses_frequency_feature_view(self, monkeypatch):
+  @pytest.mark.parametrize("model_algorithm", ("freq1d", "indep_marginal"))
+  def test_freq_models_use_frequency_feature_view(self, monkeypatch, model_algorithm):
     captured = {}
 
     def fake_extract(evt, feature_view="default"):
@@ -202,10 +203,10 @@ class TestDetector:
       return {"f0": 0.0, "f1": 1.0}
 
     monkeypatch.setattr(server_mod, "extract_feature_dict", fake_extract)
-    cfg = DetectorConfig(model_algorithm="freq1d", score_mode="scaled")
+    cfg = DetectorConfig(model_algorithm=model_algorithm, score_mode="scaled")
     detector = RuleBasedDetector(cfg)
     evt = events_pb2.EventEnvelope(
-      event_id="freq-view-test",
+      event_id=f"{model_algorithm}-view-test",
       event_name="openat",
       event_group="file",
       ts_unix_nano=1234567890000000000,
@@ -220,7 +221,7 @@ class TestDetector:
     )
 
     resp = detector._score_event(evt)
-    assert resp.event_id == "freq-view-test"
+    assert resp.event_id == f"{model_algorithm}-view-test"
     assert captured["feature_view"] == "frequency"
 
   @pytest.mark.asyncio

@@ -11,7 +11,7 @@ data:
     health:
       port: {{ .Values.config.health.port }}
     metrics:
-      enabled: {{ .Values.config.metrics.enabled }}
+      enabled: {{ and .Values.config.metrics.enabled .Values.ui.enabled }}
       port: {{ .Values.config.metrics.port }}
     grpc:
       endpoint: {{ .Values.probe.grpc.endpoint | default (printf "%s-detector:%d" (include "sentinel-ebpf.fullname" .) (int .Values.detector.service.port)) | quote }}
