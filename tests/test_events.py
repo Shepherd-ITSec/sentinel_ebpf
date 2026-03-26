@@ -1,9 +1,8 @@
 """Tests for EventEnvelope creation and serialization."""
 import json
 
-import pytest
-
 import events_pb2
+from event_envelope_codec import envelope_to_dict
 
 
 class TestEventEnvelope:
@@ -20,23 +19,29 @@ class TestEventEnvelope:
     assert evt.event_name == "openat"
     assert evt.event_group == ""
     assert evt.ts_unix_nano == 1234567890000000000
-    assert len(evt.data) == 0
+    assert evt.syscall_nr == 0
+    assert evt.comm == ""
 
-  def test_create_event_with_data_vector(self):
+  def test_create_event_with_syscall_fields(self):
     evt = events_pb2.EventEnvelope(
       event_id="test-123",
       event_name="openat",
       event_group="",
       ts_unix_nano=1234567890000000000,
-      data=["openat", "2", "bash", "1234", "5678", "1000", "-100", "2", "/tmp/test.txt", "2"],
+      syscall_nr=2,
+      comm="bash",
+      pid="1234",
+      tid="5678",
+      uid="1000",
+      arg0="-100",
+      arg1="2",
+      path="/tmp/test.txt",
     )
-    assert len(evt.data) == 10
-    assert evt.data[0] == "openat"
-    assert evt.data[1] == "2"
-    assert evt.data[2] == "bash"
-    assert evt.data[3] == "1234"
-    assert evt.data[4] == "5678"
-    assert evt.data[5] == "1000"
+    assert evt.syscall_nr == 2
+    assert evt.comm == "bash"
+    assert evt.pid == "1234"
+    assert evt.tid == "5678"
+    assert evt.uid == "1000"
 
   def test_create_event_with_metadata(self):
     evt = events_pb2.EventEnvelope(
@@ -48,7 +53,14 @@ class TestEventEnvelope:
       event_name="openat",
       event_group="",
       ts_unix_nano=1234567890000000000,
-      data=["openat", "2", "cat", "5678", "5678", "0", "-100", "2", "/etc/hosts", "2"],
+      syscall_nr=2,
+      comm="cat",
+      pid="5678",
+      tid="5678",
+      uid="0",
+      arg0="-100",
+      arg1="2",
+      path="/etc/hosts",
     )
     assert evt.hostname == "node-1"
     assert evt.pod_name == "test-pod"
@@ -62,7 +74,14 @@ class TestEventEnvelope:
       event_name="openat",
       event_group="",
       ts_unix_nano=1234567890000000000,
-      data=["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
+      syscall_nr=2,
+      comm="bash",
+      pid="1",
+      tid="2",
+      uid="1000",
+      arg0="-100",
+      arg1="2",
+      path="/tmp/test",
       attributes={"env": "prod", "team": "security"},
     )
     assert evt.attributes["env"] == "prod"
@@ -79,45 +98,44 @@ class TestEventEnvelope:
       event_name="openat",
       event_group="",
       ts_unix_nano=1234567890000000000,
-      data=["openat", "2", "bash", "1234", "5678", "1000", "-100", "2", "/tmp/test.txt", "2"],
+      syscall_nr=2,
+      comm="bash",
+      pid="1234",
+      tid="5678",
+      uid="1000",
+      arg0="-100",
+      arg1="2",
+      path="/tmp/test.txt",
     )
 
-    # Simulate FileSink serialization
-    payload = {
-      "event_id": evt.event_id,
-      "ts_unix_nano": evt.ts_unix_nano,
-      "hostname": evt.hostname,
-      "pod": evt.pod_name,
-      "namespace": evt.namespace,
-      "container_id": evt.container_id,
-      "event_name": evt.event_name,
-      "event_group": evt.event_group,
-      "data": list(evt.data),
-      "attributes": dict(evt.attributes),
-    }
-
+    payload = envelope_to_dict(evt)
     json_str = json.dumps(payload, separators=(",", ":"))
     parsed = json.loads(json_str)
 
     assert parsed["event_id"] == "test-123"
     assert parsed["event_name"] == "openat"
     assert parsed["event_group"] == ""
-    assert parsed["data"] == ["openat", "2", "bash", "1234", "5678", "1000", "-100", "2", "/tmp/test.txt", "2"]
+    assert parsed["syscall_nr"] == 2
+    assert parsed["path"] == "/tmp/test.txt"
 
   def test_generic_event_format(self):
-    """Test generic syscall event format (ordered vector)."""
+    """Syscall fields match probe layout."""
     evt = events_pb2.EventEnvelope(
       event_id="open-123",
       event_name="openat",
       event_group="",
       ts_unix_nano=1234567890000000000,
-      data=["openat", "2", "cat", "9999", "9999", "1000", "-100", "2", "/etc/passwd", "2"],
+      syscall_nr=2,
+      comm="cat",
+      pid="9999",
+      tid="9999",
+      uid="1000",
+      arg0="-100",
+      arg1="2",
+      path="/etc/passwd",
     )
 
-    # Verify order: [event_name, event_id, comm, pid, tid, uid, arg0, arg1, path, flags]
-    assert evt.data[0] == "openat"
-    assert evt.data[1] == "2"
-    assert evt.data[2] == "cat"  # comm
-    assert evt.data[3] == "9999"  # pid
-    assert evt.data[4] == "9999"  # tid
-    assert evt.data[5] == "1000"  # uid
+    assert evt.comm == "cat"
+    assert evt.pid == "9999"
+    assert evt.tid == "9999"
+    assert evt.uid == "1000"

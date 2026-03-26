@@ -7,6 +7,44 @@ from detector.features import (
 )
 
 
+def _evt(
+  *,
+  event_id="e",
+  event_name="openat",
+  event_group="",
+  ts_unix_nano=1_700_000_000_000_000_000,
+  syscall_nr=2,
+  comm="cat",
+  pid="1",
+  tid="1",
+  uid="0",
+  arg0="0",
+  arg1="0",
+  path="",
+  hostname="",
+  attributes=None,
+):
+  e = events_pb2.EventEnvelope(
+    event_id=event_id,
+    event_name=event_name,
+    event_group=event_group,
+    ts_unix_nano=ts_unix_nano,
+    syscall_nr=syscall_nr,
+    comm=comm,
+    pid=pid,
+    tid=tid,
+    uid=uid,
+    arg0=arg0,
+    arg1=arg1,
+    path=path,
+    hostname=hostname,
+  )
+  if attributes:
+    for k, v in attributes.items():
+      e.attributes[k] = v
+  return e
+
+
 def _count_prefix(values: dict[str, float], prefix: str) -> int:
   return sum(1 for name in values if name.startswith(prefix))
 
@@ -16,49 +54,55 @@ def _count_path_depth_banks(values: dict[str, float]) -> int:
 
 
 def test_extract_feature_dict_returns_expected_shape():
-  evt = events_pb2.EventEnvelope(
+  evt = _evt(
     event_id="feat-1",
-    event_name="openat",
-    event_group="",
-    ts_unix_nano=1_700_000_000_000_000_000,
-    data=["openat", "2", "cat", "123", "124", "1000", "-100", "2", "/etc/passwd", "2"],
+    comm="cat",
+    pid="123",
+    tid="124",
+    uid="1000",
+    arg0="-100",
+    arg1="2",
+    path="/etc/passwd",
   )
   values = extract_feature_dict(evt)
-  event_feature_count = _count_prefix(values, "event_name_")
+  assert _count_prefix(values, "event_name_") == 0
   assert _count_prefix(values, "comm_bucket_") == 64
   assert _count_prefix(values, "hostname_bucket_") == 32
-  assert _count_prefix(values, "mount_ns_bucket_") == 32
   assert _count_path_depth_banks(values) == 256
-  # Generic numeric features + event one-hot + fixed bucket banks + shared online stats.
-  assert len(values) == 15 + event_feature_count + 64 + 32 + 32 + 256 + 5 * 4
+  assert len(values) == 15 + 64 + 32 + 256 + 5 * 4
   vec = np.array(list(values.values()), dtype=np.float32)
   assert vec.shape == (len(values),)
   assert np.isfinite(vec).all()
 
 
 def test_extract_feature_dict_handles_bad_and_negative_values():
-  evt = events_pb2.EventEnvelope(
+  evt = _evt(
     event_id="feat-2",
-    event_name="openat",
-    event_group="",
-    ts_unix_nano=1_700_000_000_000_000_000,
-    data=["openat", "2", "bash", "bad-pid", "-1", "bad-uid", "-9", "nope", "/tmp/test", "x"],
+    comm="bash",
+    pid="bad-pid",
+    tid="-1",
+    uid="bad-uid",
+    arg0="-9",
+    arg1="nope",
+    path="/tmp/test",
   )
   values = extract_feature_dict(evt)
   assert all(np.isfinite(v) for v in values.values())
-  # pid/tid/uid should be clamped to valid non-negative domain.
   assert values["pid_norm"] == 0.0
   assert values["tid_norm"] == 0.0
   assert values["uid_norm"] == 0.0
 
 
 def test_extract_feature_dict_has_stable_features():
-  evt = events_pb2.EventEnvelope(
+  evt = _evt(
     event_id="feat-3",
-    event_name="openat",
-    event_group="",
-    ts_unix_nano=1_700_000_000_000_000_000,
-    data=["openat", "2", "ls", "10", "10", "0", "-100", "64", "/bin/ls", "64"],
+    comm="ls",
+    pid="10",
+    tid="10",
+    uid="0",
+    arg0="-100",
+    arg1="64",
+    path="/bin/ls",
   )
   values = extract_feature_dict(evt)
   general_features = {
@@ -77,7 +121,6 @@ def test_extract_feature_dict_has_stable_features():
     "path_depth_norm",
     "return_success",
     "return_errno_norm",
-    "event_name_openat",
   }
   for w in ("01", "1", "5", "30", "120"):
     general_features.add(f"proc_rate_{w}")
@@ -85,71 +128,60 @@ def test_extract_feature_dict_has_stable_features():
     general_features.add(f"proc_interarrival_{w}")
     general_features.add(f"proc_interarrival_std_{w}")
   assert general_features.issubset(set(values.keys()))
-  assert "event_hash" not in values
   assert "comm_hash" not in values
   assert "path_hash" not in values
   assert "event_id_norm" not in values
   assert "flags_hash" not in values
   assert "path_prefix_hash" not in values
-  assert "mount_ns_hash" not in values
   assert "hostname_hash" not in values
-  assert _count_prefix(values, "event_name_") >= 1
+  assert _count_prefix(values, "event_name_") == 0
   assert _count_prefix(values, "comm_bucket_") == 64
   assert _count_prefix(values, "hostname_bucket_") == 32
-  assert _count_prefix(values, "mount_ns_bucket_") == 32
   assert _count_path_depth_banks(values) == 256
 
 
 def test_extract_feature_dict_weekday_and_week_of_month():
-  """weekday_sin/cos and week_of_month_norm (1-4 quarters) from ts_unix_nano."""
-  # 2023-11-14 22:13:20 UTC = Tuesday (weekday=1), day 14 = week 2 of month
-  evt = events_pb2.EventEnvelope(
+  evt = _evt(
     event_id="feat-time",
-    event_name="openat",
-    event_group="",
-    ts_unix_nano=1_700_000_000_000_000_000,
-    data=["openat", "2", "cat", "1", "1", "0", "0", "0", "/tmp/x", ""],
+    path="/tmp/x",
   )
   values = extract_feature_dict(evt)
   assert "weekday_sin" in values
   assert "weekday_cos" in values
   assert "week_of_month_norm" in values
   assert 0.0 <= values["week_of_month_norm"] <= 1.0
-  # 2023-11-14 is Tuesday (weekday=1): angle = 2π*(1/7)
   expect_angle = 2.0 * np.pi * (1.0 / 7.0)
   assert abs(values["weekday_sin"] - float(np.sin(expect_angle))) < 0.01
   assert abs(values["weekday_cos"] - float(np.cos(expect_angle))) < 0.01
-  # day 14 -> week 2 -> (2-1)/3 = 1/3
   assert abs(values["week_of_month_norm"] - 1.0 / 3.0) < 0.01
 
 
 def test_extract_feature_dict_path_and_return_attributes():
-  # Path depth: /etc/passwd -> etc, passwd -> depth 2; /tmp -> depth 1
-  evt = events_pb2.EventEnvelope(
+  evt = _evt(
     event_id="feat-path",
-    event_name="openat",
-    event_group="",
+    event_group="file",
+    syscall_nr=257,
     hostname="node-1",
-    ts_unix_nano=1_700_000_000_000_000_000,
-    data=["openat", "257", "cat", "1", "1", "0", "-100", "0", "/etc/passwd", "O_RDONLY"],
-    attributes={"return_value": "0", "mount_namespace": "4026531840"},
+    arg0="-100",
+    path="/etc/passwd",
+    attributes={"return_value": "0"},
   )
   values = extract_feature_dict(evt)
-  assert values["path_depth_norm"] == 2.0 / 20.0  # 2 components
-  assert values["event_name_openat"] == 1.0
+  assert values["path_depth_norm"] == 2.0 / 20.0
+  assert values["file_event_name_openat"] == 1.0
   assert sum(v for k, v in values.items() if k.startswith("hostname_bucket_")) == 1.0
-  assert sum(v for k, v in values.items() if k.startswith("mount_ns_bucket_")) == 1.0
   assert sum(v for k, v in values.items() if k.startswith("path_tok_d")) >= 1.0
   assert values["return_success"] == 1.0
   assert values["return_errno_norm"] >= 0.0
-  # Failed syscall
-  evt_fail = events_pb2.EventEnvelope(
+  evt_fail = _evt(
     event_id="feat-fail",
     event_name="connect",
-    event_group="",
-    ts_unix_nano=1_700_000_000_000_000_000,
-    data=["connect", "42", "proc", "1", "1", "0", "3", "16", "", ""],
-    attributes={"return_value": "-114", "mount_namespace": "4026531840"},
+    event_group="network",
+    syscall_nr=42,
+    comm="proc",
+    arg0="3",
+    arg1="16",
+    attributes={"return_value": "-114"},
   )
   values_fail = extract_feature_dict(evt_fail)
   assert values_fail["return_success"] == 0.0
@@ -157,19 +189,12 @@ def test_extract_feature_dict_path_and_return_attributes():
 
 
 def test_extract_feature_dict_adds_file_features_when_event_type_file():
-  base_evt = events_pb2.EventEnvelope(
-    event_id="feat-file-base",
-    event_name="openat",
-    event_group="",
-    ts_unix_nano=1_700_000_000_000_000_000,
-    data=["openat", "257", "cat", "1", "1", "0", "0", "0", "/etc/passwd", "O_RDONLY"],
-  )
-  evt = events_pb2.EventEnvelope(
+  base_evt = _evt(event_id="feat-file-base", syscall_nr=257, path="/etc/passwd")
+  evt = _evt(
     event_id="feat-file",
-    event_name="openat",
     event_group="file",
-    ts_unix_nano=1_700_000_000_000_000_000,
-    data=["openat", "257", "cat", "1", "1", "0", "0", "0", "/etc/passwd", "O_RDONLY"],
+    syscall_nr=257,
+    path="/etc/passwd",
   )
   values = extract_feature_dict(evt)
   assert "file_sensitive_path" in values
@@ -182,8 +207,8 @@ def test_extract_feature_dict_adds_file_features_when_event_type_file():
   assert "file_extension_hash" not in values
   assert "file_event_name_hash" not in values
   assert "file_flags_hash" not in values
-  assert "file_arg0_norm" in values
-  assert "file_arg1_norm" in values
+  assert "arg0_norm" in values
+  assert "arg1_norm" in values
   assert "proc_rate_1" in values
   assert "host_rate_30" in values
   assert "file_path_rate_5" in values
@@ -194,37 +219,39 @@ def test_extract_feature_dict_adds_file_features_when_event_type_file():
 
 
 def test_extract_file_features_flags_are_schema_stable():
-  """Encoded file flags stay schema-stable across file syscalls."""
-  evt_openat = events_pb2.EventEnvelope(
+  evt_openat = _evt(
     event_id="f1",
-    event_name="openat",
     event_group="file",
-    ts_unix_nano=1_700_000_000_000_000_000,
-    data=["openat", "257", "cat", "1", "1", "0", "0", "524288", "/etc/passwd", "O_RDONLY"],
+    syscall_nr=257,
+    arg1="524288",
+    path="/etc/passwd",
     attributes={"flags": "O_RDONLY|O_CLOEXEC"},
   )
   values_open = extract_feature_dict(evt_openat)
   assert any(name.startswith("file_flags_bucket_") for name in values_open)
   assert sum(value for name, value in values_open.items() if name.startswith("file_flags_bucket_")) >= 1.0
 
-  evt_unlink = events_pb2.EventEnvelope(
+  evt_unlink = _evt(
     event_id="f2",
     event_name="unlink",
     event_group="file",
-    ts_unix_nano=1_700_000_000_000_000_000,
-    data=["unlink", "87", "rm", "1", "1", "0", "0", "0", "/tmp/foo", ""],
+    syscall_nr=87,
+    comm="rm",
+    path="/tmp/foo",
   )
   values_unlink = extract_feature_dict(evt_unlink)
   assert any(name.startswith("file_flags_bucket_") for name in values_unlink)
   assert sum(value for name, value in values_unlink.items() if name.startswith("file_flags_bucket_")) >= 1.0
   assert values_unlink["file_tmp_path"] == 1.0
 
-  evt_chmod = events_pb2.EventEnvelope(
+  evt_chmod = _evt(
     event_id="f3",
     event_name="chmod",
     event_group="file",
-    ts_unix_nano=1_700_000_000_000_000_000,
-    data=["chmod", "90", "chmod", "1", "1", "0", "493", "0", "/etc/shadow", ""],
+    syscall_nr=90,
+    comm="chmod",
+    arg0="493",
+    path="/etc/shadow",
   )
   values_chmod = extract_feature_dict(evt_chmod)
   assert any(name.startswith("file_flags_bucket_") for name in values_chmod)
@@ -233,21 +260,25 @@ def test_extract_file_features_flags_are_schema_stable():
 
 
 def test_extract_feature_dict_adds_network_features_when_event_type_network():
-  base_evt = events_pb2.EventEnvelope(
+  base_evt = _evt(
     event_id="feat-net-base",
     event_name="connect",
-    event_group="",
-    ts_unix_nano=1_700_000_000_000_000_000,
-    data=["connect", "42", "curl", "1", "1", "0", "3", "16", "", ""],
+    syscall_nr=42,
+    comm="curl",
+    arg0="3",
+    arg1="16",
   )
-  evt = events_pb2.EventEnvelope(
+  evt = _evt(
     event_id="feat-net",
     event_name="connect",
     event_group="network",
-    ts_unix_nano=1_700_000_000_000_000_000,
-    data=["connect", "42", "curl", "1", "1", "0", "3", "16", "", ""],
+    syscall_nr=42,
+    comm="curl",
+    arg0="3",
+    arg1="16",
   )
   values = extract_feature_dict(evt)
+  assert values["net_event_name_connect"] == 1.0
   assert "net_addrlen_norm" in values
   assert "net_fd_norm" in values
   assert "net_socket_family_norm" in values
@@ -270,27 +301,30 @@ def test_extract_feature_dict_adds_network_features_when_event_type_network():
 
 
 def test_extract_network_features_socket_family_type():
-  """socket(): arg0=family, arg1=type (AF_INET=2, SOCK_STREAM=1)."""
-  evt = events_pb2.EventEnvelope(
+  evt = _evt(
     event_id="feat-socket",
     event_name="socket",
     event_group="network",
-    ts_unix_nano=1_700_000_000_000_000_000,
-    data=["socket", "41", "curl", "1", "1", "0", "2", "1", "", ""],
+    syscall_nr=41,
+    comm="curl",
+    arg0="2",
+    arg1="1",
   )
   values = extract_feature_dict(evt)
+  assert values["net_event_name_socket"] == 1.0
   assert values["net_socket_family_norm"] == 2.0 / 10.0
   assert sum(value for name, value in values.items() if name.startswith("net_socket_type_bucket_")) == 1.0
 
 
 def test_extract_network_features_sockaddr_from_attributes():
-  """connect() with sin_port/sin_addr in attributes."""
-  evt = events_pb2.EventEnvelope(
+  evt = _evt(
     event_id="feat-connect-attr",
     event_name="connect",
     event_group="network",
-    ts_unix_nano=1_700_000_000_000_000_000,
-    data=["connect", "42", "curl", "1", "1", "0", "3", "16", "", ""],
+    syscall_nr=42,
+    comm="curl",
+    arg0="3",
+    arg1="16",
     attributes={"sin_port": "443", "sin_addr": "192.168.1.1", "sa_family": "AF_INET"},
   )
   values = extract_feature_dict(evt)
@@ -299,140 +333,147 @@ def test_extract_network_features_sockaddr_from_attributes():
   assert values["net_af_af_inet"] == 1.0
 
 
-def test_extract_network_features_sockaddr_from_data7():
-  """Legacy format: data[7] is stringified sockaddr dict."""
-  evt = events_pb2.EventEnvelope(
-    event_id="feat-connect-data7",
+def test_extract_network_features_sockaddr_from_arg1():
+  """arg1 may hold a stringified sockaddr dict (synthetic datasets)."""
+  evt = _evt(
+    event_id="feat-connect-arg1",
     event_name="connect",
     event_group="network",
-    ts_unix_nano=1_700_000_000_000_000_000,
-    data=[
-      "connect", "42", "ssh", "1", "1", "0", "5", "{'sa_family': 'AF_INET', 'sin_port': '22', 'sin_addr': '10.0.0.2'}",
-      "", "",
-    ],
+    syscall_nr=42,
+    comm="ssh",
+    arg0="5",
+    arg1="{'sa_family': 'AF_INET', 'sin_port': '22', 'sin_addr': '10.0.0.2'}",
   )
   values = extract_feature_dict(evt)
   assert values["net_dport_norm"] == 22.0 / 65535.0
   assert sum(value for name, value in values.items() if name.startswith("net_daddr_bucket_")) == 1.0
 
 
-def test_extract_feature_dict_hash_view_returns_legacy_schema():
-  """feature_view='hash' produces scalar hash features (event_hash, comm_hash, etc.) for freq1d."""
-  evt = events_pb2.EventEnvelope(
-    event_id="feat-hash",
-    event_name="openat",
-    event_group="",
+def test_extract_feature_dict_frequency_view_returns_expected_schema():
+  evt = _evt(
+    event_id="feat-frequency",
+    syscall_nr=257,
     hostname="node-1",
-    ts_unix_nano=1_700_000_000_000_000_000,
-    data=["openat", "257", "cat", "1", "1", "0", "0", "0", "/etc/passwd", "O_RDONLY"],
-    attributes={"return_value": "0", "mount_namespace": "4026531840"},
+    arg1="O_RDONLY",
+    path="/etc/passwd",
+    attributes={"return_value": "0"},
   )
-  values = extract_feature_dict(evt, feature_view="hash")
-  assert "event_hash" in values
+  values = extract_feature_dict(evt, feature_view="frequency")
+  assert "event_name_hash" not in values
   assert "comm_hash" in values
   assert "path_hash" in values
   assert "event_id_norm" in values
-  assert "flags_hash" in values
+  assert "flags_hash" not in values
   assert "path_prefix_hash" in values
-  assert "mount_ns_hash" in values
   assert "hostname_hash" in values
-  assert "event_name_openat" not in values
   assert "comm_bucket_000" not in values
   assert "path_tok_d0_bucket_000" not in values
-  assert len(values) == 23 + 5 * 4  # 23 generic + shared online stats
+  assert "proc_rate_1" not in values
+  assert "hour_sin" not in values
+  assert "hour_norm" in values
+  assert len(values) == 17
 
 
-def test_extract_feature_dict_hash_view_keeps_type_specific_hashes():
-  file_evt = events_pb2.EventEnvelope(
-    event_id="feat-file-hash",
-    event_name="openat",
+def test_extract_feature_dict_frequency_view_keeps_type_specific_hashes():
+  file_evt = _evt(
+    event_id="feat-file-frequency",
     event_group="file",
-    ts_unix_nano=1_700_000_000_000_000_000,
-    data=["openat", "257", "cat", "1", "1", "0", "0", "0", "/etc/passwd", "O_RDONLY"],
+    syscall_nr=257,
+    path="/etc/passwd",
     attributes={"flags": "O_RDONLY|O_CLOEXEC"},
   )
-  file_values = extract_feature_dict(file_evt, feature_view="hash")
+  file_values = extract_feature_dict(file_evt, feature_view="frequency")
+  assert "event_id_norm" in file_values
+  assert "file_sensitive_path" not in file_values
+  assert "file_tmp_path" not in file_values
   assert "file_extension_hash" in file_values
-  assert "file_event_name_hash" in file_values
+  assert "file_event_name_hash" not in file_values
   assert "file_flags_hash" in file_values
   assert "file_event_name_openat" not in file_values
+  assert "file_path_rate_5" not in file_values
   assert not any(name.startswith("file_extension_bucket_") for name in file_values)
 
-  net_evt = events_pb2.EventEnvelope(
-    event_id="feat-net-hash",
+  net_evt = _evt(
+    event_id="feat-net-frequency",
     event_name="connect",
     event_group="network",
-    ts_unix_nano=1_700_000_000_000_000_000,
-    data=["connect", "42", "curl", "1", "1", "0", "3", "16", "", ""],
+    syscall_nr=42,
+    comm="curl",
+    arg0="3",
+    arg1="16",
     attributes={"sin_port": "443", "sin_addr": "192.168.1.1", "sa_family": "AF_INET"},
   )
-  net_values = extract_feature_dict(net_evt, feature_view="hash")
+  net_values = extract_feature_dict(net_evt, feature_view="frequency")
+  assert "event_id_norm" in net_values
+  assert "net_event_name_hash" not in net_values
   assert "net_socket_type_hash" in net_values
   assert "net_daddr_hash" in net_values
   assert "net_af_hash" in net_values
+  assert "net_pair_rate_5" not in net_values
   assert not any(name.startswith("net_socket_type_bucket_") for name in net_values)
   assert "net_af_af_inet" not in net_values
 
 
 def test_extract_feature_dict_adds_process_features_when_event_type_process():
-  base_evt = events_pb2.EventEnvelope(
+  base_evt = _evt(
     event_id="feat-proc-base",
     event_name="execve",
-    event_group="",
-    ts_unix_nano=1_700_000_000_000_000_000,
-    data=["execve", "59", "bash", "1", "1", "0", "0", "0", "/usr/bin/ls", ""],
+    syscall_nr=59,
+    comm="bash",
+    path="/usr/bin/ls",
   )
-  evt = events_pb2.EventEnvelope(
+  evt = _evt(
     event_id="feat-proc",
     event_name="execve",
     event_group="process",
-    ts_unix_nano=1_700_000_000_000_000_000,
-    data=["execve", "59", "bash", "1", "1", "0", "0", "0", "/usr/bin/ls", ""],
+    syscall_nr=59,
+    comm="bash",
+    path="/usr/bin/ls",
   )
   values = extract_feature_dict(evt)
   assert "process_is_execve" in values
   assert values["process_is_execve"] == 1.0
   assert "process_is_fork" in values
-  assert values["process_is_fork"] == 0.0  # execve, not fork
+  assert values["process_is_fork"] == 0.0
   assert len(values) == len(extract_feature_dict(base_evt)) + 2
 
 
 def test_memstream_feature_view_drops_sparse_context_banks():
-  evt = events_pb2.EventEnvelope(
+  evt = _evt(
     event_id="feat-mem-view",
-    event_name="openat",
     event_group="file",
+    syscall_nr=257,
     hostname="node-1",
-    ts_unix_nano=1_700_000_000_000_000_000,
-    data=["openat", "257", "cat", "1", "1", "0", "-100", "0", "/etc/passwd", "O_RDONLY"],
-    attributes={"return_value": "0", "mount_namespace": "4026531840", "flags": "O_RDONLY|O_CLOEXEC"},
+    arg0="-100",
+    path="/etc/passwd",
+    attributes={"return_value": "0", "flags": "O_RDONLY|O_CLOEXEC"},
   )
   values = extract_feature_dict(evt, feature_view="memstream")
   assert "pid_norm" in values
-  assert "event_name_openat" in values
   assert "file_sensitive_path" in values
   assert "file_path_rate_5" in values
   assert "file_event_name_openat" not in values
   assert _count_prefix(values, "comm_bucket_") == 0
   assert _count_prefix(values, "hostname_bucket_") == 0
-  assert _count_prefix(values, "mount_ns_bucket_") == 0
   assert _count_path_depth_banks(values) == 0
   assert _count_prefix(values, "file_extension_bucket_") == 0
   assert _count_prefix(values, "file_flags_bucket_") == 0
 
 
 def test_loda_feature_view_keeps_small_network_identity_and_drops_open_world_banks():
-  evt = events_pb2.EventEnvelope(
+  evt = _evt(
     event_id="feat-loda-view",
     event_name="socket",
     event_group="network",
+    syscall_nr=41,
     hostname="node-1",
-    ts_unix_nano=1_700_000_000_000_000_000,
-    data=["socket", "41", "curl", "1", "1", "0", "2", "1", "", ""],
+    comm="curl",
+    arg0="2",
+    arg1="1",
   )
   values = extract_feature_dict(evt, feature_view="loda")
   assert "net_fd_norm" in values
-  assert "event_name_socket" in values
+  assert _count_prefix(values, "net_event_name_") == 0
   assert "net_af_af_inet" in values
   assert _count_prefix(values, "net_socket_type_bucket_") == 16
   assert _count_prefix(values, "net_daddr_bucket_") == 0
@@ -440,24 +481,24 @@ def test_loda_feature_view_keeps_small_network_identity_and_drops_open_world_ban
   assert _count_path_depth_banks(values) == 0
 
 
-def test_hash_feature_view_matches_legacy_hash_schema():
-  evt = events_pb2.EventEnvelope(
-    event_id="feat-hash-view",
-    event_name="openat",
+def test_frequency_feature_view_matches_expected_file_schema():
+  evt = _evt(
+    event_id="feat-frequency-view",
     event_group="file",
+    syscall_nr=257,
     hostname="node-1",
-    ts_unix_nano=1_700_000_000_000_000_000,
-    data=["openat", "257", "cat", "1", "1", "0", "0", "0", "/etc/passwd", "O_RDONLY"],
-    attributes={"return_value": "0", "mount_namespace": "4026531840", "flags": "O_RDONLY|O_CLOEXEC"},
+    path="/etc/passwd",
+    attributes={"return_value": "0", "flags": "O_RDONLY|O_CLOEXEC"},
   )
-  values = extract_feature_dict(evt, feature_view="hash")
-  assert "event_hash" in values
+  values = extract_feature_dict(evt, feature_view="frequency")
+  assert "event_id_norm" in values
+  assert "flags_hash" not in values
   assert "comm_hash" in values
   assert "path_hash" in values
-  assert "file_event_name_hash" in values
+  assert "file_sensitive_path" not in values
+  assert "file_event_name_hash" not in values
   assert "file_flags_hash" in values
+  assert "proc_rate_1" not in values
   assert "event_name_openat" not in values
   assert _count_prefix(values, "comm_bucket_") == 0
   assert _count_prefix(values, "file_flags_bucket_") == 0
-
-

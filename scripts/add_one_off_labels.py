@@ -17,12 +17,9 @@ def _event_signature(obj: dict) -> tuple | None:
     """Return (event_name, comm, path) for frequency counting. None if not an event."""
     if "_meta" in obj or "event_id" not in obj:
         return None
-    data = obj.get("data", [])
-    if not isinstance(data, list):
-        data = []
-    event_name = obj.get("event_name") or (data[0] if data else "")
-    comm = data[2] if len(data) > 2 else ""
-    path = data[8] if len(data) > 8 else ""
+    event_name = obj.get("event_name") or ""
+    comm = obj.get("comm") or ""
+    path = obj.get("path") or ""
     return (str(event_name), str(comm), str(path))
 
 

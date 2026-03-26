@@ -17,8 +17,6 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 # Canonical data vector: [event_name, event_id, comm, pid, tid, uid, arg0, arg1, path, flags]
-PATH_INDEX = 8
-COMM_INDEX = 2
 
 # Default: benign paths (expected NOT flagged); sensitive paths (expected flagged)
 DEFAULT_BENIGN_PATTERNS = [
@@ -94,19 +92,13 @@ def _filter_by_sequence(events: List[dict], normal_ops: int = 10) -> List[dict]:
 
 
 def _extract_path(entry: dict) -> str:
-    """Extract file path from event entry. data[8] in canonical format."""
-    data = entry.get("data", [])
-    if not isinstance(data, list) or len(data) <= PATH_INDEX:
-        return ""
-    return (data[PATH_INDEX] or "").strip()
+    """Extract file path from event entry."""
+    return str(entry.get("path") or "").strip()
 
 
 def _extract_comm(entry: dict) -> str:
-    """Extract process name (comm) from event entry. data[2] in canonical format."""
-    data = entry.get("data", [])
-    if not isinstance(data, list) or len(data) <= COMM_INDEX:
-        return ""
-    return (data[COMM_INDEX] or "").strip()
+    """Extract process name (comm) from event entry."""
+    return str(entry.get("comm") or "").strip()
 
 
 def _path_matches(log_path: str, expected: str) -> bool:
@@ -267,8 +259,7 @@ def verify_with_scores(
         anomaly = evt.get("anomaly", False)
         if not anomaly and evt.get("event_id") in anomaly_event_ids:
             anomaly = True
-        data = evt.get("data") or []
-        event_name = evt.get("event_name", "") or (data[0] if data else "")
+        event_name = evt.get("event_name", "") or ""
         comm = _extract_comm(evt)
         if comm_filter is not None and comm not in comm_filter:
             continue
@@ -559,7 +550,7 @@ def main() -> None:
                 for e in entries:
                     path = _extract_path(e)
                     score = e.get("score", 0.0)
-                    op = e.get("event_name", "") or (e.get("data") or [])[0:1][0] if e.get("data") else ""
+                    op = e.get("event_name", "") or ""
                     comm = _extract_comm(e)
                     writer.writerow([path, comm, op, f"{score:.4f}", "sensitive", "true"])
             print("")

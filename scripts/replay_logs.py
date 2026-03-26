@@ -19,6 +19,7 @@ log = logging.getLogger(__name__)
 
 import events_pb2
 import events_pb2_grpc
+from event_envelope_codec import envelope_from_dict
 
 MAGIC = b"EVT1"
 
@@ -134,30 +135,10 @@ def replay(path, target, pace, start_ms, end_ms, total=None, label="Replay", max
     first_ts = None
     start_wall = None
     for obj in event_iter:
-      data_field = obj.get("data", [])
-      if not isinstance(data_field, list):
-        raise ValueError("invalid event record: 'data' must be an ordered list")
-      # event_name = syscall name; event_group = category.
-      if "event_name" in obj:
-        event_name = obj.get("event_name", "") or (data_field[0] if data_field else "")
-        event_group = obj.get("event_group", "")
-      else:
-        event_name = obj.get("event_name", "") or (data_field[0] if data_field else "")
-        event_group = ""
-      # JSONL dump uses pod_name; EVT1 uses pod
-      pod_name = obj.get("pod_name", obj.get("pod", ""))
-      env = events_pb2.EventEnvelope(
-        event_id=obj.get("event_id", ""),
-        hostname=obj.get("hostname", ""),
-        pod_name=pod_name,
-        namespace=obj.get("namespace", ""),
-        container_id=obj.get("container_id", ""),
-        ts_unix_nano=int(obj.get("ts_unix_nano", 0)),
-        event_name=event_name,
-        event_group=event_group,
-        data=data_field,
-        attributes=dict(obj.get("attributes", {}) or {}),
-      )
+      attrs = obj.get("attributes", {})
+      if attrs is not None and not isinstance(attrs, dict):
+        raise ValueError("invalid event record: 'attributes' must be an object/dict when present")
+      env = envelope_from_dict(obj)
       if pace == "realtime":
         ts = env.ts_unix_nano / 1_000_000_000
         if first_ts is None:

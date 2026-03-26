@@ -1,9 +1,8 @@
 """Feature extraction for anomaly detection.
 
-EventEnvelope is universal: event_name = syscall name (openat, connect, socket, …);
-event_group = rule-defined category (network, file, process, or empty) carried in `evt.event_group`. We always add
-general features; depending on event_group we add type-specific features. Final
-feature vectors may have different sizes (different features) per event.
+EventEnvelope carries syscall fields by name (syscall_nr, comm, pid, tid, uid, arg0, arg1, path);
+event_name is the syscall name; event_group is the rule-defined category (network, file, process, or empty).
+We always add general features; depending on event_group we add type-specific features.
 """
 import ast
 import hashlib
@@ -33,19 +32,22 @@ class _DecayedMoments:
 
 @dataclass(frozen=True)
 class _FeatureViewSpec:
-  include_general_event_name: bool = True
   include_general_context_buckets: bool = True
   include_general_path_tokens: bool = True
   include_general_online_stats: bool = True
+  include_file_sensitive_tmp: bool = True
   include_file_event_name: bool = True
   include_file_extension_bucket: bool = True
   include_file_flags_bucket: bool = True
   include_file_online_stats: bool = True
+  include_network_event_name: bool = True
   include_network_socket_type_bucket: bool = True
   include_network_daddr_bucket: bool = True
   include_network_af_onehot: bool = True
   include_network_online_stats: bool = True
   use_hash_for_categoricals: bool = False
+  # False for frequency: use hour_norm / minute_norm / weekday_norm instead of sin/cos pairs.
+  cyclic_time_features: bool = True
 
 
 class _OnlineFeatureStats:
@@ -126,30 +128,8 @@ _ONLINE_WINDOWS = (("01", 0.1), ("1", 1.0), ("5", 5.0), ("30", 30.0), ("120", 12
 _ONLINE_STATS = _OnlineFeatureStats(_ONLINE_WINDOWS)
 
 _REPO_RULES_PATH = Path(__file__).resolve().parents[1] / "charts" / "sentinel-ebpf" / "rules.yaml"
-_DEFAULT_EVENT_NAMES = (
-  "accept",
-  "accept4",
-  "bind",
-  "chmod",
-  "chown",
-  "connect",
-  "execve",
-  "fork",
-  "listen",
-  "open",
-  "openat",
-  "openat2",
-  "read",
-  "rename",
-  "renameat",
-  "socket",
-  "unlink",
-  "unlinkat",
-  "write",
-)
 _COMM_BUCKETS = 64
 _HOSTNAME_BUCKETS = 32
-_MOUNT_NS_BUCKETS = 32
 # Path encoding (encoded mode): depth-positioned token banks.
 # Keep the total budget stable: 4 depths × 64 buckets = 256.
 _PATH_DEPTH_BUCKETS = 4
@@ -184,6 +164,7 @@ _LODA_FEATURE_VIEW = _FeatureViewSpec(
   include_file_event_name=False,
   include_file_extension_bucket=False,
   include_file_flags_bucket=False,
+  include_network_event_name=False,
   include_network_daddr_bucket=False,
 )
 _MEMSTREAM_FEATURE_VIEW = _FeatureViewSpec(
@@ -192,10 +173,20 @@ _MEMSTREAM_FEATURE_VIEW = _FeatureViewSpec(
   include_file_event_name=False,
   include_file_extension_bucket=False,
   include_file_flags_bucket=False,
+  include_network_event_name=False,
   include_network_socket_type_bucket=False,
   include_network_daddr_bucket=False,
 )
-_HASH_FEATURE_VIEW = _FeatureViewSpec(use_hash_for_categoricals=True)
+# Frequency-model view (freq1d, gausscop, copulatree, latentcluster): scalar hashes + event_id_norm,
+# no global flags_hash, no file sensitive/tmp binaries, no online rate/interarrival streams.
+_FREQUENCY_FEATURE_VIEW = _FeatureViewSpec(
+  use_hash_for_categoricals=True,
+  cyclic_time_features=False,
+  include_file_sensitive_tmp=False,
+  include_general_online_stats=False,
+  include_file_online_stats=False,
+  include_network_online_stats=False,
+)
 
 
 def _safe_int(raw: str, default: int = 0) -> int:
@@ -299,7 +290,7 @@ def feature_view_for_algorithm(algorithm: str | None) -> str:
   """Map algorithm to feature view."""
   algo = (algorithm or "").strip().lower()
   if algo in ("freq1d", "gausscop", "copulatree", "latentcluster"):
-    return "hash"
+    return "frequency"
   if algo in ("loda", "loda_ema"):
     return "loda"
   if algo == "memstream":
@@ -309,26 +300,15 @@ def feature_view_for_algorithm(algorithm: str | None) -> str:
 
 def _feature_view_spec(feature_view: str | None) -> _FeatureViewSpec:
   normalized = (feature_view or "default").strip().lower()
-  if normalized == "hash":
-    return _HASH_FEATURE_VIEW
+  if normalized == "frequency":
+    return _FREQUENCY_FEATURE_VIEW
   if normalized in ("default", "full", "encoded"):
     return _FULL_FEATURE_VIEW
   if normalized == "loda":
     return _LODA_FEATURE_VIEW
   if normalized == "memstream":
     return _MEMSTREAM_FEATURE_VIEW
-  raise ValueError(f"Unknown feature_view={feature_view!r}; expected one of: default, hash, loda, memstream")
-
-
-@lru_cache(maxsize=1)
-def _known_event_names() -> tuple[str, ...]:
-  cfg = _rules_config()
-  if cfg is None:
-    return tuple(sorted(set(_DEFAULT_EVENT_NAMES)))
-  names = {syscall for rule in cfg.rules for syscall in rule.syscalls}
-  if not names:
-    names = set(_DEFAULT_EVENT_NAMES)
-  return tuple(sorted(names))
+  raise ValueError(f"Unknown feature_view={feature_view!r}; expected one of: default, frequency, loda, memstream")
 
 
 @lru_cache(maxsize=16)
@@ -464,7 +444,7 @@ def _normalize_af_label(raw: str, family_val: int) -> str:
 
 def _parse_sockaddr_from_evt(evt: Any) -> Dict[str, str]:
   """
-  Try to get destination port, address, and family from event (attributes or data[7]).
+  Try to get destination port, address, and family from event (attributes or arg1).
   Returns dict with keys sin_port, sin_addr, sa_family (values may be empty).
   """
   out: Dict[str, str] = {"sin_port": "", "sin_addr": "", "sa_family": ""}
@@ -473,9 +453,9 @@ def _parse_sockaddr_from_evt(evt: Any) -> Dict[str, str]:
   out["sin_addr"] = (attrs.get("sin_addr") or attrs.get("dest_ip") or "").strip()
   out["sa_family"] = (attrs.get("sa_family") or "").strip()
 
-  # Fallback: data[7] may contain stringified sockaddr dict (legacy format)
+  # Fallback: arg1 may contain stringified sockaddr dict (synthetic / legacy)
   if not out["sin_port"] and not out["sin_addr"] and not out["sa_family"]:
-    raw = (evt.data[7] if len(evt.data) > 7 else "").strip()
+    raw = (getattr(evt, "arg1", None) or "").strip()
     if raw and raw.startswith("{"):
       try:
         obj = ast.literal_eval(raw)
@@ -488,18 +468,31 @@ def _parse_sockaddr_from_evt(evt: Any) -> Dict[str, str]:
   return out
 
 
+def _syscall_flags_numeric_string(evt: Any) -> str:
+  """
+  Raw open/socket flag bits as a string, for file flag buckets/hash and fallbacks. The probe stores the same
+  value in data_t.flags and in arg0 (open) or arg1 (openat, openat2, socket); we only read args.
+  """
+  name = (evt.event_name or "").strip().lower()
+  if name == "open":
+    return (evt.arg0 or "").strip()
+  if name in ("openat", "openat2"):
+    return (evt.arg1 or "").strip()
+  if name == "socket":
+    return (evt.arg1 or "").strip()
+  return ""
+
+
 def _extract_generic_features(evt: Any, view: _FeatureViewSpec) -> Dict[str, float]:
   """Generic features shared across all event types."""
-  event_name = ((evt.event_name or "") or (evt.data[0] if len(evt.data) > 0 else "")).strip().lower()
-  event_id_str = evt.data[1] if len(evt.data) > 1 else "0"
-  comm = evt.data[2] if len(evt.data) > 2 else ""
-  pid_str = evt.data[3] if len(evt.data) > 3 else "0"
-  tid_str = evt.data[4] if len(evt.data) > 4 else "0"
-  uid_str = evt.data[5] if len(evt.data) > 5 else "0"
-  arg0_str = evt.data[6] if len(evt.data) > 6 else "0"
-  arg1_str = evt.data[7] if len(evt.data) > 7 else "0"
-  path = (evt.data[8] if len(evt.data) > 8 else "").strip()
-  flags = evt.data[9] if len(evt.data) > 9 else ""
+  event_id_str = str(int(evt.syscall_nr))
+  comm = evt.comm or ""
+  pid_str = evt.pid or "0"
+  tid_str = evt.tid or "0"
+  uid_str = evt.uid or "0"
+  arg0_str = evt.arg0 or "0"
+  arg1_str = evt.arg1 or "0"
+  path = (evt.path or "").strip()
   attrs = dict(evt.attributes or {})
 
   pid_val = _safe_int(pid_str, default=0)
@@ -524,7 +517,6 @@ def _extract_generic_features(evt: Any, view: _FeatureViewSpec) -> Dict[str, flo
   components = _path_components(path)
   path_prefix = components[0] if components else ""
   return_val = _safe_int(attrs.get("return_value", "0"), default=0)
-  mount_ns = attrs.get("mount_namespace", "") or ""
   return_success, return_errno_norm = _norm_return_errno(return_val)
 
   out: Dict[str, float] = {
@@ -533,37 +525,43 @@ def _extract_generic_features(evt: Any, view: _FeatureViewSpec) -> Dict[str, flo
     "uid_norm": _norm_uid(uid_val),
     "arg0_norm": _norm_arg(arg0_val),
     "arg1_norm": _norm_arg(arg1_val),
-    "hour_sin": float(np.sin(hour_angle)),
-    "hour_cos": float(np.cos(hour_angle)),
-    "minute_sin": float(np.sin(minute_angle)),
-    "minute_cos": float(np.cos(minute_angle)),
-    "weekday_sin": float(np.sin(weekday_angle)),
-    "weekday_cos": float(np.cos(weekday_angle)),
-    "week_of_month_norm": (week_of_month - 1) / 3.0,
     "path_depth_norm": _norm_path_depth(components),
     "return_success": return_success,
     "return_errno_norm": return_errno_norm,
   }
+  if view.cyclic_time_features:
+    out.update(
+      {
+        "hour_sin": float(np.sin(hour_angle)),
+        "hour_cos": float(np.cos(hour_angle)),
+        "minute_sin": float(np.sin(minute_angle)),
+        "minute_cos": float(np.cos(minute_angle)),
+        "weekday_sin": float(np.sin(weekday_angle)),
+        "weekday_cos": float(np.cos(weekday_angle)),
+      }
+    )
+  else:
+    out.update(
+      {
+        "hour_norm": float(hour_of_day) / 23.0,
+        "minute_norm": float(minute_of_hour) / 59.0,
+        "weekday_norm": float(weekday) / 6.0,
+      }
+    )
+  out["week_of_month_norm"] = (week_of_month - 1) / 3.0
 
   if view.use_hash_for_categoricals:
-    if view.include_general_event_name:
-      out["event_hash"] = _hash01(event_name)
     out["event_id_norm"] = min(event_id_val / _EVENT_ID_MAX, 1.0)
     if view.include_general_context_buckets:
       out["comm_hash"] = _hash01(comm)
       out["hostname_hash"] = _hash01(evt.hostname or "")
-      out["mount_ns_hash"] = _hash01(mount_ns)
     if view.include_general_path_tokens:
       out["path_hash"] = _hash01(path)
       out["path_prefix_hash"] = _hash01(path_prefix)
-      out["flags_hash"] = _hash01(flags)
   else:
-    if view.include_general_event_name:
-      out.update(_onehot_features("event_name", event_name, _known_event_names()))
     if view.include_general_context_buckets:
       out.update(_bucketize_value("comm_bucket", comm, _COMM_BUCKETS))
       out.update(_bucketize_value("hostname_bucket", evt.hostname or "", _HOSTNAME_BUCKETS))
-      out.update(_bucketize_value("mount_ns_bucket", mount_ns, _MOUNT_NS_BUCKETS))
     if view.include_general_path_tokens:
       out.update(_bucketize_path_tokens_by_depth(path))
   return out
@@ -575,18 +573,16 @@ def _extract_file_features(evt: Any, view: _FeatureViewSpec = _FULL_FEATURE_VIEW
 
   Covers all file syscalls that trigger this extractor: open, openat, openat2,
   unlink, unlinkat, rename, renameat, chmod, chown. They share the same event layout
-  (data[8]=path, data[6]/[7]=arg0/arg1, attributes flags for open*). One unified
+  (path, arg0/arg1, attributes flags for open*). One unified
   feature set: path semantics, syscall identity, open flags (when applicable), and
   Kitsune-style online stats (rate, interarrival, path-depth streams) per process,
   host, path, and (comm, path) pair.
   """
-  path = (evt.data[8] if len(evt.data) > 8 else "").strip()
+  path = (evt.path or "").strip()
   path_lower = path.lower()
-  comm = (evt.data[2] if len(evt.data) > 2 else "") or "unknown"
+  comm = (evt.comm or "") or "unknown"
   host = (evt.hostname or "") or "unknown"
-  event_name = ((evt.event_name or "") or (evt.data[0] if len(evt.data) > 0 else "")).strip().lower()
-  arg0_val = _safe_int(evt.data[6] if len(evt.data) > 6 else "0", default=0)
-  arg1_val = _safe_int(evt.data[7] if len(evt.data) > 7 else "0", default=0)
+  event_name = (evt.event_name or "").strip().lower()
   ts_s = float(evt.ts_unix_nano) / 1_000_000_000.0
   attrs = dict(evt.attributes or {})
 
@@ -600,17 +596,13 @@ def _extract_file_features(evt: Any, view: _FeatureViewSpec = _FULL_FEATURE_VIEW
     last = components[-1]
     if "." in last:
       ext = "." + last.split(".")[-1]
-  flags_str = (attrs.get("flags") or (evt.data[9] if len(evt.data) > 9 else "")) or ""
+  flags_str = (attrs.get("flags") or _syscall_flags_numeric_string(evt)) or ""
 
-  out: Dict[str, float] = {
-    "file_sensitive_path": file_sensitive_path,
-    "file_tmp_path": file_tmp_path,
-    "file_arg0_norm": _norm_arg(arg0_val),
-    "file_arg1_norm": _norm_arg(arg1_val),
-  }
+  out: Dict[str, float] = {}
+  if view.include_file_sensitive_tmp:
+    out["file_sensitive_path"] = file_sensitive_path
+    out["file_tmp_path"] = file_tmp_path
   if view.use_hash_for_categoricals:
-    if view.include_file_event_name:
-      out["file_event_name_hash"] = _hash01(event_name)
     if view.include_file_extension_bucket:
       out["file_extension_hash"] = _hash01(ext)
     if view.include_file_flags_bucket:
@@ -650,10 +642,10 @@ def _extract_file_features(evt: Any, view: _FeatureViewSpec = _FULL_FEATURE_VIEW
 
 def _extract_network_features(evt: Any, view: _FeatureViewSpec = _FULL_FEATURE_VIEW) -> Dict[str, float]:
   """Type-specific features for event_group == 'network'."""
-  arg0_val = _safe_int(evt.data[6] if len(evt.data) > 6 else "0", default=0)
-  arg1_val = _safe_int(evt.data[7] if len(evt.data) > 7 else "0", default=0)
-  event_name = (evt.event_name or "") or (evt.data[0] if len(evt.data) > 0 else "")
-  comm = (evt.data[2] if len(evt.data) > 2 else "") or "unknown"
+  arg0_val = _safe_int(evt.arg0 or "0", default=0)
+  arg1_val = _safe_int(evt.arg1 or "0", default=0)
+  event_name = evt.event_name or ""
+  comm = (evt.comm or "") or "unknown"
   host = (evt.hostname or "") or "unknown"
   ts_s = float(evt.ts_unix_nano) / 1_000_000_000.0
 
@@ -679,6 +671,7 @@ def _extract_network_features(evt: Any, view: _FeatureViewSpec = _FULL_FEATURE_V
 
   daddr = sockaddr.get("sin_addr") or ""
   af_label = _normalize_af_label(sockaddr.get("sa_family") or "", family_val)
+  event_name_key = (evt.event_name or "").strip().lower()
 
   out: Dict[str, float] = {
     "net_addrlen_norm": net_addrlen_norm,
@@ -695,6 +688,10 @@ def _extract_network_features(evt: Any, view: _FeatureViewSpec = _FULL_FEATURE_V
       af_str = sockaddr.get("sa_family") or ("AF_INET" if family_val == 2 else "AF_INET6" if family_val == 10 else "")
       out["net_af_hash"] = _hash01(af_str)
   else:
+    if view.include_network_event_name:
+      out.update(
+        _onehot_features("net_event_name", event_name_key, _group_syscalls("network", _DEFAULT_NET_EVENT_NAMES))
+      )
     if view.include_network_socket_type_bucket:
       out.update(_bucketize_value("net_socket_type_bucket", str(type_val), _NET_SOCKET_TYPE_BUCKETS))
     if view.include_network_daddr_bucket:
@@ -737,7 +734,7 @@ def _extract_network_features(evt: Any, view: _FeatureViewSpec = _FULL_FEATURE_V
 
 def _extract_process_features(evt: Any) -> Dict[str, float]:
   """Type-specific features for event_group == 'process' (exec/spawn)."""
-  event_name = (evt.event_name or "") or (evt.data[0] if len(evt.data) > 0 else "")
+  event_name = evt.event_name or ""
   process_is_execve = 1.0 if event_name == "execve" else 0.0
   process_is_fork = 1.0 if event_name == "fork" else 0.0
   return {
@@ -752,7 +749,7 @@ def _extract_general_online_stats(evt: Any) -> Dict[str, float]:
   host rate, proc interarrival. Used for all events so type-specific extractors
   do not duplicate these fields.
   """
-  comm = (evt.data[2] if len(evt.data) > 2 else "") or "unknown"
+  comm = (evt.comm or "") or "unknown"
   host = (evt.hostname or "") or "unknown"
   ts_s = float(evt.ts_unix_nano) / 1_000_000_000.0
   proc_rate = _ONLINE_STATS.update_value("general", "rate", comm, ts_s, 1.0)
@@ -775,7 +772,8 @@ def extract_feature_dict(evt: Any, feature_view: str = "default") -> Dict[str, f
 
   feature_view:
     - default: full encoded schema (one-hot, bucket banks, path tokens)
-    - hash: scalar-hash schema (event_hash, comm_hash, etc.)
+    - frequency: scalar-hash schema for frequency-family models (`event_id_norm`, comm/path/hostname hashes,
+      type-specific *_hash); omits `flags_hash`, `file_sensitive_path`/`file_tmp_path`, and all online stats
     - loda: bounded numerics + compact identity/boolean blocks
     - memstream: dense-ish bounded numerics + smallest identity/boolean blocks
 

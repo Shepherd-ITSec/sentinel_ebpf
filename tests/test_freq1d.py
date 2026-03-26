@@ -143,12 +143,11 @@ def test_freq1d_treats_bucket_and_event_onehot_features_as_categorical():
     seed=10,
   )
   features = {
-    "event_name_openat": 1.0,
-    "event_name_connect": 0.0,
+    "file_event_name_openat": 1.0,
+    "net_event_name_connect": 0.0,
     "comm_bucket_000": 1.0,
     "comm_bucket_001": 0.0,
     "hostname_bucket_000": 1.0,
-    "mount_ns_bucket_000": 1.0,
     "path_tok_d0_bucket_000": 1.0,
     "return_success": 1.0,
     "x_norm": 0.25,
@@ -163,10 +162,10 @@ def test_freq1d_treats_bucket_and_event_onehot_features_as_categorical():
     for name, kind in zip(impl._feature_names, impl._kind)
     if kind == "cat"
   }
-  assert "event_name_openat" in categorical_names
+  assert "file_event_name_openat" in categorical_names
+  assert "net_event_name_connect" in categorical_names
   assert "comm_bucket_000" in categorical_names
   assert "hostname_bucket_000" in categorical_names
-  assert "mount_ns_bucket_000" in categorical_names
   assert "path_tok_d0_bucket_000" in categorical_names
   assert "x_norm" not in categorical_names
 

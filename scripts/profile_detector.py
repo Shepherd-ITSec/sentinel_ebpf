@@ -26,19 +26,15 @@ def make_event(i: int, event_group: str = "file") -> events_pb2.EventEnvelope:
         event_group=event_group,
         hostname="node1",
         ts_unix_nano=ts,
-        data=[
-            "openat",
-            str(i % 1000),
-            "bash" if i % 3 == 0 else "nginx" if i % 3 == 1 else "python",
-            str(1000 + i % 100),
-            str(2000 + i % 100),
-            "1000",
-            str(i % 100),
-            "2",
-            f"/etc/config/file_{i % 50}.conf",
-            "O_RDONLY",
-        ],
-        attributes={"mount_namespace": "4026531840"},
+        syscall_nr=i % 1000,
+        comm="bash" if i % 3 == 0 else "nginx" if i % 3 == 1 else "python",
+        pid=str(1000 + i % 100),
+        tid=str(2000 + i % 100),
+        uid="1000",
+        arg0=str(i % 100),
+        arg1="2",
+        path=f"/etc/config/file_{i % 50}.conf",
+        attributes={"flags": "O_RDONLY"},
     )
 
 

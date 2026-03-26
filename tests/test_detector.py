@@ -46,7 +46,14 @@ class TestDetector:
       event_name="openat",
       event_group="",
       ts_unix_nano=1234567890000000000,
-      data=["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
+      syscall_nr=2,
+      comm="bash",
+      pid="1",
+      tid="2",
+      uid="1000",
+      arg0="-100",
+      arg1="2",
+      path="/tmp/test",
     )
 
     resp = detector._score_event(evt)
@@ -73,7 +80,14 @@ class TestDetector:
           event_name="openat",
           event_group="",
           ts_unix_nano=1234567890000000000 + i,
-          data=["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
+          syscall_nr=2,
+      comm="bash",
+      pid="1",
+      tid="2",
+      uid="1000",
+      arg0="-100",
+      arg1="2",
+      path="/tmp/test",
         )
 
     responses = []
@@ -104,7 +118,14 @@ class TestDetector:
       event_name="socket",
       event_group="",
       ts_unix_nano=1234567890000000000,
-      data=["socket", "5", "bash", "1", "2", "1000", "1", "2", "", "2"],
+      syscall_nr=5,
+      comm="bash",
+      pid="1",
+      tid="2",
+      uid="1000",
+      arg0="1",
+      arg1="2",
+      path="",
     )
 
     resp = detector._score_event(evt)
@@ -130,7 +151,14 @@ class TestDetector:
       event_name="execve",
       event_group="",
       ts_unix_nano=1234567890000000000,
-      data=["execve", "4", "bash", "1", "2", "1000", "0", "0", "/bin/bash", ""],
+      syscall_nr=4,
+      comm="bash",
+      pid="1",
+      tid="2",
+      uid="1000",
+      arg0="0",
+      arg1="0",
+      path="/bin/bash",
     )
 
     resp = detector._score_event(evt)
@@ -152,14 +180,21 @@ class TestDetector:
       event_name="execve",
       event_group="process",
       ts_unix_nano=1234567890000000000,
-      data=["execve", "59", "bash", "1", "2", "1000", "0", "0", "/bin/bash", ""],
+      syscall_nr=59,
+      comm="bash",
+      pid="1",
+      tid="2",
+      uid="1000",
+      arg0="0",
+      arg1="0",
+      path="/bin/bash",
     )
 
     resp = detector._score_event(evt)
     assert resp.event_id == "view-test"
     assert captured["feature_view"] == "memstream"
 
-  def test_freq1d_uses_hash_feature_view(self, monkeypatch):
+  def test_freq1d_uses_frequency_feature_view(self, monkeypatch):
     captured = {}
 
     def fake_extract(evt, feature_view="default"):
@@ -174,12 +209,19 @@ class TestDetector:
       event_name="openat",
       event_group="file",
       ts_unix_nano=1234567890000000000,
-      data=["openat", "257", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
+      syscall_nr=257,
+      comm="bash",
+      pid="1",
+      tid="2",
+      uid="1000",
+      arg0="-100",
+      arg1="2",
+      path="/tmp/test",
     )
 
     resp = detector._score_event(evt)
     assert resp.event_id == "freq-view-test"
-    assert captured["feature_view"] == "hash"
+    assert captured["feature_view"] == "frequency"
 
   @pytest.mark.asyncio
   async def test_score_event_zscore(self):
@@ -197,7 +239,14 @@ class TestDetector:
       event_name="execve",
       event_group="",
       ts_unix_nano=1234567890000000000,
-      data=["execve", "4", "bash", "1", "2", "1000", "0", "0", "/bin/bash", ""],
+      syscall_nr=4,
+      comm="bash",
+      pid="1",
+      tid="2",
+      uid="1000",
+      arg0="0",
+      arg1="0",
+      path="/bin/bash",
     )
 
     resp = detector._score_event(evt)
@@ -222,7 +271,14 @@ class TestDetector:
       event_name="openat",
       event_group="",
       ts_unix_nano=1234567890000000000,
-      data=["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
+      syscall_nr=2,
+      comm="bash",
+      pid="1",
+      tid="2",
+      uid="1000",
+      arg0="-100",
+      arg1="2",
+      path="/tmp/test",
     )
 
     resp = detector._score_event(evt)
@@ -249,7 +305,14 @@ class TestDetector:
       event_name="openat",
       event_group="",
       ts_unix_nano=1234567890000000000,
-      data=["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
+      syscall_nr=2,
+      comm="bash",
+      pid="1",
+      tid="2",
+      uid="1000",
+      arg0="-100",
+      arg1="2",
+      path="/tmp/test",
     )
 
     resp = detector._score_event(evt)
@@ -274,7 +337,14 @@ class TestDetector:
       event_name="openat",
       event_group="",
       ts_unix_nano=1234567890000000000,
-      data=["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
+      syscall_nr=2,
+      comm="bash",
+      pid="1",
+      tid="2",
+      uid="1000",
+      arg0="-100",
+      arg1="2",
+      path="/tmp/test",
     )
 
     resp = detector._score_event(evt)
@@ -301,7 +371,14 @@ class TestDetector:
       event_name="openat",
       event_group="",
       ts_unix_nano=1234567890000000000,
-      data=["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
+      syscall_nr=2,
+      comm="bash",
+      pid="1",
+      tid="2",
+      uid="1000",
+      arg0="-100",
+      arg1="2",
+      path="/tmp/test",
     )
 
     resp = detector._score_event(evt)
@@ -325,7 +402,14 @@ class TestDetector:
       event_name="openat",
       event_group="",
       ts_unix_nano=1234567890000000000,
-      data=["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
+      syscall_nr=2,
+      comm="bash",
+      pid="1",
+      tid="2",
+      uid="1000",
+      arg0="-100",
+      arg1="2",
+      path="/tmp/test",
     )
 
     resp = detector._score_event(evt)
@@ -368,7 +452,14 @@ class TestDetector:
           event_name="openat",
           event_group="",
           ts_unix_nano=1234567890000000000,
-          data=["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
+          syscall_nr=2,
+      comm="bash",
+      pid="1",
+      tid="2",
+      uid="1000",
+      arg0="-100",
+      arg1="2",
+      path="/tmp/test",
         )
 
       async for _ in detector.StreamEvents(one_event(), None):

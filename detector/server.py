@@ -91,7 +91,14 @@ def _event_base_entry(evt: events_pb2.EventEnvelope) -> dict:
     "event_id": evt.event_id,
     "event_name": evt.event_name or "",
     "event_group": evt.event_group or "",
-    "data": list(evt.data) if evt.data else [],
+    "syscall_nr": evt.syscall_nr,
+    "comm": evt.comm or "",
+    "pid": evt.pid or "",
+    "tid": evt.tid or "",
+    "uid": evt.uid or "",
+    "arg0": evt.arg0 or "",
+    "arg1": evt.arg1 or "",
+    "path": evt.path or "",
     "hostname": evt.hostname or "",
     "pod_name": evt.pod_name or "",
     "namespace": evt.namespace or "",
@@ -484,16 +491,18 @@ async def serve():
             """Match event against search query (same logic as UI eventMatchesFilter)."""
             if not query:
               return True
-            data = obj.get("data") or []
-            comm = (data[2] if len(data) > 2 else "") or obj.get("attributes", {}).get("comm", "")
-            path = (data[8] if len(data) > 8 else "") or obj.get("attributes", {}).get("path", "") or obj.get("attributes", {}).get("filename", "")
+            comm = (obj.get("comm") or "") or obj.get("attributes", {}).get("comm", "")
+            path = (obj.get("path") or "") or obj.get("attributes", {}).get("path", "") or obj.get("attributes", {}).get("filename", "")
             event_name = (obj.get("event_name") or "").lower()
             path_s = (path or "").lower()
             comm_s = (comm or "").lower()
             hostname = (obj.get("hostname") or "").lower()
             event_group = (obj.get("event_group") or "").lower()
-            data_joined = " ".join(str(x) for x in data).lower()
-            haystack = f"{event_name} {comm_s} {path_s} {hostname} {event_group} {data_joined}"
+            parts_blob = " ".join(
+              str(obj.get(k, "") or "")
+              for k in ("pid", "tid", "uid", "arg0", "arg1", "syscall_nr")
+            ).lower()
+            haystack = f"{event_name} {comm_s} {path_s} {hostname} {event_group} {parts_blob}"
             parts = query.strip().split()
             for part in parts:
               if not part:

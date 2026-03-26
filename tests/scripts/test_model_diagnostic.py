@@ -34,24 +34,22 @@ def _make_synthetic_events(n: int, base_ts_ns: int = 1700000000000000000) -> lis
       flags = "2101248"
       return_value = "-13" if i % 4 == 0 else "7"
       flags = "O_CREAT|O_WRONLY|O_TRUNC"
+    if event_name == "openat":
+      arg1 = flags
     events.append({
       "event_id": f"test-{i:06d}",
       "event_name": event_name,
       "event_group": "file",
       "event_type": "file",
       "ts_unix_nano": ts,
-      "data": [
-        event_name,
-        str(syscall_id),
-        comm,
-        str(1000 + i),
-        str(1000 + i),
-        uid,
-        arg0,
-        arg1,
-        path,
-        flags,
-      ],
+      "syscall_nr": syscall_id,
+      "comm": comm,
+      "pid": str(1000 + i),
+      "tid": str(1000 + i),
+      "uid": uid,
+      "arg0": arg0,
+      "arg1": arg1,
+      "path": path,
       "hostname": "test-host",
       "pod_name": "test-pod",
       "namespace": "default",

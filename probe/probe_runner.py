@@ -20,6 +20,7 @@ from bcc import BPF
 
 import events_pb2
 import events_pb2_grpc
+from event_envelope_codec import envelope_to_dict
 from probe.config import AppConfig, load_config
 from probe.events import EVENT_ID_TO_NAME, EVENT_IDS_WITH_RETURN_VALUE
 from probe.flags import decode_flags
@@ -596,19 +597,7 @@ class FileSink:
     self._open()
 
   def publish(self, env: events_pb2.EventEnvelope):
-    # Serialize data as ordered array (more efficient than map)
-    payload = {
-      "event_id": env.event_id,
-      "ts_unix_nano": env.ts_unix_nano,
-      "hostname": env.hostname,
-      "pod": env.pod_name,
-      "namespace": env.namespace,
-      "container_id": env.container_id,
-      "event_name": env.event_name,
-      "event_group": env.event_group,
-      "data": list(env.data),  # Ordered vector
-      "attributes": dict(env.attributes),
-    }
+    payload = envelope_to_dict(env)
     blob = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     record = self.MAGIC + struct.pack("<I", len(blob)) + blob
     with self.lock:
@@ -798,19 +787,14 @@ class ProbeRunner:
     # Convert boot-relative timestamp to Unix epoch nanoseconds
     ts_unix_nano = event.ts + self._boot_time_ns
 
-    # Build dynamic attributes per event.
+    # Build dynamic attributes per event (no syscall field duplication vs envelope).
     attributes = dict(self._static_attrs)
-    attributes["event_id"] = str(event_id)
-    attributes["arg0"] = str(int(event.arg0))
-    attributes["arg1"] = str(int(event.arg1))
     return_val = int(getattr(event, "return_value", 0) or 0)
     if event_id in EVENT_IDS_WITH_RETURN_VALUE:
       attributes["return_value"] = str(return_val)
 
-    flags_str = ""
     decoded_flags = decode_flags(int(event.flags), event_id)
     if decoded_flags is not None:
-      flags_str = str(int(event.flags))
       attributes["flags"] = decoded_flags
 
     rule_ctx = {
@@ -841,7 +825,6 @@ class ProbeRunner:
     uid_str = str(event.uid)
     arg0_str = str(int(event.arg0))
     arg1_str = str(int(event.arg1))
-    event_id_str = str(event_id)
 
     env = events_pb2.EventEnvelope(
       event_id=_fast_event_id(),
@@ -852,24 +835,19 @@ class ProbeRunner:
       ts_unix_nano=ts_unix_nano,
       event_name=event_name,
       event_group=event_group_str,
-      # Canonical generic vector: [event_name, event_id, comm, pid, tid, uid, arg0, arg1, path, flags]
-      data=[event_name, event_id_str, comm, pid_str, tid_str, uid_str, arg0_str, arg1_str, filename, flags_str],
+      syscall_nr=event_id,
+      comm=comm,
+      pid=pid_str,
+      tid=tid_str,
+      uid=uid_str,
+      arg0=arg0_str,
+      arg1=arg1_str,
+      path=filename,
       attributes=attributes,
     )
 
     if self.cfg.stream.mode == "stdout":
-      payload = {
-        "event_name": env.event_name,
-        "event_group": env.event_group,
-        "event_id": env.event_id,
-        "ts_unix_nano": env.ts_unix_nano,
-        "hostname": env.hostname,
-        "pod": env.pod_name,
-        "namespace": env.namespace,
-        "attributes": dict(env.attributes),
-        "data": list(env.data),
-      }
-      print(json.dumps(payload))
+      print(json.dumps(envelope_to_dict(env)))
     elif self.cfg.stream.mode == "file" and self.filesink:
       self.filesink.publish(env)
     else:

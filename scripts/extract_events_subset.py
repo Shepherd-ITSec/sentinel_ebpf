@@ -13,12 +13,13 @@ def _to_replay_event(obj: dict, from_key: str, to_key: str) -> dict:
     """Build minimal event dict for replay, with from_key renamed to to_key."""
     event_group = obj.get(to_key) or obj.get(from_key) or ""
     pod_name = obj.get("pod_name") or obj.get("pod") or ""
-    data = obj.get("data", [])
-    if not isinstance(data, list):
-        data = []
     attributes = obj.get("attributes") or {}
     if not isinstance(attributes, dict):
         attributes = {}
+    try:
+        syscall_nr = int(obj.get("syscall_nr", 0) or 0)
+    except (TypeError, ValueError):
+        syscall_nr = 0
 
     return {
         "event_id": obj.get("event_id", ""),
@@ -27,9 +28,16 @@ def _to_replay_event(obj: dict, from_key: str, to_key: str) -> dict:
         "namespace": obj.get("namespace", ""),
         "container_id": obj.get("container_id", ""),
         "ts_unix_nano": int(obj.get("ts_unix_nano", 0)),
-        "event_name": obj.get("event_name", "") or (data[0] if data else ""),
+        "event_name": obj.get("event_name", ""),
         "event_group": event_group,
-        "data": data,
+        "syscall_nr": syscall_nr,
+        "comm": obj.get("comm", ""),
+        "pid": obj.get("pid", ""),
+        "tid": obj.get("tid", ""),
+        "uid": obj.get("uid", ""),
+        "arg0": obj.get("arg0", ""),
+        "arg1": obj.get("arg1", ""),
+        "path": obj.get("path", ""),
         "attributes": attributes,
     }
 

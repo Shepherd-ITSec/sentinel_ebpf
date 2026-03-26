@@ -41,21 +41,15 @@ def _build_evt(row: Dict[str, str], out_idx: int, start_ts_unix_nano: int, event
   event_id = f"{event_id_prefix}-{out_idx}"
   ts = start_ts_unix_nano + out_idx * 1_000_000
 
-  data = [
-    event_name,
-    str(row.get("event_id", out_idx)),
-    (row.get("comm") or "").strip(),
-    str(row.get("pid", "0")),
-    str(row.get("tid", "0")),
-    str(row.get("uid", "0")),
-    str(row.get("arg0", "0")),
-    str(row.get("arg1", "0")),
-    (row.get("path") or "").strip(),
-    (row.get("flags") or "").strip(),
-  ]
-  # Pad to 10 slots
-  while len(data) < 10:
-    data.append("")
+  try:
+    syscall_nr = int(row.get("syscall_nr") or row.get("event_id") or 0)
+  except (TypeError, ValueError):
+    syscall_nr = 0
+  if syscall_nr < 0:
+    syscall_nr = 0
+
+  arg0 = str(row.get("arg0", "0"))
+  arg1 = str(row.get("arg1", "0"))
 
   attrs: Dict[str, str] = {}
   if row.get("sin_port") or row.get("sin_addr") or row.get("sa_family"):
@@ -63,14 +57,21 @@ def _build_evt(row: Dict[str, str], out_idx: int, start_ts_unix_nano: int, event
     attrs["sin_addr"] = str(row.get("sin_addr", ""))
     attrs["sa_family"] = str(row.get("sa_family", ""))
   elif row.get("sockaddr"):
-    data[7] = str(row["sockaddr"])
+    arg1 = str(row["sockaddr"])
 
   evt: dict = {
     "event_id": event_id,
     "event_name": event_name,
     "event_group": "network",
     "ts_unix_nano": ts,
-    "data": data,
+    "syscall_nr": syscall_nr,
+    "comm": (row.get("comm") or "").strip(),
+    "pid": str(row.get("pid", "0")),
+    "tid": str(row.get("tid", "0")),
+    "uid": str(row.get("uid", "0")),
+    "arg0": arg0,
+    "arg1": arg1,
+    "path": (row.get("path") or "").strip(),
   }
   if attrs:
     evt["attributes"] = attrs

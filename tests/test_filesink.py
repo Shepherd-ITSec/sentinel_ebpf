@@ -24,7 +24,14 @@ def sample_event():
     event_name="openat",
     event_group="",
     ts_unix_nano=1234567890000000000,
-    data=["openat", "2", "bash", "1234", "5678", "1000", "-100", "2", "/tmp/test.txt", "2"],
+    syscall_nr=2,
+    comm="bash",
+    pid="1234",
+    tid="5678",
+    uid="1000",
+    arg0="-100",
+    arg1="2",
+    path="/tmp/test.txt",
   )
 
 
@@ -53,7 +60,9 @@ class TestFileSink:
       assert payload["event_id"] == "test-event-123"
       assert payload["event_name"] == "openat"
       assert payload["event_group"] == ""
-      assert payload["data"] == ["openat", "2", "bash", "1234", "5678", "1000", "-100", "2", "/tmp/test.txt", "2"]
+      assert payload["syscall_nr"] == 2
+      assert payload["comm"] == "bash"
+      assert payload["path"] == "/tmp/test.txt"
     finally:
       sink.close()
 
@@ -94,7 +103,14 @@ class TestFileSink:
           event_name="openat",
           event_group="",
           ts_unix_nano=1234567890000000000 + i,
-          data=["openat", "2", "bash", "1234", "5678", "1000", "-100", "2", "/tmp/test.txt", "2"],
+          syscall_nr=2,
+          comm="bash",
+          pid="1234",
+          tid="5678",
+          uid="1000",
+          arg0="-100",
+          arg1="2",
+          path="/tmp/test.txt",
         )
         sink.publish(evt)
       sink.close()
@@ -131,7 +147,14 @@ class TestFileSink:
           event_name="openat",
           event_group="",
           ts_unix_nano=1234567890000000000 + i,
-          data=["openat", "2", "bash", "1234", "5678", "1000", "-100", "2", "/tmp/test.txt", "2"],
+          syscall_nr=2,
+          comm="bash",
+          pid="1234",
+          tid="5678",
+          uid="1000",
+          arg0="-100",
+          arg1="2",
+          path="/tmp/test.txt",
         )
         sink.publish(evt)
       sink.close()
@@ -159,7 +182,14 @@ class TestFileSink:
           event_name="openat",
           event_group="",
           ts_unix_nano=1234567890000000000 + i,
-          data=["openat", "2", "bash", "1234", "5678", "1000", "-100", "2", "/tmp/test.txt", "2"],
+          syscall_nr=2,
+          comm="bash",
+          pid="1234",
+          tid="5678",
+          uid="1000",
+          arg0="-100",
+          arg1="2",
+          path="/tmp/test.txt",
         )
         sink.publish(evt)
       sink.close()

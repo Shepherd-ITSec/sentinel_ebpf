@@ -51,15 +51,13 @@ class DetectorServiceServicer(object):
     """Missing associated documentation comment in .proto file."""
 
     def StreamEvents(self, request_iterator, context):
-        """Bidirectional stream of events and anomaly responses.
-        """
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def ReportAnomaly(self, request, context):
-        """Optional explicit anomaly report push.
-        """
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')

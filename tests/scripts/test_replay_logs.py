@@ -8,6 +8,21 @@ import pytest
 
 from scripts.replay_logs import MAGIC, _detect_format, iter_events, iter_events_jsonl, open_stream
 
+_SAMPLE_OPENAT = {
+  "event_id": "test-1",
+  "event_name": "openat",
+  "event_group": "",
+  "ts_unix_nano": 1234567890000000000,
+  "syscall_nr": 2,
+  "comm": "bash",
+  "pid": "1",
+  "tid": "2",
+  "uid": "1000",
+  "arg0": "-100",
+  "arg1": "2",
+  "path": "/tmp/test",
+}
+
 
 class TestReplayLogs:
   """Test replay_logs.py functions."""
@@ -30,32 +45,21 @@ class TestReplayLogs:
 
   def test_iter_events_single(self, temp_dir):
     log_file = temp_dir / "events.bin"
-    payload = json.dumps({
-      "event_id": "test-1",
-      "event_name": "openat",
-      "event_group": "",
-      "ts_unix_nano": 1234567890000000000,
-      "data": ["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
-    }).encode("utf-8")
+    payload = json.dumps(dict(_SAMPLE_OPENAT, event_id="test-1")).encode("utf-8")
     record = MAGIC + struct.pack("<I", len(payload)) + payload
     log_file.write_bytes(record)
 
     events = list(iter_events(log_file))
     assert len(events) == 1
     assert events[0]["event_id"] == "test-1"
-    assert events[0]["data"] == ["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"]
+    assert events[0]["path"] == "/tmp/test"
+    assert events[0]["syscall_nr"] == 2
 
   def test_iter_events_multiple(self, temp_dir):
     log_file = temp_dir / "events.bin"
     records = []
     for i in range(3):
-      payload = json.dumps({
-        "event_id": f"test-{i}",
-        "event_name": "openat",
-        "event_group": "",
-        "ts_unix_nano": 1234567890000000000 + i * 1000000,
-        "data": ["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
-      }).encode("utf-8")
+      payload = json.dumps(dict(_SAMPLE_OPENAT, event_id=f"test-{i}", ts_unix_nano=1234567890000000000 + i * 1000000)).encode("utf-8")
       records.append(MAGIC + struct.pack("<I", len(payload)) + payload)
     log_file.write_bytes(b"".join(records))
 
@@ -69,13 +73,9 @@ class TestReplayLogs:
     records = []
     base_ts = 1234567890000  # ms
     for i in range(5):
-      payload = json.dumps({
-        "event_id": f"test-{i}",
-        "event_name": "openat",
-        "event_group": "",
-        "ts_unix_nano": (base_ts + i * 1000) * 1_000_000,  # Convert to ns
-        "data": ["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
-      }).encode("utf-8")
+      payload = json.dumps(
+        dict(_SAMPLE_OPENAT, event_id=f"test-{i}", ts_unix_nano=(base_ts + i * 1000) * 1_000_000)
+      ).encode("utf-8")
       records.append(MAGIC + struct.pack("<I", len(payload)) + payload)
     log_file.write_bytes(b"".join(records))
 
@@ -88,13 +88,9 @@ class TestReplayLogs:
     records = []
     base_ts = 1234567890000  # ms
     for i in range(5):
-      payload = json.dumps({
-        "event_id": f"test-{i}",
-        "event_name": "openat",
-        "event_group": "",
-        "ts_unix_nano": (base_ts + i * 1000) * 1_000_000,
-        "data": ["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
-      }).encode("utf-8")
+      payload = json.dumps(
+        dict(_SAMPLE_OPENAT, event_id=f"test-{i}", ts_unix_nano=(base_ts + i * 1000) * 1_000_000)
+      ).encode("utf-8")
       records.append(MAGIC + struct.pack("<I", len(payload)) + payload)
     log_file.write_bytes(b"".join(records))
 
@@ -107,13 +103,9 @@ class TestReplayLogs:
     records = []
     base_ts = 1234567890000  # ms
     for i in range(5):
-      payload = json.dumps({
-        "event_id": f"test-{i}",
-        "event_name": "openat",
-        "event_group": "",
-        "ts_unix_nano": (base_ts + i * 1000) * 1_000_000,
-        "data": ["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
-      }).encode("utf-8")
+      payload = json.dumps(
+        dict(_SAMPLE_OPENAT, event_id=f"test-{i}", ts_unix_nano=(base_ts + i * 1000) * 1_000_000)
+      ).encode("utf-8")
       records.append(MAGIC + struct.pack("<I", len(payload)) + payload)
     log_file.write_bytes(b"".join(records))
 
@@ -126,13 +118,7 @@ class TestReplayLogs:
     log_file = temp_dir / "events.bin"
     records = []
     for i in range(5):
-      payload = json.dumps({
-        "event_id": f"test-{i}",
-        "event_name": "openat",
-        "event_group": "",
-        "ts_unix_nano": 1234567890000000000 + i * 1000000,
-        "data": ["openat", "2", "bash", "1", "2", "1000", "-100", "2", "/tmp/test", "2"],
-      }).encode("utf-8")
+      payload = json.dumps(dict(_SAMPLE_OPENAT, event_id=f"test-{i}", ts_unix_nano=1234567890000000000 + i * 1000000)).encode("utf-8")
       records.append(MAGIC + struct.pack("<I", len(payload)) + payload)
     log_file.write_bytes(b"".join(records))
 
@@ -148,13 +134,14 @@ class TestReplayLogs:
 
   def test_detect_format_jsonl(self, temp_dir):
     jsonl_file = temp_dir / "events.jsonl"
-    jsonl_file.write_text('{"event_id": "x", "data": []}\n')
+    jsonl_file.write_text('{"event_id": "x", "syscall_nr": 0}\n')
     assert _detect_format(jsonl_file) == "jsonl"
 
   def test_iter_events_jsonl_lossless(self, temp_dir):
     jsonl_file = temp_dir / "detector-events.jsonl"
     jsonl_file.write_text(
-      '{"event_id": "a", "event_name": "openat", "event_group": "file", "data": ["openat", "2", "bash", "1", "2", "1000", "0", "0", "/tmp/x", ""], '
+      '{"event_id": "a", "event_name": "openat", "event_group": "file", "syscall_nr": 2, "comm": "bash", "pid": "1", "tid": "2", "uid": "1000", '
+      '"arg0": "0", "arg1": "0", "path": "/tmp/x", '
       '"hostname": "h", "pod_name": "p", "namespace": "ns", "container_id": "cid", "attributes": {"return_value": "0"}, "ts_unix_nano": 1234567890000000000}\n'
     )
     events = list(iter_events_jsonl(jsonl_file))
@@ -169,7 +156,7 @@ class TestReplayLogs:
     """iter_events_jsonl skips _meta lines (no event_id) written by detector event dump."""
     jsonl_file = temp_dir / "events.jsonl"
     meta = json.dumps({"_meta": True, "date": "2026-03-09T12:00:00Z", "config": {}}) + "\n"
-    evt = json.dumps({"event_id": "evt-1", "ts_unix_nano": 1234567890000000000, "data": ["x"]}) + "\n"
+    evt = json.dumps({"event_id": "evt-1", "ts_unix_nano": 1234567890000000000, "event_name": "x"}) + "\n"
     jsonl_file.write_text(meta + evt)
     events = list(iter_events_jsonl(jsonl_file))
     assert len(events) == 1
@@ -180,30 +167,27 @@ class TestReplayLogs:
     jsonl_file = temp_dir / "events.jsonl"
     lines = []
     for i in range(6):
-      lines.append(json.dumps({"event_id": f"evt-{i}", "ts_unix_nano": 1000000000 + i, "data": ["x"]}) + "\n")
+      lines.append(json.dumps({"event_id": f"evt-{i}", "ts_unix_nano": 1000000000 + i, "event_name": "x"}) + "\n")
     jsonl_file.write_text("".join(lines))
     events = list(iter_events_jsonl(jsonl_file, skip=3, max_events=3))
     assert len(events) == 3
     assert [e["event_id"] for e in events] == ["evt-3", "evt-4", "evt-5"]
 
-  def test_iter_events_non_list_data_rejected_by_replay(self, temp_dir):
-    """Replay should reject non-canonical non-list data vectors."""
-    log_file = temp_dir / "events.bin"
-    payload = json.dumps({
-      "event_id": "test-1",
-      "event_name": "openat",
-      "event_group": "",
-      "ts_unix_nano": 1234567890000000000,
-      "data": {"filename": "/tmp/test", "bytes": "1024", "comm": "bash", "pid": "1", "tid": "2"},
-    }).encode("utf-8")
-    record = MAGIC + struct.pack("<I", len(payload)) + payload
-    log_file.write_bytes(record)
+  def test_replay_rejects_non_dict_attributes(self, temp_dir):
+    """Replay rejects records whose attributes are not a JSON object."""
+    jsonl_file = temp_dir / "bad.jsonl"
+    jsonl_file.write_text(json.dumps({"event_id": "test-1", "attributes": []}) + "\n")
 
     with patch("scripts.replay_logs.grpc.insecure_channel") as mock_channel:
       mock_stub = MagicMock()
       mock_channel.return_value = MagicMock()
+
+      def _drain(req_iter):
+        return list(req_iter)
+
+      mock_stub.StreamEvents.side_effect = lambda *args, **_kw: _drain(args[0])
       with patch("scripts.replay_logs.events_pb2_grpc.DetectorServiceStub", return_value=mock_stub):
-        mock_stub.StreamEvents.side_effect = ValueError("invalid event record: 'data' must be an ordered list")
-        with pytest.raises(ValueError, match="invalid event record"):
-          from scripts.replay_logs import replay
-          replay(str(log_file), "localhost:50051", "fast", None, None)
+        from scripts.replay_logs import replay
+
+        with pytest.raises(ValueError, match="attributes"):
+          replay(str(jsonl_file), "localhost:50051", "fast", None, None)

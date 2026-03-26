@@ -80,28 +80,9 @@ def _detect_format(path: Path) -> str:
 
 
 def _dict_to_event_envelope(obj: dict) -> events_pb2.EventEnvelope:
-  data_field = obj.get("data", [])
-  if not isinstance(data_field, list):
-    data_field = []
-  if "event_name" in obj:
-    event_name = obj.get("event_name", "") or (data_field[0] if data_field else "")
-    event_group = obj.get("event_group", "")
-  else:
-    event_name = obj.get("event_name", "") or (data_field[0] if data_field else "")
-    event_group = ""
-  pod_name = obj.get("pod_name", obj.get("pod", ""))
-  return events_pb2.EventEnvelope(
-    event_id=obj.get("event_id", ""),
-    hostname=obj.get("hostname", ""),
-    pod_name=pod_name,
-    namespace=obj.get("namespace", ""),
-    container_id=obj.get("container_id", ""),
-    ts_unix_nano=int(obj.get("ts_unix_nano", 0)),
-    event_name=event_name,
-    event_group=event_group,
-    data=data_field,
-    attributes=dict(obj.get("attributes", {}) or {}),
-  )
+  from event_envelope_codec import envelope_from_dict
+
+  return envelope_from_dict(obj)
 
 
 def _open_stream(path: Path):

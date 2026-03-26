@@ -35,7 +35,7 @@ def load_from_file(path: Path, tail_lines: int | None = None) -> list:
             obj = json.loads(line)
             if obj.get("_meta"):
                 continue
-            if "event_id" in obj or "data" in obj:
+            if "event_id" in obj or "syscall_nr" in obj or "path" in obj:
                 entries.append(obj)
         except json.JSONDecodeError:
             pass
@@ -43,9 +43,8 @@ def load_from_file(path: Path, tail_lines: int | None = None) -> list:
 
 
 def get_comm_path(e: dict) -> tuple[str, str]:
-    d = e.get("data", [])
-    comm = (d[2] if len(d) > 2 else "") or e.get("comm", "")
-    path = (d[8] if len(d) > 8 else "") or e.get("path", "")
+    comm = str(e.get("comm") or "")
+    path = str(e.get("path") or "")
     return comm, path
 
 

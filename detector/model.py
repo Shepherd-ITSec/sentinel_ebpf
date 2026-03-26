@@ -1262,12 +1262,11 @@ class OnlineFreq1D(_BothScoresMixin):
     return float(np.sum(w * topk) / denom)
 
   _BINARY_PREFIXES = (
-    "event_name_",
     "comm_bucket_",
     "hostname_bucket_",
-    "mount_ns_bucket_",
     "path_tok_d",
     "file_event_name_",
+    "net_event_name_",
     "file_extension_bucket_",
     "file_flags_bucket_",
     "net_socket_type_bucket_",

@@ -9,30 +9,29 @@ import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
 
 // Envelope for any observed kernel-level event (syscalls and LSM-style events).
-// Universal semantics: event_name = syscall/event name (openat, connect, ...);
+// event_name = syscall/event name (openat, connect, ...);
 // event_group = category/meta tag from rules (network, file, process, or empty).
-// Syscalls behave like function calls; envelope carries one canonical data layout.
 message EventEnvelope {
-  // Unique ID for correlating responses.
+  // Correlation id (client-generated); not the Linux syscall number.
   string event_id = 1;
-  // Node and workload metadata.
   string hostname = 2;
   string pod_name = 3;
   string namespace = 4;
   string container_id = 5;
-  // Syscall/event name (e.g. openat, connect, socket, execve). Same as data[0].
   string event_name = 8;
-  // Category/meta tag from rules (e.g. network, file, process). Empty if no rule type.
   string event_group = 9;
-  // Canonical ordered data vector. Same layout for all events; unused slots are empty.
-  // Order: [event_name, event_id, comm, pid, tid, uid, arg0, arg1, path, flags]
-  // - arg0, arg1: event-specific (e.g. fd, addrlen for connect; dfd, flags for openat).
-  // - path: path-based events (open, execve, unlink, rename, chmod, chown, ...).
-  // - flags: open/openat/openat2 flags; empty for others.
-  repeated string data = 10;
-  // Extra key-value enrichment (e.g. return_value, mount_namespace). Same keys for all types.
+
+  // Syscall payload (same fields for every event type; unused strings are empty).
+  uint32 syscall_nr = 11; // Linux syscall number (e.g. 257 for openat).
+  string comm = 12;
+  string pid = 13;
+  string tid = 14;
+  string uid = 15;
+  string arg0 = 16;
+  string arg1 = 17;
+  string path = 18; // path-based syscalls; empty otherwise.
+
   map<string, string> attributes = 20;
-  // Kernel timestamp (nanoseconds).
   uint64 ts_unix_nano = 30;
 }
 
@@ -53,8 +52,6 @@ message AnomalyReport {
 }
 
 service DetectorService {
-  // Bidirectional stream of events and anomaly responses.
   rpc StreamEvents (stream EventEnvelope) returns (stream DetectionResponse);
-  // Optional explicit anomaly report push.
   rpc ReportAnomaly (AnomalyReport) returns (google.protobuf.Empty);
 }

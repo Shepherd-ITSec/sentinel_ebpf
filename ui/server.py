@@ -363,26 +363,13 @@ class Handler(BaseHTTPRequestHandler):
       entries = logs.get("entries", []) if isinstance(logs, dict) else []
       points = []
       for entry in entries:
-        data = entry.get("data", []) if isinstance(entry, dict) else []
-        path = ""
-        comm = ""
-        pid = ""
-        tid = ""
-        uid = ""
-        if isinstance(data, list):
-          # Canonical vector: [event_name, event_id, comm, pid, tid, uid, arg0, arg1, path, flags]
-          path = data[8] if len(data) > 8 else (data[0] if len(data) > 0 else "")
-          comm = data[2] if len(data) > 2 else ""
-          pid = data[3] if len(data) > 3 else ""
-          tid = data[4] if len(data) > 4 else ""
-          uid = data[5] if len(data) > 5 else ""
-        elif isinstance(entry, dict):
-          # Fallback for non-canonical legacy JSON payloads.
-          path = str(entry.get("path", ""))
-          comm = str(entry.get("comm", ""))
-          pid = str(entry.get("pid", ""))
-          tid = str(entry.get("tid", ""))
-          uid = str(entry.get("uid", ""))
+        if not isinstance(entry, dict):
+          continue
+        path = str(entry.get("path", ""))
+        comm = str(entry.get("comm", ""))
+        pid = str(entry.get("pid", ""))
+        tid = str(entry.get("tid", ""))
+        uid = str(entry.get("uid", ""))
         score = float(entry.get("score", 0.0) or 0.0)
         points.append({
           "x": _hash01(path),
