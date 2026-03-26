@@ -194,7 +194,7 @@ class TestDetector:
     assert resp.event_id == "view-test"
     assert captured["feature_view"] == "memstream"
 
-  @pytest.mark.parametrize("model_algorithm", ("freq1d", "indep_marginal"))
+  @pytest.mark.parametrize("model_algorithm", ("freq1d",))
   def test_freq_models_use_frequency_feature_view(self, monkeypatch, model_algorithm):
     captured = {}
 
@@ -318,38 +318,6 @@ class TestDetector:
 
     resp = detector._score_event(evt)
     assert resp.event_id == "test-latentcluster"
-    assert 0.0 <= resp.score <= 1.0
-
-  @pytest.mark.asyncio
-  async def test_score_event_gausscop(self):
-    """Test GaussCop scoring path."""
-    cfg = DetectorConfig(
-      model_algorithm="gausscop",
-      gausscop_bins=32,
-      gausscop_alpha=1.0,
-      gausscop_decay=1.0,
-      gausscop_max_categories=128,
-      score_mode="scaled",
-    )
-    detector = RuleBasedDetector(cfg)
-
-    evt = events_pb2.EventEnvelope(
-      event_id="test-gausscop",
-      event_name="openat",
-      event_group="",
-      ts_unix_nano=1234567890000000000,
-      syscall_nr=2,
-      comm="bash",
-      pid="1",
-      tid="2",
-      uid="1000",
-      arg0="-100",
-      arg1="2",
-      path="/tmp/test",
-    )
-
-    resp = detector._score_event(evt)
-    assert resp.event_id == "test-gausscop"
     assert 0.0 <= resp.score <= 1.0
 
   @pytest.mark.asyncio

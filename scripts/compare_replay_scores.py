@@ -275,7 +275,7 @@ def main() -> None:
   ap.add_argument(
     "--algorithm",
     default=None,
-    help="Model algorithm (kitnet, loda_ema, halfspacetrees, memstream, zscore, knn, freq1d, indep_marginal, gausscop, copulatree, latentcluster)",
+    help="Model algorithm (kitnet, loda_ema, halfspacetrees, memstream, zscore, knn, freq1d, copulatree, latentcluster)",
   )
   ap.add_argument("--threshold", default=None, help="Anomaly threshold (e.g. 0.7)")
   ap.add_argument(

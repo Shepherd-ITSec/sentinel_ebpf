@@ -61,7 +61,7 @@ detector:
   eventDumpPath: "/var/log/sentinel-ebpf/events.jsonl"   # Path to dump all incoming events to file (empty to disable, e.g., /var/log/sentinel-ebpf/events.jsonl)
   # Model configurations
   model:
-    algorithm: "indep_marginal"  # halfspacetrees | loda | loda_ema | memstream | kitnet | zscore | freq1d | indep_marginal | gausscop | copulatree | latentcluster
+    algorithm: "freq1d"  # halfspacetrees | loda | loda_ema | memstream | kitnet | zscore | freq1d | copulatree | latentcluster
     threshold: 0.98  # Anomaly score threshold
     score_mode: "percentile"  # raw | scaled | percentile
     percentile:
@@ -101,15 +101,6 @@ detector:
     freq1d_aggregation: "topk_mean" # Freq1D aggregation: sum | mean | topk_mean | soft_topk_mean
     freq1d_topk: 8 # Used by topk_mean and soft_topk_mean
     freq1d_soft_topk_temperature: 0.25 # Used by soft_topk_mean (smaller => closer to max)
-    # GaussCop parameters (Gaussian copula on freq1D marginals)
-    gausscop_bins: 16384
-    gausscop_alpha: 1.0
-    gausscop_decay: 1.0
-    gausscop_max_categories: 16384
-    gausscop_reg: 0.01
-    gausscop_u_clamp: 1e-12
-    gausscop_max_features: 30  # max features for copula (0 = use all)
-    gausscop_importance_window: 5000  # events before first selection; as we have ten thousands of events real quick thats a tiny number
     # CopulaTree parameters (streaming Gaussian pair-copula tree on freq1d marginals)
     copulatree_u_clamp: 1e-6
     copulatree_reg: 0.05

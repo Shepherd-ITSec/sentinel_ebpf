@@ -9,9 +9,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-os.environ["DETECTOR_MODEL_ALGORITHM"] = "gausscop"
-os.environ["DETECTOR_GAUSSCOP_BINS"] = "65536"
-os.environ["DETECTOR_GAUSSCOP_MAX_CATEGORIES"] = "65536"
+os.environ["DETECTOR_MODEL_ALGORITHM"] = "freq1d"
+os.environ["DETECTOR_FREQ1D_BINS"] = "65536"
+os.environ["DETECTOR_FREQ1D_MAX_CATEGORIES"] = "65536"
 
 import events_pb2
 from detector.config import load_config
@@ -59,5 +59,5 @@ def run_profile(n_events: int = 500):
 
 if __name__ == "__main__":
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 500
-    print(f"Profiling {n} events with GaussCop...")
+    print(f"Profiling {n} events with Freq1D...")
     run_profile(n)

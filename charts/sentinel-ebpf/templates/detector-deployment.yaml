@@ -91,22 +91,6 @@ spec:
               value: {{ .Values.detector.model.freq1d_topk | quote }}
             - name: DETECTOR_FREQ1D_SOFT_TOPK_TEMPERATURE
               value: {{ .Values.detector.model.freq1d_soft_topk_temperature | quote }}
-            - name: DETECTOR_GAUSSCOP_BINS
-              value: {{ .Values.detector.model.gausscop_bins | quote }}
-            - name: DETECTOR_GAUSSCOP_ALPHA
-              value: {{ .Values.detector.model.gausscop_alpha | quote }}
-            - name: DETECTOR_GAUSSCOP_DECAY
-              value: {{ .Values.detector.model.gausscop_decay | quote }}
-            - name: DETECTOR_GAUSSCOP_MAX_CATEGORIES
-              value: {{ .Values.detector.model.gausscop_max_categories | quote }}
-            - name: DETECTOR_GAUSSCOP_REG
-              value: {{ .Values.detector.model.gausscop_reg | quote }}
-            - name: DETECTOR_GAUSSCOP_U_CLAMP
-              value: {{ .Values.detector.model.gausscop_u_clamp | quote }}
-            - name: DETECTOR_GAUSSCOP_MAX_FEATURES
-              value: {{ .Values.detector.model.gausscop_max_features | quote }}
-            - name: DETECTOR_GAUSSCOP_IMPORTANCE_WINDOW
-              value: {{ .Values.detector.model.gausscop_importance_window | quote }}
             - name: DETECTOR_COPULATREE_U_CLAMP
               value: {{ .Values.detector.model.copulatree_u_clamp | quote }}
             - name: DETECTOR_COPULATREE_REG

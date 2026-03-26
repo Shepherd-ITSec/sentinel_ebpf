@@ -168,7 +168,7 @@ Configure in Helm values:
 ```yaml
 detector:
   model:
-    algorithm: "memstream" # halfspacetrees | loda | loda_ema | memstream | freq1d | indep_marginal | gausscop | copulatree | latentcluster
+    algorithm: "memstream" # halfspacetrees | loda | loda_ema | memstream | freq1d | copulatree | latentcluster
     threshold: 0.5
     # Half-Space Trees
     hst_n_trees: 25
@@ -204,8 +204,6 @@ Available algorithms:
 - `loda_ema`: custom LODA with EMA-based adaptive normalization; streaming from first event; supports CUDA.
 - `memstream`: online autoencoder with latent-memory scoring and threshold-gated FIFO memory updates.
 - `freq1d`: per-feature rarity baseline with configurable score aggregation.
-- `indep_marginal`: standalone 1D marginals (same feature treatment as freq1d); raw score `1 - (∏_i P(x_i))^(1/d)` (geometric-mean marginal) under independence; uses `DETECTOR_FREQ1D_*` for bins/alpha/decay/max_categories only.
-- `gausscop`: Gaussian-copula dependence model on top of `freq1d` marginals.
 - `copulatree`: streaming copula tree on top of `freq1d` marginals; tracks pairwise Gaussian copula edges and refreshes a maximum-spanning tree online.
 - `latentcluster`: online latent clustering in `freq1d`-normalized space.
 
@@ -227,7 +225,7 @@ Available algorithms:
 
 ### Feature extraction summary
 
-Events are converted to numeric feature vectors. The **feature view** (chosen per algorithm: default, frequency, loda, memstream) controls which encodings are used. Common elements across most views: pid/tid/uid, path depth, hour/minute time features, sensitive-path indicator (file group), online rate/interarrival stats. The **frequency** view (freq1d, indep_marginal, gausscop, copulatree, latentcluster) uses scalar hashes (`*_hash`, `event_id_norm`) instead of sparse buckets for many categoricals, and **drops** global `flags_hash`, file sensitive/tmp flags, and **all** online streams. **`default`** uses one-hot and bucket banks.
+Events are converted to numeric feature vectors. The **feature view** (chosen per algorithm: default, frequency, loda, memstream) controls which encodings are used. Common elements across most views: pid/tid/uid, path depth, hour/minute time features, sensitive-path indicator (file group), online rate/interarrival stats. The **frequency** view (freq1d, copulatree, latentcluster) uses scalar hashes (`*_hash`, `event_id_norm`) instead of sparse buckets for many categoricals, and **drops** global `flags_hash`, file sensitive/tmp flags, and **all** online streams. **`default`** uses one-hot and bucket banks.
 
 ## Extending detector
 

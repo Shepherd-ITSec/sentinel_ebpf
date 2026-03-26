@@ -10,8 +10,31 @@ This directory contains helper scripts for working with sentinel-ebpf. They are 
 ### EVT1 utilities
 
 - **`replay_logs.py`**: Replay EVT1 logs to the detector over gRPC, either as fast as possible or in realtime pacing.
+- **`replay_lidds.py`**: Convert a LID-DS 2021 scenario split to detector-compatible JSONL (maps `Syscall2021` fields into `EventEnvelope` keys), then optionally replay via `replay_logs.py`.
 - **`decode_logs.py`**: Decode EVT1 binary logs (optionally gzipped) into human-readable NDJSON for inspection or debugging.
 - **`compare_replay_scores.py`**: Take a slice of `detector-events` JSONL, replay it to a fresh detector instance, and compare original vs replayed scores to sanity‑check determinism and state handling. Accepts `--score-mode {raw,scaled,percentile}` to control detector score space via `DETECTOR_SCORE_MODE`.
+
+**Replay LID-DS 2021 to detector**
+
+1. Convert and replay:
+   ```bash
+   uv run python scripts/replay_lidds.py \
+     --scenario-path /path/to/LID-DS-2021/CVE-2017-7529 \
+     --split test \
+     --recording-type NORMAL_AND_ATTACK \
+     --out-jsonl test_data/lidds/cve-2017-7529.test.jsonl \
+     --target localhost:50051 \
+     --pace fast
+   ```
+2. Convert only:
+   ```bash
+   uv run python scripts/replay_lidds.py \
+     --scenario-path /path/to/LID-DS-2021/CVE-2017-7529 \
+     --split training \
+     --out-jsonl test_data/lidds/cve-2017-7529.train.jsonl \
+     --convert-only
+   ```
+   By default, the script loads the vendored submodule at `third_party/LID-DS`. Use `--lidds-root` (or env `LID_DS_ROOT`) to override.
 
 ### Synthetic / activity generation
 

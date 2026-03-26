@@ -177,7 +177,7 @@ _MEMSTREAM_FEATURE_VIEW = _FeatureViewSpec(
   include_network_socket_type_bucket=False,
   include_network_daddr_bucket=False,
 )
-# Frequency-model view (freq1d, indep_marginal, gausscop, copulatree, latentcluster): scalar hashes + event_id_norm,
+# Frequency-model view (freq1d, copulatree, latentcluster): scalar hashes + event_id_norm,
 # no global flags_hash, no file sensitive/tmp binaries, no online rate/interarrival streams.
 _FREQUENCY_FEATURE_VIEW = _FeatureViewSpec(
   use_hash_for_categoricals=True,
@@ -289,7 +289,7 @@ def _group_feature_values(event_group: str, feature_name: str, fallback: tuple[s
 def feature_view_for_algorithm(algorithm: str | None) -> str:
   """Map algorithm to feature view."""
   algo = (algorithm or "").strip().lower()
-  if algo in ("freq1d", "indep_marginal", "gausscop", "copulatree", "latentcluster"):
+  if algo in ("freq1d", "copulatree", "latentcluster"):
     return "frequency"
   if algo in ("loda", "loda_ema"):
     return "loda"

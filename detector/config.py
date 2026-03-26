@@ -8,7 +8,7 @@ class DetectorConfig:
   events_http_port: int = 50052  # 0 to disable; serves GET /recent_events for UI log tail in gRPC mode
   recent_events_buffer_size: int = 10000  # Size of recent events ring buffer for UI (default: 10000)
   # River model configuration
-  model_algorithm: str = "freq1d"  # halfspacetrees | loda_ema | kitnet | memstream | zscore | knn | freq1d | indep_marginal | gausscop | copulatree | latentcluster
+  model_algorithm: str = "freq1d"  # halfspacetrees | loda_ema | kitnet | memstream | zscore | knn | freq1d | copulatree | latentcluster
   threshold: float = 0.7  # Anomaly score threshold (0-1). Lower (e.g. 0.3) to flag more events when scores are mostly low.
   hst_n_trees: int = 25
   hst_height: int = 15
@@ -48,14 +48,6 @@ class DetectorConfig:
   freq1d_aggregation: str = "mean"  # sum | mean | topk_mean | soft_topk_mean
   freq1d_topk: int = 8  # used by topk_mean and soft_topk_mean
   freq1d_soft_topk_temperature: float = 0.25  # used by soft_topk_mean; smaller => closer to max
-  gausscop_bins: int = 65536
-  gausscop_alpha: float = 1.0
-  gausscop_decay: float = 1.0
-  gausscop_max_categories: int = 65536
-  gausscop_reg: float = 0.01
-  gausscop_u_clamp: float = 1e-6
-  gausscop_max_features: int = 30  # max features for copula (0 = use all, no selection)
-  gausscop_importance_window: int = 500  # events before first selection; also reselection interval
   copulatree_u_clamp: float = 1e-6
   copulatree_reg: float = 0.05
   copulatree_max_features: int = 30  # max features for copula tree (0 = use all)
@@ -146,16 +138,6 @@ def load_config() -> DetectorConfig:
     raise ValueError(
       f"Invalid DETECTOR_FREQ1D_SOFT_TOPK_TEMPERATURE={freq1d_soft_topk_temperature!r}; must be > 0"
     )
-  gausscop_bins = int(os.environ.get("DETECTOR_GAUSSCOP_BINS", str(defaults.gausscop_bins)))
-  gausscop_alpha = float(os.environ.get("DETECTOR_GAUSSCOP_ALPHA", str(defaults.gausscop_alpha)))
-  gausscop_decay = float(os.environ.get("DETECTOR_GAUSSCOP_DECAY", str(defaults.gausscop_decay)))
-  gausscop_max_categories = int(os.environ.get("DETECTOR_GAUSSCOP_MAX_CATEGORIES", str(defaults.gausscop_max_categories)))
-  gausscop_reg = float(os.environ.get("DETECTOR_GAUSSCOP_REG", str(defaults.gausscop_reg)))
-  gausscop_u_clamp = float(os.environ.get("DETECTOR_GAUSSCOP_U_CLAMP", str(defaults.gausscop_u_clamp)))
-  gausscop_max_features = int(os.environ.get("DETECTOR_GAUSSCOP_MAX_FEATURES", str(defaults.gausscop_max_features)))
-  gausscop_importance_window = int(
-    os.environ.get("DETECTOR_GAUSSCOP_IMPORTANCE_WINDOW", str(defaults.gausscop_importance_window))
-  )
   copulatree_u_clamp = float(os.environ.get("DETECTOR_COPULATREE_U_CLAMP", str(defaults.copulatree_u_clamp)))
   if not (0.0 < copulatree_u_clamp < 0.5):
     raise ValueError(f"Invalid DETECTOR_COPULATREE_U_CLAMP={copulatree_u_clamp!r}; must be in (0, 0.5)")
@@ -277,14 +259,6 @@ def load_config() -> DetectorConfig:
     freq1d_aggregation=freq1d_aggregation,
     freq1d_topk=freq1d_topk,
     freq1d_soft_topk_temperature=freq1d_soft_topk_temperature,
-    gausscop_bins=gausscop_bins,
-    gausscop_alpha=gausscop_alpha,
-    gausscop_decay=gausscop_decay,
-    gausscop_max_categories=gausscop_max_categories,
-    gausscop_reg=gausscop_reg,
-    gausscop_u_clamp=gausscop_u_clamp,
-    gausscop_max_features=gausscop_max_features,
-    gausscop_importance_window=gausscop_importance_window,
     copulatree_u_clamp=copulatree_u_clamp,
     copulatree_reg=copulatree_reg,
     copulatree_max_features=copulatree_max_features,
