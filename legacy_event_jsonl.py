@@ -8,7 +8,7 @@ from typing import Any
 def expand_legacy_data_field(obj: dict[str, Any]) -> dict[str, Any]:
   """
   Legacy dumps used a top-level ``data`` list:
-  [event_name, syscall_nr, comm, pid, tid, uid, arg0, arg1, path, optional_10th].
+  [syscall_name, syscall_nr, comm, pid, tid, uid, arg0, arg1, path, optional_10th].
 
   Merge into the flat fields ``envelope_from_dict`` expects and remove ``data``.
   If ``data`` is missing or too short, return ``obj`` unchanged.
@@ -27,7 +27,7 @@ def expand_legacy_data_field(obj: dict[str, Any]) -> dict[str, Any]:
     syscall_nr = 0
   if syscall_nr > 0xFFFFFFFF:
     syscall_nr = 0xFFFFFFFF
-  out["event_name"] = name
+  out["syscall_name"] = name
   out["syscall_nr"] = syscall_nr
   out["comm"] = comm
   out["pid"] = pid

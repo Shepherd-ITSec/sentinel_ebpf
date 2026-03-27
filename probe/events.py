@@ -15,17 +15,26 @@ EVENT_NAME_TO_ID: Dict[str, int] = {
   "stat": 4,
   "fstat": 5,
   "lstat": 6,
+  "poll": 7,
+  "mmap": 9,
+  "mprotect": 10,
+  "ioctl": 16,
   "access": 21,
   "dup": 32,
   "dup2": 33,
   "socket": 41,
+  "connect": 42,
   "accept": 43,
+  "sendto": 44,
+  "recvfrom": 45,
   "bind": 49,
   "listen": 50,
   "getsockname": 51,
+  "getpeername": 52,
+  "setsockopt": 54,
   "clone": 56,
   "fork": 57,
-  "connect": 42,
+  "fcntl": 72,
   "execve": 59,
   "kill": 62,
   "rename": 82,
@@ -53,10 +62,12 @@ EVENT_NAME_TO_ID: Dict[str, int] = {
   "fchmodat": 268,
   "faccessat": 269,
   "renameat": 264,
+  "set_robust_list": 273,
   "accept4": 288,
   "dup3": 292,
   "memfd_create": 319,
   "bpf": 321,
+  "sendmmsg": 307,
   "openat2": 437,
   # LSM-style event id (not a syscall number).
   "cap_capable": 1003,
@@ -72,6 +83,32 @@ EVENT_ID_TO_NAME: Dict[int, str] = {v: k for k, v in EVENT_NAME_TO_ID.items()}
 
 # Syscalls instrumented at sys_exit with meaningful return value (fd, errno, etc.).
 EVENT_IDS_WITH_RETURN_VALUE: frozenset[int] = frozenset({
-    0, 1, 2, 3, 41, 42, 43, 49, 50, 57, 59, 257, 288, 437,
+    0,
+    1,
+    2,
+    3,
+    5,  # fstat
+    7,  # poll
+    9,  # mmap
+    10,  # mprotect
+    16,  # ioctl
+    41,
+    42,
+    43,
+    44,  # sendto
+    45,  # recvfrom
+    49,
+    50,
+    51,  # getsockname
+    52,  # getpeername
+    54,  # setsockopt
+    57,
+    59,
+    72,  # fcntl
+    257,
+    273,  # set_robust_list
+    288,
+    307,  # sendmmsg
+    437,
 })
 

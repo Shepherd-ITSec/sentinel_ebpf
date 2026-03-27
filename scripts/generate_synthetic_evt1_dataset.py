@@ -37,12 +37,12 @@ MAGIC = b"EVT1"
 
 def _build_evt(row: Dict[str, str], out_idx: int, start_ts_unix_nano: int, event_id_prefix: str) -> Tuple[dict, dict]:
   """Convert a labelled CSV row to (evt dict, label dict) for EVT1/labels NDJSON."""
-  event_name = (row.get("eventName") or row.get("event_name") or "unknown").strip()
+  event_name = (row.get("eventName") or row.get("syscall_name") or "unknown").strip()
   event_id = f"{event_id_prefix}-{out_idx}"
   ts = start_ts_unix_nano + out_idx * 1_000_000
 
   try:
-    syscall_nr = int(row.get("syscall_nr") or row.get("event_id") or 0)
+    syscall_nr = int(row.get("syscall_nr") or 0)
   except (TypeError, ValueError):
     syscall_nr = 0
   if syscall_nr < 0:
@@ -61,7 +61,7 @@ def _build_evt(row: Dict[str, str], out_idx: int, start_ts_unix_nano: int, event
 
   evt: dict = {
     "event_id": event_id,
-    "event_name": event_name,
+    "syscall_name": event_name,
     "event_group": "network",
     "ts_unix_nano": ts,
     "syscall_nr": syscall_nr,

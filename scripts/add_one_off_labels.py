@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Add is_one_off label to events JSONL.
 
-A one-off event is one whose pattern (event_name, comm, path) appears exactly
+A one-off event is one whose pattern (syscall_name, comm, path) appears exactly
 once in the full dataset. Two-pass streaming: first count pattern frequencies,
 then write each event with is_one_off: true/false.
 """
@@ -14,13 +14,13 @@ from pathlib import Path
 
 
 def _event_signature(obj: dict) -> tuple | None:
-    """Return (event_name, comm, path) for frequency counting. None if not an event."""
+    """Return (syscall_name, comm, path) for frequency counting. None if not an event."""
     if "_meta" in obj or "event_id" not in obj:
         return None
-    event_name = obj.get("event_name") or ""
+    syscall_name = obj.get("syscall_name") or ""
     comm = obj.get("comm") or ""
     path = obj.get("path") or ""
-    return (str(event_name), str(comm), str(path))
+    return (str(syscall_name), str(comm), str(path))
 
 
 def main() -> None:
@@ -30,8 +30,8 @@ def main() -> None:
     ap.add_argument(
         "input",
         nargs="?",
-        default="events_17_03_26_1M.jsonl",
-        help="Input JSONL (default: events_17_03_26_1M.jsonl)",
+        default="artifacts/datasets/events_17_03_26_1M.jsonl",
+        help="Input JSONL (default: artifacts/datasets/events_17_03_26_1M.jsonl)",
     )
     ap.add_argument(
         "-o",

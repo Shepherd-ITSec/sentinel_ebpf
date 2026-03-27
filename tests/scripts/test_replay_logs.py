@@ -10,7 +10,7 @@ from scripts.replay_logs import MAGIC, _detect_format, iter_events, iter_events_
 
 _SAMPLE_OPENAT = {
   "event_id": "test-1",
-  "event_name": "openat",
+  "syscall_name": "openat",
   "event_group": "",
   "ts_unix_nano": 1234567890000000000,
   "syscall_nr": 2,
@@ -140,7 +140,7 @@ class TestReplayLogs:
   def test_iter_events_jsonl_lossless(self, temp_dir):
     jsonl_file = temp_dir / "detector-events.jsonl"
     jsonl_file.write_text(
-      '{"event_id": "a", "event_name": "openat", "event_group": "file", "syscall_nr": 2, "comm": "bash", "pid": "1", "tid": "2", "uid": "1000", '
+      '{"event_id": "a", "syscall_name": "openat", "event_group": "file", "syscall_nr": 2, "comm": "bash", "pid": "1", "tid": "2", "uid": "1000", '
       '"arg0": "0", "arg1": "0", "path": "/tmp/x", '
       '"hostname": "h", "pod_name": "p", "namespace": "ns", "container_id": "cid", "attributes": {"return_value": "0"}, "ts_unix_nano": 1234567890000000000}\n'
     )
@@ -156,7 +156,7 @@ class TestReplayLogs:
     """iter_events_jsonl skips _meta lines (no event_id) written by detector event dump."""
     jsonl_file = temp_dir / "events.jsonl"
     meta = json.dumps({"_meta": True, "date": "2026-03-09T12:00:00Z", "config": {}}) + "\n"
-    evt = json.dumps({"event_id": "evt-1", "ts_unix_nano": 1234567890000000000, "event_name": "x"}) + "\n"
+    evt = json.dumps({"event_id": "evt-1", "ts_unix_nano": 1234567890000000000, "syscall_name": "x"}) + "\n"
     jsonl_file.write_text(meta + evt)
     events = list(iter_events_jsonl(jsonl_file))
     assert len(events) == 1
@@ -167,7 +167,7 @@ class TestReplayLogs:
     jsonl_file = temp_dir / "events.jsonl"
     lines = []
     for i in range(6):
-      lines.append(json.dumps({"event_id": f"evt-{i}", "ts_unix_nano": 1000000000 + i, "event_name": "x"}) + "\n")
+      lines.append(json.dumps({"event_id": f"evt-{i}", "ts_unix_nano": 1000000000 + i, "syscall_name": "x"}) + "\n")
     jsonl_file.write_text("".join(lines))
     events = list(iter_events_jsonl(jsonl_file, skip=3, max_events=3))
     assert len(events) == 3

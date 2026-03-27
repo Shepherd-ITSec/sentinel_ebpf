@@ -4,12 +4,12 @@
 #define MAX_PREFIX_LEN 24
 #define COMM_LEN 16
 #define RINGBUF_PAGES __RINGBUF_PAGES__
-/* Sentinel for "match any" in rules; avoids collision with event_id 0 (read), uid 0 (root), etc. */
+/* Sentinel for "match any" in rules; avoids collision with syscall number 0 (read), uid 0 (root), etc. */
 #define WILDCARD 0xFFFFFFFFU
 
 struct rule_t {
     u32 enabled;
-    u32 event_id; /* WILDCARD = match any, otherwise syscall id */
+    u32 syscall_nr; /* WILDCARD = match any, otherwise Linux syscall number */
     u32 prefix_len;
     u32 comm_len;
     u32 pid;
@@ -21,7 +21,7 @@ struct rule_t {
 
 struct data_t {
     u64 ts;
-    u32 event_id;
+    u32 syscall_nr;
     u32 pid;
     u32 tid;
     u32 uid;
@@ -50,7 +50,7 @@ BPF_PERCPU_ARRAY(data_scratch, struct data_t, 1);
 /* Pending for syscalls with meaningful return value (read, write, open, close, socket, etc.). */
 struct syscall_pending_t {
     u64 ts;
-    u32 event_id;
+    u32 syscall_nr;
     u32 pid;
     u32 tid;
     u32 uid;
@@ -116,7 +116,7 @@ static __inline int rule_allows(struct data_t *data) {
             u32 key = i;
             struct rule_t *rule = rules.lookup(&key);
             if (rule && rule->enabled &&
-                (rule->event_id == WILDCARD || rule->event_id == data->event_id) &&
+                (rule->syscall_nr == WILDCARD || rule->syscall_nr == data->syscall_nr) &&
                 (rule->pid == WILDCARD || rule->pid == data->pid) &&
                 (rule->tid == WILDCARD || rule->tid == data->tid) &&
                 (rule->uid == WILDCARD || rule->uid == data->uid) &&
@@ -128,13 +128,13 @@ static __inline int rule_allows(struct data_t *data) {
     return allowed;
 }
 
-static __inline int fill_common(struct data_t *data, u32 event_id) {
+static __inline int fill_common(struct data_t *data, u32 syscall_nr) {
     u64 pid_tgid = bpf_get_current_pid_tgid();
     data->pid = pid_tgid >> 32;
     data->tid = pid_tgid;
     data->uid = bpf_get_current_uid_gid();
     data->ts = bpf_ktime_get_ns();
-    data->event_id = event_id;
+    data->syscall_nr = syscall_nr;
     bpf_get_current_comm(&data->comm, sizeof(data->comm));
     return 0;
 }
@@ -147,10 +147,10 @@ static __inline int submit_if_allowed(struct data_t *data) {
     return 0;
 }
 
-static __inline void pend_from_common(struct syscall_pending_t *pend, u32 event_id) {
+static __inline void pend_from_common(struct syscall_pending_t *pend, u32 syscall_nr) {
     u64 pid_tgid = bpf_get_current_pid_tgid();
     pend->ts = bpf_ktime_get_ns();
-    pend->event_id = event_id;
+    pend->syscall_nr = syscall_nr;
     pend->pid = pid_tgid >> 32;
     pend->tid = pid_tgid;
     pend->uid = bpf_get_current_uid_gid();
@@ -166,7 +166,7 @@ static __inline void submit_from_pending(struct syscall_pending_t *pend, s64 ret
     struct data_t *data = data_scratch.lookup(&zero);
     if (!data) return;
     data->ts = pend->ts;
-    data->event_id = pend->event_id;
+    data->syscall_nr = pend->syscall_nr;
     data->pid = pend->pid;
     data->tid = pend->tid;
     data->uid = pend->uid;
@@ -193,6 +193,21 @@ static __inline int is_enriched_syscall(long id) {
 #if ENABLE_CLOSE
         || id == 3
 #endif
+#if ENABLE_FSTAT
+        || id == 5
+#endif
+#if ENABLE_POLL
+        || id == 7
+#endif
+#if ENABLE_MMAP
+        || id == 9
+#endif
+#if ENABLE_MPROTECT
+        || id == 10
+#endif
+#if ENABLE_IOCTL
+        || id == 16
+#endif
 #if ENABLE_SOCKET
         || id == 41
 #endif
@@ -202,17 +217,35 @@ static __inline int is_enriched_syscall(long id) {
 #if ENABLE_ACCEPT
         || id == 43
 #endif
+#if ENABLE_SENDTO
+        || id == 44
+#endif
+#if ENABLE_RECVFROM
+        || id == 45
+#endif
 #if ENABLE_BIND
         || id == 49
 #endif
 #if ENABLE_LISTEN
         || id == 50
 #endif
+#if ENABLE_GETSOCKNAME
+        || id == 51
+#endif
+#if ENABLE_GETPEERNAME
+        || id == 52
+#endif
+#if ENABLE_SETSOCKOPT
+        || id == 54
+#endif
 #if ENABLE_FORK
         || id == 57
 #endif
 #if ENABLE_EXECVE
         || id == 59
+#endif
+#if ENABLE_FCNTL
+        || id == 72
 #endif
 #if ENABLE_RENAME
         || id == 82
@@ -241,8 +274,14 @@ static __inline int is_enriched_syscall(long id) {
 #if ENABLE_RENAMEAT
         || id == 264
 #endif
+#if ENABLE_SET_ROBUST_LIST
+        || id == 273
+#endif
 #if ENABLE_ACCEPT4
         || id == 288
+#endif
+#if ENABLE_SENDMMSG
+        || id == 307
 #endif
 #if ENABLE_OPENAT2
         || id == 437
@@ -800,6 +839,305 @@ TRACEPOINT_PROBE(syscalls, sys_enter_fchown) {
     data.arg0 = args->fd;
     data.arg1 = args->user;
     return submit_if_allowed(&data);
+}
+#endif
+
+#if ENABLE_FSTAT
+TRACEPOINT_PROBE(syscalls, sys_enter_fstat) {
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct syscall_pending_t *pend = pend_scratch_get();
+    if (!pend) return 0;
+    pend_from_common(pend, 5);
+    pend->arg0 = args->fd;
+    pend->arg1 = 0;
+    syscall_pending.update(&pid_tgid, pend);
+    return 0;
+}
+TRACEPOINT_PROBE(syscalls, sys_exit_fstat) {
+    long ret = args->ret;
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct syscall_pending_t *pend = syscall_pending.lookup(&pid_tgid);
+    if (pend) {
+        submit_from_pending(pend, ret);
+        syscall_pending.delete(&pid_tgid);
+    }
+    return 0;
+}
+#endif
+
+#if ENABLE_POLL
+TRACEPOINT_PROBE(syscalls, sys_enter_poll) {
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct syscall_pending_t *pend = pend_scratch_get();
+    if (!pend) return 0;
+    pend_from_common(pend, 7);
+    pend->arg0 = args->nfds;
+    pend->arg1 = args->timeout;
+    syscall_pending.update(&pid_tgid, pend);
+    return 0;
+}
+TRACEPOINT_PROBE(syscalls, sys_exit_poll) {
+    long ret = args->ret;
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct syscall_pending_t *pend = syscall_pending.lookup(&pid_tgid);
+    if (pend) {
+        submit_from_pending(pend, ret);
+        syscall_pending.delete(&pid_tgid);
+    }
+    return 0;
+}
+#endif
+
+#if ENABLE_MMAP
+TRACEPOINT_PROBE(syscalls, sys_enter_mmap) {
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct syscall_pending_t *pend = pend_scratch_get();
+    if (!pend) return 0;
+    pend_from_common(pend, 9);
+    pend->arg0 = (s64)args->len;
+    pend->arg1 = (s64)args->flags;
+    syscall_pending.update(&pid_tgid, pend);
+    return 0;
+}
+TRACEPOINT_PROBE(syscalls, sys_exit_mmap) {
+    long ret = args->ret;
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct syscall_pending_t *pend = syscall_pending.lookup(&pid_tgid);
+    if (pend) {
+        submit_from_pending(pend, ret);
+        syscall_pending.delete(&pid_tgid);
+    }
+    return 0;
+}
+#endif
+
+#if ENABLE_MPROTECT
+TRACEPOINT_PROBE(syscalls, sys_enter_mprotect) {
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct syscall_pending_t *pend = pend_scratch_get();
+    if (!pend) return 0;
+    pend_from_common(pend, 10);
+    pend->arg0 = (s64)args->start;
+    pend->arg1 = (s64)args->len;
+    syscall_pending.update(&pid_tgid, pend);
+    return 0;
+}
+TRACEPOINT_PROBE(syscalls, sys_exit_mprotect) {
+    long ret = args->ret;
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct syscall_pending_t *pend = syscall_pending.lookup(&pid_tgid);
+    if (pend) {
+        submit_from_pending(pend, ret);
+        syscall_pending.delete(&pid_tgid);
+    }
+    return 0;
+}
+#endif
+
+#if ENABLE_IOCTL
+TRACEPOINT_PROBE(syscalls, sys_enter_ioctl) {
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct syscall_pending_t *pend = pend_scratch_get();
+    if (!pend) return 0;
+    pend_from_common(pend, 16);
+    pend->arg0 = args->fd;
+    pend->arg1 = args->cmd;
+    syscall_pending.update(&pid_tgid, pend);
+    return 0;
+}
+TRACEPOINT_PROBE(syscalls, sys_exit_ioctl) {
+    long ret = args->ret;
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct syscall_pending_t *pend = syscall_pending.lookup(&pid_tgid);
+    if (pend) {
+        submit_from_pending(pend, ret);
+        syscall_pending.delete(&pid_tgid);
+    }
+    return 0;
+}
+#endif
+
+#if ENABLE_SENDTO
+TRACEPOINT_PROBE(syscalls, sys_enter_sendto) {
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct syscall_pending_t *pend = pend_scratch_get();
+    if (!pend) return 0;
+    pend_from_common(pend, 44);
+    pend->arg0 = args->fd;
+    pend->arg1 = args->len;
+    syscall_pending.update(&pid_tgid, pend);
+    return 0;
+}
+TRACEPOINT_PROBE(syscalls, sys_exit_sendto) {
+    long ret = args->ret;
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct syscall_pending_t *pend = syscall_pending.lookup(&pid_tgid);
+    if (pend) {
+        submit_from_pending(pend, ret);
+        syscall_pending.delete(&pid_tgid);
+    }
+    return 0;
+}
+#endif
+
+#if ENABLE_RECVFROM
+TRACEPOINT_PROBE(syscalls, sys_enter_recvfrom) {
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct syscall_pending_t *pend = pend_scratch_get();
+    if (!pend) return 0;
+    pend_from_common(pend, 45);
+    pend->arg0 = args->fd;
+    pend->arg1 = args->size;
+    syscall_pending.update(&pid_tgid, pend);
+    return 0;
+}
+TRACEPOINT_PROBE(syscalls, sys_exit_recvfrom) {
+    long ret = args->ret;
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct syscall_pending_t *pend = syscall_pending.lookup(&pid_tgid);
+    if (pend) {
+        submit_from_pending(pend, ret);
+        syscall_pending.delete(&pid_tgid);
+    }
+    return 0;
+}
+#endif
+
+#if ENABLE_GETSOCKNAME
+TRACEPOINT_PROBE(syscalls, sys_enter_getsockname) {
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct syscall_pending_t *pend = pend_scratch_get();
+    if (!pend) return 0;
+    pend_from_common(pend, 51);
+    pend->arg0 = args->fd;
+    pend->arg1 = 0;
+    syscall_pending.update(&pid_tgid, pend);
+    return 0;
+}
+TRACEPOINT_PROBE(syscalls, sys_exit_getsockname) {
+    long ret = args->ret;
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct syscall_pending_t *pend = syscall_pending.lookup(&pid_tgid);
+    if (pend) {
+        submit_from_pending(pend, ret);
+        syscall_pending.delete(&pid_tgid);
+    }
+    return 0;
+}
+#endif
+
+#if ENABLE_GETPEERNAME
+TRACEPOINT_PROBE(syscalls, sys_enter_getpeername) {
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct syscall_pending_t *pend = pend_scratch_get();
+    if (!pend) return 0;
+    pend_from_common(pend, 52);
+    pend->arg0 = args->fd;
+    pend->arg1 = 0;
+    syscall_pending.update(&pid_tgid, pend);
+    return 0;
+}
+TRACEPOINT_PROBE(syscalls, sys_exit_getpeername) {
+    long ret = args->ret;
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct syscall_pending_t *pend = syscall_pending.lookup(&pid_tgid);
+    if (pend) {
+        submit_from_pending(pend, ret);
+        syscall_pending.delete(&pid_tgid);
+    }
+    return 0;
+}
+#endif
+
+#if ENABLE_SETSOCKOPT
+TRACEPOINT_PROBE(syscalls, sys_enter_setsockopt) {
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct syscall_pending_t *pend = pend_scratch_get();
+    if (!pend) return 0;
+    pend_from_common(pend, 54);
+    pend->arg0 = args->fd;
+    pend->arg1 = args->optname;
+    syscall_pending.update(&pid_tgid, pend);
+    return 0;
+}
+TRACEPOINT_PROBE(syscalls, sys_exit_setsockopt) {
+    long ret = args->ret;
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct syscall_pending_t *pend = syscall_pending.lookup(&pid_tgid);
+    if (pend) {
+        submit_from_pending(pend, ret);
+        syscall_pending.delete(&pid_tgid);
+    }
+    return 0;
+}
+#endif
+
+#if ENABLE_FCNTL
+TRACEPOINT_PROBE(syscalls, sys_enter_fcntl) {
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct syscall_pending_t *pend = pend_scratch_get();
+    if (!pend) return 0;
+    pend_from_common(pend, 72);
+    pend->arg0 = args->fd;
+    pend->arg1 = args->cmd;
+    syscall_pending.update(&pid_tgid, pend);
+    return 0;
+}
+TRACEPOINT_PROBE(syscalls, sys_exit_fcntl) {
+    long ret = args->ret;
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct syscall_pending_t *pend = syscall_pending.lookup(&pid_tgid);
+    if (pend) {
+        submit_from_pending(pend, ret);
+        syscall_pending.delete(&pid_tgid);
+    }
+    return 0;
+}
+#endif
+
+#if ENABLE_SET_ROBUST_LIST
+TRACEPOINT_PROBE(syscalls, sys_enter_set_robust_list) {
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct syscall_pending_t *pend = pend_scratch_get();
+    if (!pend) return 0;
+    pend_from_common(pend, 273);
+    pend->arg0 = (s64)args->head;
+    pend->arg1 = (s64)args->len;
+    syscall_pending.update(&pid_tgid, pend);
+    return 0;
+}
+TRACEPOINT_PROBE(syscalls, sys_exit_set_robust_list) {
+    long ret = args->ret;
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct syscall_pending_t *pend = syscall_pending.lookup(&pid_tgid);
+    if (pend) {
+        submit_from_pending(pend, ret);
+        syscall_pending.delete(&pid_tgid);
+    }
+    return 0;
+}
+#endif
+
+#if ENABLE_SENDMMSG
+TRACEPOINT_PROBE(syscalls, sys_enter_sendmmsg) {
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct syscall_pending_t *pend = pend_scratch_get();
+    if (!pend) return 0;
+    pend_from_common(pend, 307);
+    pend->arg0 = args->fd;
+    pend->arg1 = args->vlen;
+    syscall_pending.update(&pid_tgid, pend);
+    return 0;
+}
+TRACEPOINT_PROBE(syscalls, sys_exit_sendmmsg) {
+    long ret = args->ret;
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct syscall_pending_t *pend = syscall_pending.lookup(&pid_tgid);
+    if (pend) {
+        submit_from_pending(pend, ret);
+        syscall_pending.delete(&pid_tgid);
+    }
+    return 0;
 }
 #endif
 

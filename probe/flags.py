@@ -3,15 +3,15 @@ import socket
 from functools import lru_cache
 from typing import Optional
 
-# Event IDs that have a flags/type field we can decode. open, openat, openat2, socket.
-SUPPORTED_FLAG_EVENT_IDS = (2, 257, 437, 41)
+# Syscall numbers that have a flags/type field we can decode. open, openat, openat2, socket.
+SUPPORTED_FLAG_SYSCALL_NRS = (2, 257, 437, 41)
 
 
-def decode_flags(flags: int, event_id: int) -> Optional[str]:
-  """Decode flags/type into a compact string. Returns None if event_id is not supported."""
-  if event_id not in SUPPORTED_FLAG_EVENT_IDS:
+def decode_flags(flags: int, syscall_nr: int) -> Optional[str]:
+  """Decode flags/type into a compact string. Returns None if syscall_nr is not supported."""
+  if syscall_nr not in SUPPORTED_FLAG_SYSCALL_NRS:
     return None
-  if event_id == 41:
+  if syscall_nr == 41:
     return _decode_socket_type(flags)
   return _decode_open_flags(flags)
 

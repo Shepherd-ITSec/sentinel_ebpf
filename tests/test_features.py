@@ -10,7 +10,7 @@ from detector.features import (
 def _evt(
   *,
   event_id="e",
-  event_name="openat",
+  syscall_name="openat",
   event_group="",
   ts_unix_nano=1_700_000_000_000_000_000,
   syscall_nr=2,
@@ -26,7 +26,7 @@ def _evt(
 ):
   e = events_pb2.EventEnvelope(
     event_id=event_id,
-    event_name=event_name,
+    syscall_name=syscall_name,
     event_group=event_group,
     ts_unix_nano=ts_unix_nano,
     syscall_nr=syscall_nr,
@@ -175,7 +175,7 @@ def test_extract_feature_dict_path_and_return_attributes():
   assert values["return_errno_norm"] >= 0.0
   evt_fail = _evt(
     event_id="feat-fail",
-    event_name="connect",
+    syscall_name="connect",
     event_group="network",
     syscall_nr=42,
     comm="proc",
@@ -233,7 +233,7 @@ def test_extract_file_features_flags_are_schema_stable():
 
   evt_unlink = _evt(
     event_id="f2",
-    event_name="unlink",
+    syscall_name="unlink",
     event_group="file",
     syscall_nr=87,
     comm="rm",
@@ -246,7 +246,7 @@ def test_extract_file_features_flags_are_schema_stable():
 
   evt_chmod = _evt(
     event_id="f3",
-    event_name="chmod",
+    syscall_name="chmod",
     event_group="file",
     syscall_nr=90,
     comm="chmod",
@@ -262,7 +262,7 @@ def test_extract_file_features_flags_are_schema_stable():
 def test_extract_feature_dict_adds_network_features_when_event_type_network():
   base_evt = _evt(
     event_id="feat-net-base",
-    event_name="connect",
+    syscall_name="connect",
     syscall_nr=42,
     comm="curl",
     arg0="3",
@@ -270,7 +270,7 @@ def test_extract_feature_dict_adds_network_features_when_event_type_network():
   )
   evt = _evt(
     event_id="feat-net",
-    event_name="connect",
+    syscall_name="connect",
     event_group="network",
     syscall_nr=42,
     comm="curl",
@@ -303,7 +303,7 @@ def test_extract_feature_dict_adds_network_features_when_event_type_network():
 def test_extract_network_features_socket_family_type():
   evt = _evt(
     event_id="feat-socket",
-    event_name="socket",
+    syscall_name="socket",
     event_group="network",
     syscall_nr=41,
     comm="curl",
@@ -319,7 +319,7 @@ def test_extract_network_features_socket_family_type():
 def test_extract_network_features_sockaddr_from_attributes():
   evt = _evt(
     event_id="feat-connect-attr",
-    event_name="connect",
+    syscall_name="connect",
     event_group="network",
     syscall_nr=42,
     comm="curl",
@@ -337,7 +337,7 @@ def test_extract_network_features_sockaddr_from_arg1():
   """arg1 may hold a stringified sockaddr dict (synthetic datasets)."""
   evt = _evt(
     event_id="feat-connect-arg1",
-    event_name="connect",
+    syscall_name="connect",
     event_group="network",
     syscall_nr=42,
     comm="ssh",
@@ -395,7 +395,7 @@ def test_extract_feature_dict_frequency_view_keeps_type_specific_hashes():
 
   net_evt = _evt(
     event_id="feat-net-frequency",
-    event_name="connect",
+    syscall_name="connect",
     event_group="network",
     syscall_nr=42,
     comm="curl",
@@ -417,14 +417,14 @@ def test_extract_feature_dict_frequency_view_keeps_type_specific_hashes():
 def test_extract_feature_dict_adds_process_features_when_event_type_process():
   base_evt = _evt(
     event_id="feat-proc-base",
-    event_name="execve",
+    syscall_name="execve",
     syscall_nr=59,
     comm="bash",
     path="/usr/bin/ls",
   )
   evt = _evt(
     event_id="feat-proc",
-    event_name="execve",
+    syscall_name="execve",
     event_group="process",
     syscall_nr=59,
     comm="bash",
@@ -463,7 +463,7 @@ def test_memstream_feature_view_drops_sparse_context_banks():
 def test_loda_feature_view_keeps_small_network_identity_and_drops_open_world_banks():
   evt = _evt(
     event_id="feat-loda-view",
-    event_name="socket",
+    syscall_name="socket",
     event_group="network",
     syscall_nr=41,
     hostname="node-1",

@@ -6,11 +6,12 @@ from probe.events import EVENT_NAME_TO_ID, UNKNOWN_EVENT_ID
 from rules_config import load_rules_config
 
 # Sentinel for "match any" in kernel rules; must match probe.bpf.c WILDCARD (0xFFFFFFFF).
-# Avoids collision with event_id 0 (read), uid 0 (root), pid/tid 0.
+# Avoids collision with syscall number 0 (read), uid 0 (root), pid/tid 0.
 WILDCARD = 0xFFFFFFFF
 
 SUPPORTED_FIELDS = {
-  "event_name",
+  "syscall_name",
+  "syscall_nr",
   "event_id",
   "path",
   "comm",
@@ -33,7 +34,7 @@ class ConditionRule:
   enabled: bool = True
   group: str = ""
   syscalls: tuple[str, ...] = ()
-  event_ids: frozenset[int] = frozenset()
+  syscall_nrs: frozenset[int] = frozenset()
   ast: Optional["Expr"] = None
 
 
@@ -247,7 +248,7 @@ class RuleEngine:
           enabled=raw.enabled,
           group=raw.group,
           syscalls=raw.syscalls,
-          event_ids=frozenset(EVENT_NAME_TO_ID[name] for name in raw.syscalls),
+          syscall_nrs=frozenset(EVENT_NAME_TO_ID[name] for name in raw.syscalls),
           ast=ast,
         )
       )
@@ -265,14 +266,12 @@ class RuleEngine:
     value = ctx.get(field)
     if field == "path" and value is None:
       value = ctx.get("filename")
-    if field == "event_name":
-      value = ctx.get("event_name")
     if field == "arg_flags" and value is None:
       value = ctx.get("flags")
     if value is None:
       return False
 
-    if field in ("pid", "tid", "uid", "event_id", "arg0", "arg1", "return_value"):
+    if field in ("pid", "tid", "uid", "syscall_nr", "arg0", "arg1", "return_value"):
       value_int = self._to_int_maybe(value)
       if value_int is None:
         return False
@@ -309,29 +308,29 @@ class RuleEngine:
       return not self._eval_expr(expr.inner, ctx)
     return False
 
-  def _ctx_event_id(self, ctx: Dict[str, Any]) -> Optional[int]:
-    event_id = self._to_int_maybe(ctx.get("event_id"))
-    if event_id is not None:
-      return event_id
-    event_name = str(ctx.get("event_name") or "").strip().lower()
-    if not event_name:
+  def _ctx_syscall_nr(self, ctx: Dict[str, Any]) -> Optional[int]:
+    nr = self._to_int_maybe(ctx.get("syscall_nr"))
+    if nr is not None:
+      return nr
+    syscall_name = str(ctx.get("syscall_name") or "").strip().lower()
+    if not syscall_name:
       return None
-    mapped = EVENT_NAME_TO_ID.get(event_name, UNKNOWN_EVENT_ID)
+    mapped = EVENT_NAME_TO_ID.get(syscall_name, UNKNOWN_EVENT_ID)
     return None if mapped == UNKNOWN_EVENT_ID else mapped
 
   def _matches_rule_syscalls(self, rule: ConditionRule, ctx: Dict[str, Any]) -> bool:
-    event_name = str(ctx.get("event_name") or "").strip().lower()
-    if event_name and event_name in rule.syscalls:
+    syscall_name = str(ctx.get("syscall_name") or "").strip().lower()
+    if syscall_name and syscall_name in rule.syscalls:
       return True
-    event_id = self._ctx_event_id(ctx)
-    return event_id is not None and event_id in rule.event_ids
+    syscall_nr = self._ctx_syscall_nr(ctx)
+    return syscall_nr is not None and syscall_nr in rule.syscall_nrs
 
-  def allow(self, event_name: str, filename: str, comm: str) -> bool:
-    """event_name = syscall name (e.g. openat, connect). Returns True if any rule matches."""
+  def allow(self, syscall_name: str, filename: str, comm: str) -> bool:
+    """syscall_name = Linux syscall name (e.g. openat, connect). Returns True if any rule matches."""
     return self.allow_event(
       {
-        "event_name": event_name,
-        "event_id": EVENT_NAME_TO_ID.get(event_name, UNKNOWN_EVENT_ID),
+        "syscall_name": syscall_name,
+        "syscall_nr": EVENT_NAME_TO_ID.get(syscall_name, UNKNOWN_EVENT_ID),
         "path": filename,
         "filename": filename,
         "comm": comm,
@@ -387,17 +386,17 @@ class RuleEngine:
     stats = CompileStats()
     compiled: List[Dict[str, Any]] = []
 
-    def _event_ids_from_values(raw_vals: List[Any]) -> set[int]:
-      ids: set[int] = set()
+    def _syscall_nrs_from_values(raw_vals: List[Any]) -> set[int]:
+      nrs: set[int] = set()
       for raw in raw_vals:
         sval = str(raw)
         if sval in EVENT_NAME_TO_ID:
-          ids.add(EVENT_NAME_TO_ID[sval])
+          nrs.add(EVENT_NAME_TO_ID[sval])
           continue
         nval = self._to_int_maybe(raw)
         if nval is not None and nval >= 0:
-          ids.add(nval)
-      return ids
+          nrs.add(nval)
+      return nrs
 
     # Explicit syscall membership is always part of the kernel filter; condition adds extra branch-wise predicates.
     for rule in self.condition_rules:
@@ -407,7 +406,7 @@ class RuleEngine:
       stats.branches_total += len(branches)
 
       for branch in branches:
-        event_ids: Optional[set[int]] = set(rule.event_ids)
+        branch_syscall_nrs: Optional[set[int]] = set(rule.syscall_nrs)
         prefixes: Optional[set[str]] = None
         comms: Optional[set[str]] = None
         pids: Optional[set[int]] = None
@@ -427,23 +426,23 @@ class RuleEngine:
           field = lit.field
           op = lit.op
           val = lit.value
-          if field == "event_name":
+          if field == "syscall_name":
             if op == "eq":
-              es = _event_ids_from_values([val])
+              es = _syscall_nrs_from_values([val])
             elif op == "in":
-              es = _event_ids_from_values(list(val))
+              es = _syscall_nrs_from_values(list(val))
             else:
               stats.fallback_predicates += 1
               continue
             if len(es) == 0:
               possible = False
               break
-            event_ids = es if event_ids is None else (event_ids & es)
-            if event_ids is not None and len(event_ids) == 0:
+            branch_syscall_nrs = es if branch_syscall_nrs is None else (branch_syscall_nrs & es)
+            if branch_syscall_nrs is not None and len(branch_syscall_nrs) == 0:
               possible = False
               break
             compiled_here += 1
-          elif field == "event_id" and op in ("eq", "in"):
+          elif field == "syscall_nr" and op in ("eq", "in"):
             try:
               es = {int(val)} if op == "eq" else {int(v) for v in val}
             except (TypeError, ValueError):
@@ -453,8 +452,8 @@ class RuleEngine:
             if len(es) == 0:
               possible = False
               break
-            event_ids = es if event_ids is None else (event_ids & es)
-            if event_ids is not None and len(event_ids) == 0:
+            branch_syscall_nrs = es if branch_syscall_nrs is None else (branch_syscall_nrs & es)
+            if branch_syscall_nrs is not None and len(branch_syscall_nrs) == 0:
               possible = False
               break
             compiled_here += 1
@@ -503,13 +502,13 @@ class RuleEngine:
           stats.branches_impossible += 1
           continue
 
-        event_vals = list(event_ids) if event_ids else [WILDCARD]
+        syscall_nr_vals = list(branch_syscall_nrs) if branch_syscall_nrs else [WILDCARD]
         prefix_vals = list(prefixes) if prefixes else [""]
         comm_vals = list(comms) if comms else [""]
         pid_vals = list(pids) if pids else [WILDCARD]
         tid_vals = list(tids) if tids else [WILDCARD]
         uid_vals = list(uids) if uids else [WILDCARD]
-        for event_id in event_vals:
+        for snr in syscall_nr_vals:
           for prefix in prefix_vals:
             for comm in comm_vals:
               for pid in pid_vals:
@@ -517,7 +516,7 @@ class RuleEngine:
                   for uid in uid_vals:
                     compiled.append(
                       {
-                        "event_id": int(event_id),
+                        "syscall_nr": int(snr),
                         "prefix": prefix,
                         "comm": comm,
                         "pid": int(pid),

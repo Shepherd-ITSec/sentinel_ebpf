@@ -165,7 +165,7 @@ rules:
     syscalls: [socket, connect]
 ```
 
-Supported fields: `event_name`, `event_id`, `path`, `comm`, `pid`, `tid`, `uid`, `flags`, `arg0`, `arg1`, `arg_flags`, `return_value`, `hostname`, `namespace`
+Supported fields: `syscall_name`, `syscall_nr`, `event_id` (correlation id), `path`, `comm`, `pid`, `tid`, `uid`, `flags`, `arg0`, `arg1`, `arg_flags`, `return_value`, `hostname`, `namespace`
 
 Supported operators: `=`, `in`, `startswith`, `contains`, `and`, `or`, `not`, parentheses
 

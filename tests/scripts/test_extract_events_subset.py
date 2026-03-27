@@ -15,7 +15,7 @@ def test_extract_renames_event_type_to_event_group_and_strips_unused_fields(temp
     events = [
         {
             "event_id": "e1",
-            "event_name": "openat",
+            "syscall_name": "openat",
             "event_type": "file",
             "syscall_nr": 257,
             "comm": "bash",
@@ -60,7 +60,7 @@ def test_extract_renames_event_type_to_event_group_and_strips_unused_fields(temp
         "namespace",
         "container_id",
         "ts_unix_nano",
-        "event_name",
+        "syscall_name",
         "event_group",
         "syscall_nr",
         "comm",
@@ -84,7 +84,7 @@ def test_extract_skips_metadata_lines(temp_dir):
             json.dumps(
                 {
                     "event_id": "e1",
-                    "event_name": "openat",
+                    "syscall_name": "openat",
                     "event_type": "file",
                     "syscall_nr": 0,
                     "ts_unix_nano": 0,

@@ -168,7 +168,7 @@ def _select_sample_events(
       f"target_{score_key}": _round_float(target_scores[name]),
       "event_index": int(record["event_index"]),
       "event_id": record["event_id"],
-      "event_name": record["event_name"],
+      "syscall_name": record["syscall_name"],
       "event_group": record["event_group"],
       "score_raw": _round_float(float(record["score_raw"])),
       "score_scaled": _round_float(float(record["score_scaled"])),
@@ -335,7 +335,7 @@ def _build_model_diagnostics(
   first_model_ready_at: int | None,
   last_debug: dict[str, Any],
   overall_event_groups: Counter[str],
-  overall_event_names: Counter[str],
+  overall_syscall_names: Counter[str],
   update_allowed: list[bool] | None = None,
   memory_overwrite: list[bool] | None = None,
 ) -> dict[str, Any]:
@@ -377,7 +377,7 @@ def _build_model_diagnostics(
       "score_vs_model_signal_corr": _round_float(_safe_corr(analyzed_raw, analyzed_signal)),
       "last_debug": last_debug,
       "event_group_counts": dict(overall_event_groups.most_common(20)),
-      "event_name_counts": dict(overall_event_names.most_common(20)),
+      "syscall_name_counts": dict(overall_syscall_names.most_common(20)),
     }
 
   counts = np.asarray(state.get("counts"))
@@ -404,7 +404,7 @@ def _build_model_diagnostics(
     "mean_model_signal": _round_float(statistics.fmean(analyzed_signal)),
     "score_vs_model_signal_corr": _round_float(_safe_corr(analyzed_raw, analyzed_signal)),
     "event_group_counts": dict(overall_event_groups.most_common(20)),
-    "event_name_counts": dict(overall_event_names.most_common(20)),
+    "syscall_name_counts": dict(overall_syscall_names.most_common(20)),
   }
   if algorithm == "loda_ema":
     result["last_debug"] = last_debug
@@ -520,7 +520,7 @@ def _build_report(
   ])
   for sample_name, sample in sample_events.items():
     lines.append(
-      f"- `{sample_name}`: event `{sample['event_index']}` (`{sample['event_name']}` / `{sample['event_group'] or 'default'}`) "
+      f"- `{sample_name}`: event `{sample['event_index']}` (`{sample['syscall_name']}` / `{sample['event_group'] or 'default'}`) "
       f"score=`{sample['score_scaled']}` raw=`{sample['score_raw']}`"
     )
   lines.extend([
@@ -542,7 +542,7 @@ def _build_report(
   if top_tail_events:
     for item in top_tail_events[:10]:
       lines.append(
-        f"- event `{item['event_index']}` `{item['event_name']}` / `{item['event_group'] or 'default'}` "
+        f"- event `{item['event_index']}` `{item['syscall_name']}` / `{item['event_group'] or 'default'}` "
         f"scaled=`{item['score_scaled']}` raw=`{item['score_raw']}`"
       )
   else:
@@ -560,7 +560,7 @@ def _build_report(
 
 def main() -> None:
   ap = argparse.ArgumentParser(description="Run a compact unlabeled diagnostic for memstream or loda_ema.")
-  ap.add_argument("events", nargs="?", default="events_17_03_26.jsonl", help="Replay file (JSONL or EVT1)")
+  ap.add_argument("events", nargs="?", default="artifacts/datasets/events_17_03_26.jsonl", help="Replay file (JSONL or EVT1)")
   ap.add_argument("--algorithm", choices=["memstream", "loda_ema"], default="memstream")
   ap.add_argument("--limit", type=int, default=DEFAULT_LIMIT, help="Max events to replay")
   ap.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR, help="Artifact directory")
@@ -597,7 +597,7 @@ def main() -> None:
   memstream_update_allowed: list[bool] = []
   memstream_memory_overwrite: list[bool] = []
   overall_event_groups: Counter[str] = Counter()
-  overall_event_names: Counter[str] = Counter()
+  overall_syscall_names: Counter[str] = Counter()
 
   with timeseries_path.open("w", encoding="utf-8") as timeseries_file:
     for i, obj in enumerate(_iter_event_dicts(events_path, args.limit)):
@@ -620,7 +620,7 @@ def main() -> None:
       model_signal.append(signal_value)
       event_group = (evt.event_group or "").strip().lower()
       overall_event_groups[event_group or "__default__"] += 1
-      overall_event_names[(evt.event_name or "").strip().lower() or "__unknown__"] += 1
+      overall_syscall_names[(evt.syscall_name or "").strip().lower() or "__unknown__"] += 1
 
       for threshold in thresholds:
         key = str(threshold)
@@ -631,7 +631,7 @@ def main() -> None:
       record = {
         "event_index": i,
         "event_id": evt.event_id,
-        "event_name": evt.event_name,
+        "syscall_name": evt.syscall_name,
         "event_group": evt.event_group,
         "score_raw": round(float(raw), 6),
         "score_scaled": round(float(scaled), 6),
@@ -768,7 +768,7 @@ def main() -> None:
     first_model_ready_at=first_model_ready_at,
     last_debug=detector.get_last_debug(),
     overall_event_groups=overall_event_groups,
-    overall_event_names=overall_event_names,
+    overall_syscall_names=overall_syscall_names,
     update_allowed=memstream_update_allowed if args.algorithm == "memstream" else None,
     memory_overwrite=memstream_memory_overwrite if args.algorithm == "memstream" else None,
   )

@@ -1,7 +1,40 @@
 lists:
-  file_syscalls: [open, openat, openat2, unlink, unlinkat, rename, renameat, chmod, chown, read, write]
-  process_syscalls: [execve, fork]
-  network_syscalls: [socket, connect, bind, listen, accept, accept4]
+  file_syscalls:
+    [
+      open,
+      openat,
+      openat2,
+      unlink,
+      unlinkat,
+      rename,
+      renameat,
+      chmod,
+      chown,
+      read,
+      write,
+      fcntl,
+      poll,
+      mmap,
+      mprotect,
+      ioctl,
+      fstat,
+    ]
+  process_syscalls: [execve, fork, set_robust_list]
+  network_syscalls:
+    [
+      socket,
+      connect,
+      bind,
+      listen,
+      accept,
+      accept4,
+      setsockopt,
+      getpeername,
+      getsockname,
+      sendto,
+      recvfrom,
+      sendmmsg,
+    ]
   shell_comms: [bash, sh, zsh]
   noisy_paths: [/proc, /sys, /dev, /run, /var/run, /tmp, /var/log, /var/lib/rancher/k3s/agent/containerd/io.containerd.snapshotter.v1.overlayfs]
 
@@ -15,7 +48,7 @@ groups:
 
 macros:
   noisy_path: "path startswithin (noisy_paths)"
-  filterable_path: "not (event_name in (read, write) and path = \"\")"
+  filterable_path: "not (syscall_name in (read, write) and path = \"\")"
   shell_proc: "comm in (shell_comms)"
 
 rules:

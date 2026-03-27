@@ -2,7 +2,7 @@
 """Verify which generated activity paths appear in the detector's anomaly log.
 
 Reads event dump (all events with scores) or anomaly log, extracts paths from
-the canonical data vector [event_name, event_id, comm, pid, tid, uid, arg0, arg1, path, flags],
+the canonical data vector [syscall_name, event_id, comm, pid, tid, uid, arg0, arg1, path, flags],
 reports which paths were flagged as anomalies, outputs scores per event,
 and checks whether benign activity was incorrectly flagged (false positives).
 """
@@ -16,7 +16,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-# Canonical data vector: [event_name, event_id, comm, pid, tid, uid, arg0, arg1, path, flags]
+# Canonical data vector: [syscall_name, event_id, comm, pid, tid, uid, arg0, arg1, path, flags]
 
 # Default: benign paths (expected NOT flagged); sensitive paths (expected flagged)
 DEFAULT_BENIGN_PATTERNS = [
@@ -259,7 +259,7 @@ def verify_with_scores(
         anomaly = evt.get("anomaly", False)
         if not anomaly and evt.get("event_id") in anomaly_event_ids:
             anomaly = True
-        event_name = evt.get("event_name", "") or ""
+        syscall_name = evt.get("syscall_name", "") or ""
         comm = _extract_comm(evt)
         if comm_filter is not None and comm not in comm_filter:
             continue
@@ -270,7 +270,7 @@ def verify_with_scores(
             "score": score,
             "anomaly": anomaly,
             "event_id": evt.get("event_id", ""),
-            "event_name": event_name or "",
+            "syscall_name": syscall_name or "",
             "comm": comm,
             "ts_unix_nano": evt.get("ts_unix_nano", 0),
         })
@@ -348,7 +348,7 @@ def main() -> None:
         "--log-file",
         type=Path,
         default=None,
-        help="Write full per-event output to CSV file (path, comm, event_name, score, kind, anomaly).",
+        help="Write full per-event output to CSV file (path, comm, syscall_name, score, kind, anomaly).",
     )
     ap.add_argument(
         "--after",
@@ -456,8 +456,8 @@ def main() -> None:
             if e["anomaly"]:
                 by_path[k]["flagged"] += 1
             by_path[k]["benign"] = e["benign"]
-            if e.get("event_name"):
-                by_path[k]["ops"].add(e["event_name"])
+            if e.get("syscall_name"):
+                by_path[k]["ops"].add(e["syscall_name"])
             if e.get("comm"):
                 by_path[k]["comms"].add(e["comm"])
         print("Per-path (compact):")
@@ -481,20 +481,20 @@ def main() -> None:
             for e in sorted(events, key=lambda x: (x["path"], x["event_id"])):
                 kind = "benign   " if e["benign"] else "sensitive"
                 flag = "FLAGGED" if e["anomaly"] else "ok"
-                op = e.get("event_name", "")
+                op = e.get("syscall_name", "")
                 comm = e.get("comm", "")
                 print(f"  {e['path']:<45} {op:<10} {comm:<8} score={e['score']:.4f}  [{kind}] {flag}")
         if args.log_file:
             with args.log_file.open("w", encoding="utf-8", newline="") as f:
                 writer = csv.writer(f)
-                writer.writerow(["path", "comm", "event_name", "score", "kind", "anomaly", "status"])
+                writer.writerow(["path", "comm", "syscall_name", "score", "kind", "anomaly", "status"])
                 for e in sorted(events, key=lambda x: (x["path"], x["event_id"])):
                     kind = "benign" if e["benign"] else "sensitive"
                     anomaly_val = "true" if e["anomaly"] else "false"
                     writer.writerow([
                         e["path"],
                         e.get("comm", ""),
-                        e.get("event_name", ""),
+                        e.get("syscall_name", ""),
                         f"{e['score']:.4f}",
                         kind,
                         anomaly_val,
@@ -546,11 +546,11 @@ def main() -> None:
         if args.log_file and entries:
             with args.log_file.open("w", encoding="utf-8", newline="") as f:
                 writer = csv.writer(f)
-                writer.writerow(["path", "comm", "event_name", "score", "kind", "anomaly"])
+                writer.writerow(["path", "comm", "syscall_name", "score", "kind", "anomaly"])
                 for e in entries:
                     path = _extract_path(e)
                     score = e.get("score", 0.0)
-                    op = e.get("event_name", "") or ""
+                    op = e.get("syscall_name", "") or ""
                     comm = _extract_comm(e)
                     writer.writerow([path, comm, op, f"{score:.4f}", "sensitive", "true"])
             print("")

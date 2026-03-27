@@ -11,12 +11,12 @@ class TestEventEnvelope:
   def test_create_minimal_event(self):
     evt = events_pb2.EventEnvelope(
       event_id="test-123",
-      event_name="openat",
+      syscall_name="openat",
       event_group="",
       ts_unix_nano=1234567890000000000,
     )
     assert evt.event_id == "test-123"
-    assert evt.event_name == "openat"
+    assert evt.syscall_name == "openat"
     assert evt.event_group == ""
     assert evt.ts_unix_nano == 1234567890000000000
     assert evt.syscall_nr == 0
@@ -25,7 +25,7 @@ class TestEventEnvelope:
   def test_create_event_with_syscall_fields(self):
     evt = events_pb2.EventEnvelope(
       event_id="test-123",
-      event_name="openat",
+      syscall_name="openat",
       event_group="",
       ts_unix_nano=1234567890000000000,
       syscall_nr=2,
@@ -50,7 +50,7 @@ class TestEventEnvelope:
       pod_name="test-pod",
       namespace="default",
       container_id="container-123",
-      event_name="openat",
+      syscall_name="openat",
       event_group="",
       ts_unix_nano=1234567890000000000,
       syscall_nr=2,
@@ -66,12 +66,12 @@ class TestEventEnvelope:
     assert evt.pod_name == "test-pod"
     assert evt.namespace == "default"
     assert evt.container_id == "container-123"
-    assert evt.event_name == "openat"
+    assert evt.syscall_name == "openat"
 
   def test_create_event_with_attributes(self):
     evt = events_pb2.EventEnvelope(
       event_id="test-123",
-      event_name="openat",
+      syscall_name="openat",
       event_group="",
       ts_unix_nano=1234567890000000000,
       syscall_nr=2,
@@ -95,7 +95,7 @@ class TestEventEnvelope:
       pod_name="test-pod",
       namespace="default",
       container_id="container-123",
-      event_name="openat",
+      syscall_name="openat",
       event_group="",
       ts_unix_nano=1234567890000000000,
       syscall_nr=2,
@@ -113,7 +113,7 @@ class TestEventEnvelope:
     parsed = json.loads(json_str)
 
     assert parsed["event_id"] == "test-123"
-    assert parsed["event_name"] == "openat"
+    assert parsed["syscall_name"] == "openat"
     assert parsed["event_group"] == ""
     assert parsed["syscall_nr"] == 2
     assert parsed["path"] == "/tmp/test.txt"
@@ -122,7 +122,7 @@ class TestEventEnvelope:
     """Syscall fields match probe layout."""
     evt = events_pb2.EventEnvelope(
       event_id="open-123",
-      event_name="openat",
+      syscall_name="openat",
       event_group="",
       ts_unix_nano=1234567890000000000,
       syscall_nr=2,

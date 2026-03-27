@@ -377,7 +377,7 @@ class Handler(BaseHTTPRequestHandler):
           "score": max(0.0, min(1.0, score)),
           "anomaly": bool(entry.get("anomaly", False)),
           "reason": entry.get("reason", ""),
-          "event_name": entry.get("event_name", ""),
+          "syscall_name": entry.get("syscall_name", ""),
           "event_group": entry.get("event_group", ""),
           "hostname": entry.get("hostname", ""),
           "path": path,
@@ -476,7 +476,7 @@ class Handler(BaseHTTPRequestHandler):
                 for entry in entries:
                   event_ts_ns = entry.get("ts_unix_nano", 0)
                   if event_ts_ns > threshold_ns:
-                    event_name = entry.get("event_name", "unknown")
+                    event_name = entry.get("syscall_name", "unknown")
                     window_counts[event_name] = window_counts.get(event_name, 0) + 1
                     if entry.get("anomaly"):
                       anomaly_count += 1
@@ -512,7 +512,7 @@ class Handler(BaseHTTPRequestHandler):
                   scores = []
                   scores_raw = []
                   for entry in new_entries:
-                    event_name = entry.get("event_name", "unknown")
+                    event_name = entry.get("syscall_name", "unknown")
                     counts[event_name] = counts.get(event_name, 0) + 1
                     if entry.get("anomaly"):
                       anomaly_count += 1

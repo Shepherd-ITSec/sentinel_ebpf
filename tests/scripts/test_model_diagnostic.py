@@ -15,7 +15,7 @@ def _make_synthetic_events(n: int, base_ts_ns: int = 1700000000000000000) -> lis
     ts = base_ts_ns + i * 1_000_000
     is_shifted = i >= int(n * 0.8)
     event_name = "openat" if i % 3 != 0 else "read"
-    syscall_id = 257 if event_name == "openat" else 0
+    syscall_nr_val = 257 if event_name == "openat" else 0
     comm = "bash" if i % 5 == 0 else "sshd"
     uid = "1000"
     arg0 = "-100"
@@ -38,11 +38,11 @@ def _make_synthetic_events(n: int, base_ts_ns: int = 1700000000000000000) -> lis
       arg1 = flags
     events.append({
       "event_id": f"test-{i:06d}",
-      "event_name": event_name,
+      "syscall_name": event_name,
       "event_group": "file",
       "event_type": "file",
       "ts_unix_nano": ts,
-      "syscall_nr": syscall_id,
+      "syscall_nr": syscall_nr_val,
       "comm": comm,
       "pid": str(1000 + i),
       "tid": str(1000 + i),

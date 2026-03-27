@@ -21,7 +21,7 @@ def sample_event():
     pod_name="test-pod",
     namespace="default",
     container_id="container-123",
-    event_name="openat",
+    syscall_name="openat",
     event_group="",
     ts_unix_nano=1234567890000000000,
     syscall_nr=2,
@@ -58,7 +58,7 @@ class TestFileSink:
         payload = json.loads(f.read(length).decode("utf-8"))
 
       assert payload["event_id"] == "test-event-123"
-      assert payload["event_name"] == "openat"
+      assert payload["syscall_name"] == "openat"
       assert payload["event_group"] == ""
       assert payload["syscall_nr"] == 2
       assert payload["comm"] == "bash"
@@ -100,7 +100,7 @@ class TestFileSink:
       for i in range(5):
         evt = events_pb2.EventEnvelope(
           event_id=f"event-{i}",
-          event_name="openat",
+          syscall_name="openat",
           event_group="",
           ts_unix_nano=1234567890000000000 + i,
           syscall_nr=2,
@@ -144,7 +144,7 @@ class TestFileSink:
       for i in range(10):
         evt = events_pb2.EventEnvelope(
           event_id=f"event-{i}",
-          event_name="openat",
+          syscall_name="openat",
           event_group="",
           ts_unix_nano=1234567890000000000 + i,
           syscall_nr=2,
@@ -179,7 +179,7 @@ class TestFileSink:
       for i in range(100):
         evt = events_pb2.EventEnvelope(
           event_id=f"event-{i}",
-          event_name="openat",
+          syscall_name="openat",
           event_group="",
           ts_unix_nano=1234567890000000000 + i,
           syscall_nr=2,

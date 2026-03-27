@@ -16,7 +16,7 @@ from scripts.verify_activity_in_anomaly_log import (
 def _evt(*, event_id: str = "x", **kwargs) -> str:
   base = {
     "event_id": event_id,
-    "event_name": "openat",
+    "syscall_name": "openat",
     "syscall_nr": 257,
     "comm": "cat",
     "pid": "1",

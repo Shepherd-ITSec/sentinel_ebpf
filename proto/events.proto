@@ -9,7 +9,7 @@ import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
 
 // Envelope for any observed kernel-level event (syscalls and LSM-style events).
-// event_name = syscall/event name (openat, connect, ...);
+// syscall_name = Linux syscall name (openat, connect, ...).
 // event_group = category/meta tag from rules (network, file, process, or empty).
 message EventEnvelope {
   // Correlation id (client-generated); not the Linux syscall number.
@@ -18,7 +18,7 @@ message EventEnvelope {
   string pod_name = 3;
   string namespace = 4;
   string container_id = 5;
-  string event_name = 8;
+  string syscall_name = 8;
   string event_group = 9;
 
   // Syscall payload (same fields for every event type; unused strings are empty).

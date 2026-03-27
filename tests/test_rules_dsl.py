@@ -1,6 +1,6 @@
 """Tests for explicit-syscall rules and DSL/kernel compile behavior."""
 
-from probe.bpf_build import build_bpf_program, enabled_event_ids_from_rules
+from probe.bpf_build import build_bpf_program, enabled_syscall_nrs_from_rules
 from probe.rules import RuleEngine
 
 
@@ -25,7 +25,7 @@ rules:
   engine = RuleEngine(str(rules_file))
   assert engine.allow_event(
     {
-      "event_name": "openat",
+      "syscall_name": "openat",
       "path": "/etc/passwd",
       "comm": "bash",
       "pid": 1,
@@ -38,7 +38,7 @@ rules:
   )
   assert not engine.allow_event(
     {
-      "event_name": "openat",
+      "syscall_name": "openat",
       "path": "/tmp/file",
       "comm": "bash",
       "pid": 1,
@@ -66,8 +66,8 @@ rules:
   engine = RuleEngine(str(rules_file))
   allowed, group = engine.classify_event(
     {
-      "event_name": "connect",
-      "event_id": 42,
+      "syscall_name": "connect",
+      "syscall_nr": 42,
       "path": "",
       "filename": "",
       "comm": "curl",
@@ -103,12 +103,12 @@ rules:
   )
   engine = RuleEngine(str(rules_file))
   compiled, _ = engine.compile_kernel_rules()
-  event_ids = {r["event_id"] for r in compiled}
-  assert 0 in event_ids
-  assert 1 in event_ids
+  syscall_nrs = {r["syscall_nr"] for r in compiled}
+  assert 0 in syscall_nrs
+  assert 1 in syscall_nrs
 
 
-def test_enabled_event_ids_selective_probes(temp_dir):
+def test_enabled_syscall_nrs_selective_probes(temp_dir):
   rules_file = temp_dir / "rules.yaml"
   rules_file.write_text(
     """groups:
@@ -122,17 +122,17 @@ rules:
   )
   engine = RuleEngine(str(rules_file))
   compiled, _ = engine.compile_kernel_rules()
-  enabled = enabled_event_ids_from_rules(compiled)
+  enabled = enabled_syscall_nrs_from_rules(compiled)
   assert 257 in enabled
   assert 0 not in enabled
   assert 59 not in enabled
 
-  prog = build_bpf_program(256, enabled_event_ids=enabled)
+  prog = build_bpf_program(256, enabled_syscall_nrs=enabled)
   assert "#define ENABLE_OPENAT 1" in prog
   assert "#define ENABLE_READ 0" in prog
 
 
-def test_enabled_event_ids_read_only_includes_fd_map_deps(temp_dir):
+def test_enabled_syscall_nrs_read_only_includes_fd_map_deps(temp_dir):
   rules_file = temp_dir / "rules.yaml"
   rules_file.write_text(
     """groups:
@@ -146,7 +146,7 @@ rules:
   )
   engine = RuleEngine(str(rules_file))
   compiled, _ = engine.compile_kernel_rules()
-  enabled = enabled_event_ids_from_rules(compiled)
+  enabled = enabled_syscall_nrs_from_rules(compiled)
   assert 0 in enabled
   assert 2 in enabled
   assert 3 in enabled
@@ -155,7 +155,7 @@ rules:
   assert 57 in enabled
 
 
-def test_enabled_event_ids_without_syscall_wildcard(temp_dir):
+def test_enabled_syscall_nrs_without_syscall_wildcard(temp_dir):
   rules_file = temp_dir / "rules.yaml"
   rules_file.write_text(
     """groups:
@@ -170,7 +170,7 @@ rules:
   )
   engine = RuleEngine(str(rules_file))
   compiled, _ = engine.compile_kernel_rules()
-  enabled = enabled_event_ids_from_rules(compiled)
+  enabled = enabled_syscall_nrs_from_rules(compiled)
   assert enabled == {257}
 
 
@@ -214,7 +214,7 @@ rules:
   engine = RuleEngine(str(rules_file))
   assert engine.allow_event(
     {
-      "event_name": "openat",
+      "syscall_name": "openat",
       "path": "/etc/passwd",
       "comm": "bash",
       "pid": 1,
@@ -227,7 +227,7 @@ rules:
   )
   assert not engine.allow_event(
     {
-      "event_name": "openat",
+      "syscall_name": "openat",
       "path": "/proc/self/status",
       "comm": "bash",
       "pid": 1,
@@ -240,7 +240,7 @@ rules:
   )
   assert not engine.allow_event(
     {
-      "event_name": "openat",
+      "syscall_name": "openat",
       "path": "/tmp/foo",
       "comm": "bash",
       "pid": 1,

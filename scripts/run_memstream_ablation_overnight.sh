@@ -6,7 +6,7 @@ set -e
 
 cd "$(dirname "$0")/.."
 
-EVENTS_PATH="${1:-events_17_03_26.jsonl}"
+EVENTS_PATH="${1:-artifacts/datasets/events_17_03_26.jsonl}"
 LIMIT="${2:-500000}"
 LOG="${3:-memstream_ablation_overnight.log}"
 BASE_OUT="test_data/memstream_ablation_overnight"

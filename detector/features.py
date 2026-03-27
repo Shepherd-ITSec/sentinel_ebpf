@@ -1,7 +1,7 @@
 """Feature extraction for anomaly detection.
 
 EventEnvelope carries syscall fields by name (syscall_nr, comm, pid, tid, uid, arg0, arg1, path);
-event_name is the syscall name; event_group is the rule-defined category (network, file, process, or empty).
+syscall_name is the Linux syscall name; event_group is the rule-defined category (network, file, process, or empty).
 We always add general features; depending on event_group we add type-specific features.
 """
 import ast
@@ -473,7 +473,7 @@ def _syscall_flags_numeric_string(evt: Any) -> str:
   Raw open/socket flag bits as a string, for file flag buckets/hash and fallbacks. The probe stores the same
   value in data_t.flags and in arg0 (open) or arg1 (openat, openat2, socket); we only read args.
   """
-  name = (evt.event_name or "").strip().lower()
+  name = (evt.syscall_name or "").strip().lower()
   if name == "open":
     return (evt.arg0 or "").strip()
   if name in ("openat", "openat2"):
@@ -582,7 +582,7 @@ def _extract_file_features(evt: Any, view: _FeatureViewSpec = _FULL_FEATURE_VIEW
   path_lower = path.lower()
   comm = (evt.comm or "") or "unknown"
   host = (evt.hostname or "") or "unknown"
-  event_name = (evt.event_name or "").strip().lower()
+  event_name = (evt.syscall_name or "").strip().lower()
   ts_s = float(evt.ts_unix_nano) / 1_000_000_000.0
   attrs = dict(evt.attributes or {})
 
@@ -644,7 +644,7 @@ def _extract_network_features(evt: Any, view: _FeatureViewSpec = _FULL_FEATURE_V
   """Type-specific features for event_group == 'network'."""
   arg0_val = _safe_int(evt.arg0 or "0", default=0)
   arg1_val = _safe_int(evt.arg1 or "0", default=0)
-  event_name = evt.event_name or ""
+  event_name = evt.syscall_name or ""
   comm = (evt.comm or "") or "unknown"
   host = (evt.hostname or "") or "unknown"
   ts_s = float(evt.ts_unix_nano) / 1_000_000_000.0
@@ -671,7 +671,7 @@ def _extract_network_features(evt: Any, view: _FeatureViewSpec = _FULL_FEATURE_V
 
   daddr = sockaddr.get("sin_addr") or ""
   af_label = _normalize_af_label(sockaddr.get("sa_family") or "", family_val)
-  event_name_key = (evt.event_name or "").strip().lower()
+  event_name_key = (evt.syscall_name or "").strip().lower()
 
   out: Dict[str, float] = {
     "net_addrlen_norm": net_addrlen_norm,
@@ -734,7 +734,7 @@ def _extract_network_features(evt: Any, view: _FeatureViewSpec = _FULL_FEATURE_V
 
 def _extract_process_features(evt: Any) -> Dict[str, float]:
   """Type-specific features for event_group == 'process' (exec/spawn)."""
-  event_name = evt.event_name or ""
+  event_name = evt.syscall_name or ""
   process_is_execve = 1.0 if event_name == "execve" else 0.0
   process_is_fork = 1.0 if event_name == "fork" else 0.0
   return {

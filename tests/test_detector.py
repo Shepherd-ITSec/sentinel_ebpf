@@ -43,7 +43,7 @@ class TestDetector:
 
     evt = events_pb2.EventEnvelope(
       event_id="test-123",
-      event_name="openat",
+      syscall_name="openat",
       event_group="",
       ts_unix_nano=1234567890000000000,
       syscall_nr=2,
@@ -77,7 +77,7 @@ class TestDetector:
       for i in range(3):
         yield events_pb2.EventEnvelope(
           event_id=f"test-{i}",
-          event_name="openat",
+          syscall_name="openat",
           event_group="",
           ts_unix_nano=1234567890000000000 + i,
           syscall_nr=2,
@@ -115,7 +115,7 @@ class TestDetector:
 
     evt = events_pb2.EventEnvelope(
       event_id="test-456",
-      event_name="socket",
+      syscall_name="socket",
       event_group="",
       ts_unix_nano=1234567890000000000,
       syscall_nr=5,
@@ -148,7 +148,7 @@ class TestDetector:
 
     evt = events_pb2.EventEnvelope(
       event_id="test-789",
-      event_name="execve",
+      syscall_name="execve",
       event_group="",
       ts_unix_nano=1234567890000000000,
       syscall_nr=4,
@@ -177,7 +177,7 @@ class TestDetector:
     detector = RuleBasedDetector(cfg)
     evt = events_pb2.EventEnvelope(
       event_id="view-test",
-      event_name="execve",
+      syscall_name="execve",
       event_group="process",
       ts_unix_nano=1234567890000000000,
       syscall_nr=59,
@@ -207,7 +207,7 @@ class TestDetector:
     detector = RuleBasedDetector(cfg)
     evt = events_pb2.EventEnvelope(
       event_id=f"{model_algorithm}-view-test",
-      event_name="openat",
+      syscall_name="openat",
       event_group="file",
       ts_unix_nano=1234567890000000000,
       syscall_nr=257,
@@ -237,7 +237,7 @@ class TestDetector:
 
     evt = events_pb2.EventEnvelope(
       event_id="test-zscore",
-      event_name="execve",
+      syscall_name="execve",
       event_group="",
       ts_unix_nano=1234567890000000000,
       syscall_nr=4,
@@ -269,7 +269,7 @@ class TestDetector:
 
     evt = events_pb2.EventEnvelope(
       event_id="test-freq1d",
-      event_name="openat",
+      syscall_name="openat",
       event_group="",
       ts_unix_nano=1234567890000000000,
       syscall_nr=2,
@@ -303,7 +303,7 @@ class TestDetector:
 
     evt = events_pb2.EventEnvelope(
       event_id="test-latentcluster",
-      event_name="openat",
+      syscall_name="openat",
       event_group="",
       ts_unix_nano=1234567890000000000,
       syscall_nr=2,
@@ -337,7 +337,7 @@ class TestDetector:
 
     evt = events_pb2.EventEnvelope(
       event_id="test-copulatree",
-      event_name="openat",
+      syscall_name="openat",
       event_group="",
       ts_unix_nano=1234567890000000000,
       syscall_nr=2,
@@ -368,7 +368,7 @@ class TestDetector:
 
     evt = events_pb2.EventEnvelope(
       event_id="test-knn",
-      event_name="openat",
+      syscall_name="openat",
       event_group="",
       ts_unix_nano=1234567890000000000,
       syscall_nr=2,
@@ -418,7 +418,7 @@ class TestDetector:
       async def one_event():
         yield events_pb2.EventEnvelope(
           event_id="dump-me",
-          event_name="openat",
+          syscall_name="openat",
           event_group="",
           ts_unix_nano=1234567890000000000,
           syscall_nr=2,
@@ -444,7 +444,7 @@ class TestDetector:
       assert "config" in meta
       row = json.loads(lines[1])
       assert row["event_id"] == "dump-me"
-      assert row["event_name"] == "openat"
+      assert row["syscall_name"] == "openat"
       assert "anomaly" in row
       assert "score" in row
       assert "score_raw" in row

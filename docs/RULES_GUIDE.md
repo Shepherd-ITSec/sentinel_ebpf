@@ -4,9 +4,9 @@ This guide explains how Sentinel eBPF rules are authored and how they execute ac
 
 ## Supported syscalls
 
-The probe traces the following syscalls with dedicated tracepoints. These are the `event_name` values you can use in rules. The full registry lives in `probe/events.py` (`EVENT_NAME_TO_ID`).
+The probe traces the following syscalls with dedicated tracepoints. These are the `syscall_name` values you can use in rules. The full registry lives in `probe/events.py` (`EVENT_NAME_TO_ID`).
 
-| event_name | event_id | path | arg0 | arg1 | notes |
+| syscall_name | syscall_nr | path | arg0 | arg1 | notes |
 |------------|----------|------|------|------|-------|
 | **File I/O** |
 | `read` | 0 | ✓ (from fd cache) | fd | count | Path from fd cache; `return_value` = bytes read |
@@ -34,8 +34,22 @@ The probe traces the following syscalls with dedicated tracepoints. These are th
 | `listen` | 50 | — | fd | backlog | `return_value` = 0 or -errno |
 | `accept` | 43 | — | fd | — | addrlen is pointer; `return_value` = fd or -errno |
 | `accept4` | 288 | — | fd | flags | `return_value` = fd or -errno |
+| **Additional (common LID-DS / mixed workloads)** |
+| `fstat` | 5 | — | fd | — | `return_value` = 0 or -errno |
+| `poll` | 7 | — | nfds | timeout | `return_value` = count or -errno |
+| `mmap` | 9 | — | len | flags | `return_value` = address or -errno |
+| `mprotect` | 10 | — | start | len | `return_value` = 0 or -errno |
+| `ioctl` | 16 | — | fd | cmd | `return_value` = ioctl result |
+| `sendto` | 44 | — | fd | len | `return_value` = bytes sent or -errno |
+| `recvfrom` | 45 | — | fd | size | `return_value` = bytes recv or -errno |
+| `getsockname` | 51 | — | fd | — | `return_value` = 0 or -errno |
+| `getpeername` | 52 | — | fd | — | `return_value` = 0 or -errno |
+| `setsockopt` | 54 | — | fd | optname | `return_value` = 0 or -errno |
+| `fcntl` | 72 | — | fd | cmd | `return_value` = depends on cmd |
+| `set_robust_list` | 273 | — | head | len | `return_value` = 0 or -errno |
+| `sendmmsg` | 307 | — | fd | vlen | `return_value` = count or -errno |
 
-Other event names in `probe/events.py` (e.g. `stat`, `access`) may be used in rules but are not traced by dedicated tracepoints; they would only appear if routed through the generic raw syscall path, with minimal data (arg0/arg1 only, no path).
+Other syscall names in `probe/events.py` (e.g. `stat`, `access`) may be used in rules but are not traced by dedicated tracepoints; they only appear via the generic raw syscall enter path, with minimal data (arg0/arg1 only, no path, no exit `return_value`).
 
 **Source:** `probe/events.py` (registry), `probe/probe.bpf.c` (tracepoints).
 
@@ -58,12 +72,12 @@ Each rule has:
 The `condition` part is a boolean expression over event fields.
 
 - **Supported operators:** `=`, `in`, `startswith`, `contains`, `and`, `or`, `not`, parentheses
-- **Supported fields:** `event_name`, `event_id`, `path`, `comm`, `pid`, `tid`, `uid`, `flags`, `arg0`, `arg1`, `arg_flags`, `return_value`, `hostname`, `namespace`
+- **Supported fields:** `syscall_name`, `syscall_nr`, `event_id` (correlation id string), `path`, `comm`, `pid`, `tid`, `uid`, `flags`, `arg0`, `arg1`, `arg_flags`, `return_value`, `hostname`, `namespace`
 - `arg_flags` is evaluated as an alias of `flags`.
 
 ## Selective probe attachment
 
-At startup, the probe compiles the explicit `syscalls` from enabled rules and extracts the `event_id`s needed. Only tracepoints for those syscalls are attached (via preprocessor `#if ENABLE_*`). For example, if rules only declare `openat`, the read/write/execve probes are not attached, reducing kernel overhead.
+At startup, the probe compiles the explicit `syscalls` from enabled rules and extracts the Linux `syscall_nr` values needed. Only tracepoints for those syscalls are attached (via preprocessor `#if ENABLE_*`). For example, if rules only declare `openat`, the read/write/execve probes are not attached, reducing kernel overhead.
 
 ## Execution model: kernel prefilter + userspace final decision
 
@@ -72,7 +86,7 @@ Rules run in two stages:
 1. **Kernel prefilter (BPF tuple match):**
    - Event can be dropped early in kernel if it does not match compiled tuples.
    - Compilable predicate types are positive checks on:
-     - `event_name` / `event_id`
+     - `syscall_name` / `syscall_nr`
      - `path startswith`
      - `comm`
      - numeric IDs (`pid`, `tid`, `uid`)
@@ -93,7 +107,7 @@ Compiler output is not 1:1 with rule count. It expands conditions into DNF branc
 
 Typical expansion pattern for the optional `condition`:
 
-- `event_name in (...)` multiplies by number of events
+- `syscall_name in (...)` multiplies by number of syscalls
 - `path startswith A or path startswith B` splits branches
 - `comm in (...)` multiplies by number of comm values
 

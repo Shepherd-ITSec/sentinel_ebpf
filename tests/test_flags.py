@@ -1,7 +1,7 @@
 import os
 import socket
 
-from probe.flags import SUPPORTED_FLAG_EVENT_IDS, decode_flags
+from probe.flags import SUPPORTED_FLAG_SYSCALL_NRS, decode_flags
 
 
 def test_decode_flags_access_modes_are_exclusive():
@@ -32,13 +32,13 @@ def test_decode_flags_socket_with_modifiers():
   assert "SOCK_NONBLOCK" in decoded
 
 
-def test_decode_flags_returns_none_for_unsupported_event_id():
+def test_decode_flags_returns_none_for_unsupported_syscall_nr():
   assert decode_flags(0, 0) is None
   assert decode_flags(123, 42) is None
   assert decode_flags(os.O_RDONLY, 99) is None
 
 
-def test_supported_flag_event_ids():
-  assert 2 in SUPPORTED_FLAG_EVENT_IDS
-  assert 257 in SUPPORTED_FLAG_EVENT_IDS
-  assert 41 in SUPPORTED_FLAG_EVENT_IDS
+def test_supported_flag_syscall_nrs():
+  assert 2 in SUPPORTED_FLAG_SYSCALL_NRS
+  assert 257 in SUPPORTED_FLAG_SYSCALL_NRS
+  assert 41 in SUPPORTED_FLAG_SYSCALL_NRS

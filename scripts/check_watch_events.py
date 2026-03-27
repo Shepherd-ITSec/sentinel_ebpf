@@ -50,7 +50,7 @@ def get_comm_path(e: dict) -> tuple[str, str]:
 
 def matches_filter(e: dict, filter_parts: list[str]) -> bool:
     comm, path = get_comm_path(e)
-    event_name = (e.get("event_name") or "").lower()
+    event_name = (e.get("syscall_name") or "").lower()
     comm_l = comm.lower()
     path_l = path.lower()
     for part in filter_parts:
@@ -61,7 +61,7 @@ def matches_filter(e: dict, filter_parts: list[str]) -> bool:
                 return False
             if k in ("path", "file") and v not in path_l:
                 return False
-            if k in ("event", "event_name", "syscall") and v not in event_name:
+            if k in ("event", "event_name", "syscall", "syscall_name") and v not in event_name:
                 return False
         elif part.lower() not in f"{event_name} {comm_l} {path_l}":
             return False
@@ -118,7 +118,7 @@ def main():
     print(f"\nMatches for {filter_parts!r}: {len(matches)}")
     for m in matches[-5:]:
         comm, path = get_comm_path(m)
-        print(f"  {m.get('event_name')} comm={comm!r} path={path!r}")
+        print(f"  {m.get('syscall_name')} comm={comm!r} path={path!r}")
 
 
 if __name__ == "__main__":

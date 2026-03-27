@@ -34,6 +34,8 @@ events_pb2_grpc.py
 
 # Misc
 kubeconfig
+*.pid
+profile.stats
 
 # Big data / event dumps (avoid re-adding; use LFS only if needed)
 /test_data

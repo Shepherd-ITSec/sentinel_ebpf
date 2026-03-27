@@ -993,7 +993,7 @@
         const d = Array.isArray(entry?.data) ? entry.data : [];
         const attrs = entry?.attributes || {};
         return {
-          syscall: entry?.event_name ?? (d.length > 0 ? d[0] : ""),
+          syscall: entry?.syscall_name ?? (d.length > 0 ? d[0] : ""),
           comm: (d.length > 2 ? d[2] : "") || (attrs.comm != null ? String(attrs.comm) : "") || (entry?.comm != null ? String(entry.comm) : ""),
           pid: (d.length > 3 ? d[3] : "") || (entry?.pid != null ? String(entry.pid) : ""),
           tid: (d.length > 4 ? d[4] : "") || (entry?.tid != null ? String(entry.tid) : ""),
@@ -1019,7 +1019,7 @@
           if (key === "ts_unix_nano") {
             return formatTimestampNs(entry.ts_unix_nano);
           }
-          if (key === "event_name") return fields.syscall;
+          if (key === "syscall_name" || key === "event_name") return fields.syscall;
           if (key === "event_id") return entry.event_id != null ? String(entry.event_id) : "";
           if (key === "comm") return fields.comm;
           if (key === "path") return fields.path;
@@ -1048,7 +1048,7 @@
         const headers = [
           { key: "ts_unix_nano", label: "Time" },
           { key: "event_group", label: "Group" },
-          { key: "event_name", label: "Syscall" },
+          { key: "syscall_name", label: "Syscall" },
           { key: "hostname", label: "Host" },
           { key: "event_id", label: "Event ID" },
           { key: "comm", label: "Comm" },
@@ -1130,7 +1130,7 @@
       function eventMatchesFilter(entry, filter) {
         if (!filter || !filter.trim()) return false;
         const f = getWatchEventFields(entry);
-        const eventName = (entry.event_name || "").toLowerCase();
+        const syscallName = (entry.syscall_name || "").toLowerCase();
         const path = (f.path || "").toLowerCase();
         const comm = (f.comm || "").toLowerCase();
         const hostname = (entry.hostname || "").toLowerCase();
@@ -1144,13 +1144,13 @@
             let match = false;
             if (field === "comm" && comm.includes(value)) match = true;
             else if ((field === "path" || field === "file") && path.includes(value)) match = true;
-            else if ((field === "event" || field === "event_name" || field === "syscall") && eventName.includes(value)) match = true;
+            else if ((field === "event" || field === "event_name" || field === "syscall" || field === "syscall_name") && syscallName.includes(value)) match = true;
             else if (field === "hostname" && hostname.includes(value)) match = true;
             else if (field === "type" && eventType.includes(value)) match = true;
             else if ((field === "event_id" || field === "id") && String(entry.event_id || "").toLowerCase().includes(value)) match = true;
             if (!match) return false;
           } else if (part.length > 0) {
-            const haystack = [eventName, comm, path, hostname, eventType, String(entry.event_id || ""), (entry.data || []).join(" ")].join(" ").toLowerCase();
+            const haystack = [syscallName, comm, path, hostname, eventType, String(entry.event_id || ""), (entry.data || []).join(" ")].join(" ").toLowerCase();
             if (!haystack.includes(part.toLowerCase())) return false;
           }
         }
@@ -1159,7 +1159,7 @@
       function getWatchCell(entry, key) {
         const fields = getWatchEventFields(entry);
         if (key === "ts_unix_nano") return formatTimestampNs(entry.ts_unix_nano);
-        if (key === "event_name") return fields.syscall;
+        if (key === "syscall_name" || key === "event_name") return fields.syscall;
         if (key === "event_id") return entry.event_id != null ? String(entry.event_id) : "";
         if (key === "comm") return fields.comm;
         if (key === "path") return fields.path;
@@ -1171,7 +1171,7 @@
       const watchHeaders = [
         { key: "ts_unix_nano", label: "Time" },
         { key: "event_group", label: "Group" },
-        { key: "event_name", label: "Syscall" },
+        { key: "syscall_name", label: "Syscall" },
         { key: "hostname", label: "Host" },
         { key: "event_id", label: "Event ID" },
         { key: "comm", label: "Comm" },

@@ -267,7 +267,7 @@ def main() -> None:
   ap = argparse.ArgumentParser(
     description="Replay slice of detector-events JSONL and compare model scores with original log.",
   )
-  ap.add_argument("events", default="events_09_03_26.jsonl", nargs="?", help="Path to detector-events JSONL")
+  ap.add_argument("events", default="artifacts/datasets/events_09_03_26.jsonl", nargs="?", help="Path to detector-events JSONL")
   ap.add_argument("--out-dir", default="test_data/compare_replay", help="Output directory for dump and report")
   ap.add_argument("--detector-port", type=int, default=50051, help="Detector gRPC port")
   ap.add_argument("--pace", choices=["fast", "realtime"], default="fast", help="Replay pace")

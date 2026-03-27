@@ -130,7 +130,7 @@ rules:
 
 Supported condition fields:
 
-- `event_name`, `event_id`, `path`, `comm`, `pid`, `tid`, `uid`, `flags`, `arg0`, `arg1`, `arg_flags`, `return_value`, `hostname`, `namespace`
+- `syscall_name`, `syscall_nr`, `event_id` (correlation id), `path`, `comm`, `pid`, `tid`, `uid`, `flags`, `arg0`, `arg1`, `arg_flags`, `return_value`, `hostname`, `namespace`
 
 Supported operators:
 
@@ -138,7 +138,7 @@ Supported operators:
 
 ### Hybrid compile behavior (kernel + userspace)
 
-- Probe compiles supported predicates into kernel prefilter tuples (`event_name`/`event_id`, `path startswith`, `comm`, numeric IDs).
+- Probe compiles supported predicates into kernel prefilter tuples (`syscall_name`/`syscall_nr`, `path startswith`, `comm`, numeric IDs).
 - Unsupported predicates remain in userspace fallback evaluation.
 - Events are forwarded only after full condition evaluation.
 - Compile metrics are exposed on probe `/metrics`:
@@ -152,10 +152,10 @@ Supported operators:
 
 Probe sends `EventEnvelope` with:
 
-- `event_name`: syscall/event name (e.g. `openat`, `execve`, `socket`, `connect`).
+- `syscall_name`: Linux syscall name (e.g. `openat`, `execve`, `socket`, `connect`).
 - `event_group`: rule-defined category (e.g. `network`, `file`, `process`) or empty.
 - `data`: ordered string vector with canonical format:
-  `[event_name, event_id, comm, pid, tid, uid, arg0, arg1, path, flags]`.
+  `[syscall_name, event_id, comm, pid, tid, uid, arg0, arg1, path, flags]`.
 - `attributes.flags`: userspace-decoded flags for open/openat/openat2 events.
 - metadata: hostname/pod/namespace/container information and `event_id`.
 

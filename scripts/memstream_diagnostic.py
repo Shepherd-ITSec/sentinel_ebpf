@@ -168,7 +168,7 @@ def _select_sample_events(
       f"target_{score_key}": _round_float(target_scores[name]),
       "event_index": int(record["event_index"]),
       "event_id": record["event_id"],
-      "event_name": record["event_name"],
+      "syscall_name": record["syscall_name"],
       "event_group": record["event_group"],
       "score_raw": _round_float(float(record["score_raw"])),
       "score_scaled": _round_float(float(record["score_scaled"])),
@@ -331,7 +331,7 @@ def _build_report(
   ])
   for sample_name, sample in sample_events.items():
     lines.append(
-      f"- `{sample_name}`: event `{sample['event_index']}` (`{sample['event_name']}` / `{sample['event_group'] or 'default'}`) "
+      f"- `{sample_name}`: event `{sample['event_index']}` (`{sample['syscall_name']}` / `{sample['event_group'] or 'default'}`) "
       f"score=`{sample['score_scaled']}` raw=`{sample['score_raw']}`"
     )
   lines.extend([
@@ -353,7 +353,7 @@ def _build_report(
   if top_tail_events:
     for item in top_tail_events[:10]:
       lines.append(
-        f"- event `{item['event_index']}` `{item['event_name']}` / `{item['event_group'] or 'default'}` "
+        f"- event `{item['event_index']}` `{item['syscall_name']}` / `{item['event_group'] or 'default'}` "
         f"scaled=`{item['score_scaled']}` raw=`{item['score_raw']}` update=`{item['update_allowed']}`"
       )
   else:
@@ -371,7 +371,7 @@ def _build_report(
 
 def main() -> None:
   ap = argparse.ArgumentParser(description="Run a MemStream diagnostic replay and write compact artifacts.")
-  ap.add_argument("events", nargs="?", default="events_17_03_26.jsonl", help="Replay file (JSONL or EVT1)")
+  ap.add_argument("events", nargs="?", default="artifacts/datasets/events_17_03_26.jsonl", help="Replay file (JSONL or EVT1)")
   ap.add_argument("--limit", type=int, default=DEFAULT_LIMIT, help="Max events to replay")
   ap.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR, help="Artifact directory")
   ap.add_argument("--checkpoint-interval", type=int, default=100000, help="Save replay checkpoints every N events")
@@ -434,7 +434,7 @@ def main() -> None:
   first_memory_full_at: int | None = None
   top_tail_events: list[dict[str, Any]] = []
   overall_event_groups: Counter[str] = Counter()
-  overall_event_names: Counter[str] = Counter()
+  overall_syscall_names: Counter[str] = Counter()
 
   with timeseries_path.open("w", encoding="utf-8") as timeseries_file:
     for i, obj in enumerate(_iter_event_dicts(events_path, args.limit)):
@@ -451,7 +451,7 @@ def main() -> None:
       memory_errors.append(float(debug.get("memory_error", 0.0)))
       event_group_key = (evt.event_group or "").strip().lower() or "__default__"
       overall_event_groups[event_group_key] += 1
-      overall_event_names[(evt.event_name or "").strip().lower() or "__unknown__"] += 1
+      overall_syscall_names[(evt.syscall_name or "").strip().lower() or "__unknown__"] += 1
 
       if score_mode == "percentile":
         cal = _get_percentile(evt.event_group or "")
@@ -470,7 +470,7 @@ def main() -> None:
       record = {
         "event_index": i,
         "event_id": evt.event_id,
-        "event_name": evt.event_name,
+        "syscall_name": evt.syscall_name,
         "event_group": evt.event_group,
         "score_raw": round(float(raw), 6),
         "score_scaled": round(float(scaled), 6),
@@ -598,7 +598,7 @@ def main() -> None:
     "recon_vs_memory_error_corr": _round_float(_safe_corr(recon_errors, memory_errors)),
     "last_debug": detector.get_last_debug(),
     "event_group_counts": dict(overall_event_groups.most_common(20)),
-    "event_name_counts": dict(overall_event_names.most_common(20)),
+    "syscall_name_counts": dict(overall_syscall_names.most_common(20)),
   }
   (out_dir / "memory_diagnostics.json").write_text(json.dumps(memory_diagnostics, indent=2) + "\n", encoding="utf-8")
 

@@ -4,7 +4,7 @@ The detector is an anomaly detection service that consumes kernel-level events (
 
 ## Event model
 
-**event_name = syscall name; event_group = category.** There is no separate “network” vs “syscall” category: `event_name` is the syscall/event name (e.g. `openat`, `connect`, `socket`, `execve`); the registry lives in `probe/events.py` (`EVENT_NAME_TO_ID`). The rule-defined category is **event_group** (e.g. `network`, `file`, `process`) and can be empty; it is carried in the protobuf field `EventEnvelope.event_group`.
+**syscall_name = Linux syscall name; event_group = category.** There is no separate “network” vs “syscall” category: `syscall_name` is the syscall name (e.g. `openat`, `connect`, `socket`, `execve`); the registry lives in `probe/events.py` (`EVENT_NAME_TO_ID`). The rule-defined category is **event_group** (e.g. `network`, `file`, `process`) and can be empty; it is carried in the protobuf field `EventEnvelope.event_group`.
 
 **One envelope shape for all.** Syscalls are like function calls with defined inputs and outputs. The `EventEnvelope` is the single contract: every producer (eBPF probe, EVT1 replay, future sources) must send the same named syscall fields and attribute keys. For a given event only the relevant fields are non-empty (e.g. `path` for openat, empty for connect). Raw open/socket flag bits are already in `arg0` (open) or `arg1` (openat, openat2, socket) as emitted by the probe; decoded names go in `attributes["flags"]` when present.
 
@@ -17,7 +17,7 @@ The detector is an anomaly detection service that consumes kernel-level events (
 **Event format (protobuf / JSON):**
 
 - `event_id` (string): correlation id for the message (not the Linux syscall number).
-- `event_name`: syscall name string (e.g. `openat`, `connect`); used for flag-slot routing, network/socket parsing, and group-local one-hot labels.
+- `syscall_name`: Linux syscall name string (e.g. `openat`, `connect`); used for flag-slot routing, network/socket parsing, and group-local one-hot labels.
 - `syscall_nr` (uint32): Linux syscall number (e.g. `257` for `openat`); used for **`event_id_norm`** in the **frequency** feature view (`min(syscall_nr / 500, 1)` in code).
 - `hostname` (string): host identity for bucket/hash features and online stats keys.
 - `comm`, `pid`, `tid`, `uid` (strings): process context; `pid`/`tid`/`uid` use decimal string encoding as emitted by the probe.
@@ -92,7 +92,7 @@ Prefix lists for **`file_sensitive_path`** / **`file_tmp_path`** come from **`gr
 |---|---|---|---|---|
 | `file_sensitive_path` | default, loda, memstream | binary | {0, 1} | Lowercased `evt.path` starts with any configured sensitive prefix |
 | `file_tmp_path` | default, loda, memstream | binary | {0, 1} | Lowercased `evt.path` starts with any configured tmp prefix |
-| `file_event_name_*` | default | one-hot | {0, 1} | Lowercased `evt.event_name` vs `_group_syscalls("file", …)` from rules (fallback `_DEFAULT_FILE_EVENT_NAMES`) |
+| `file_event_name_*` | default | one-hot | {0, 1} | Lowercased `evt.syscall_name` vs `_group_syscalls("file", …)` from rules (fallback `_DEFAULT_FILE_EVENT_NAMES`) |
 | `file_extension_bucket_*` | default | hashed sparse bank | {0, 1} | Last `path` component: extension after `.`, else `""`; MD5 bucket `_FILE_EXTENSION_BUCKETS` |
 | `file_flags_bucket_*` | default | hashed multi-hot | {0, 1} | `attributes["flags"]` if set, else `_syscall_flags_numeric_string(evt)`; tokens → `_FILE_FLAGS_BUCKETS` |
 | `file_extension_hash` | frequency | scalar hash | [0, 1) | `_hash01` of extension string (same derivation as buckets) |
@@ -113,10 +113,10 @@ Sockaddr fields are built in **`_parse_sockaddr_from_evt`**: `attributes` (`sin_
 |---|---|---|---|---|
 | `net_fd_norm` | default, frequency, loda, memstream | log1p-magnitude | [0, 1] | `evt.arg0` → int, `_norm_arg` |
 | `net_addrlen_norm` | default, frequency, loda, memstream | log1p-magnitude | [0, 1] | `evt.arg1` → int (addrlen magnitude), `_ADDRLEN_SCALE` |
-| `net_socket_family_norm` | default, frequency, loda, memstream | normalized integer | [0, 1] | If `event_name=="socket"`: `arg0` as family; else numeric hint from sockaddr `sa_family` / INET vs INET6 strings |
+| `net_socket_family_norm` | default, frequency, loda, memstream | normalized integer | [0, 1] | If `syscall_name=="socket"`: `arg0` as family; else numeric hint from sockaddr `sa_family` / INET vs INET6 strings |
 | `net_dport_norm` | default, frequency, loda, memstream | normalized integer | [0, 1] | Parsed `sin_port` → int / 65535 |
-| `net_event_name_*` | default | one-hot | {0, 1} | Lowercased `evt.event_name` vs `_group_syscalls("network", …)` (fallback `_DEFAULT_NET_EVENT_NAMES`) |
-| `net_socket_type_bucket_*` | default, loda | hashed sparse bank | {0, 1} | If `event_name=="socket"`: `str(arg1)` into `_NET_SOCKET_TYPE_BUCKETS`; else `str(0)` |
+| `net_event_name_*` | default | one-hot | {0, 1} | Lowercased `evt.syscall_name` vs `_group_syscalls("network", …)` (fallback `_DEFAULT_NET_EVENT_NAMES`) |
+| `net_socket_type_bucket_*` | default, loda | hashed sparse bank | {0, 1} | If `syscall_name=="socket"`: `str(arg1)` into `_NET_SOCKET_TYPE_BUCKETS`; else `str(0)` |
 | `net_daddr_bucket_*` | default | hashed sparse bank | {0, 1} | MD5 bucket of parsed destination IP string |
 | `net_af_*` | default, loda, memstream | one-hot | {0, 1} | `_normalize_af_label(sa_family string, family_val)` vs `_NET_AF_VALUES` |
 | `net_socket_type_hash` | frequency | scalar hash | [0, 1) | `_hash01(str(type_val))` (same `type_val` as buckets) |
@@ -140,8 +140,8 @@ Sockaddr fields are built in **`_parse_sockaddr_from_evt`**: `attributes` (`sin_
 
 | Feature / pattern | Views | Encoded as | Range | Source |
 |---|---|---|---|---|
-| `process_is_execve` | default, frequency, loda, memstream | binary | {0, 1} | `1.0` if `evt.event_name == "execve"` (exact string), else `0.0` |
-| `process_is_fork` | default, frequency, loda, memstream | binary | {0, 1} | `1.0` if `evt.event_name == "fork"`, else `0.0` |
+| `process_is_execve` | default, frequency, loda, memstream | binary | {0, 1} | `1.0` if `evt.syscall_name == "execve"` (exact string), else `0.0` |
+| `process_is_fork` | default, frequency, loda, memstream | binary | {0, 1} | `1.0` if `evt.syscall_name == "fork"`, else `0.0` |
 
 View-independent; same in **frequency** as in **default** (`_extract_process_features` ignores view).
 

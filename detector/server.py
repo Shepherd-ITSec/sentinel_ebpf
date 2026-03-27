@@ -89,7 +89,7 @@ def _init_event_dump(cfg: Optional[DetectorConfig] = None):
 def _event_base_entry(evt: events_pb2.EventEnvelope) -> dict:
   return {
     "event_id": evt.event_id,
-    "event_name": evt.event_name or "",
+    "syscall_name": evt.syscall_name or "",
     "event_group": evt.event_group or "",
     "syscall_nr": evt.syscall_nr,
     "comm": evt.comm or "",
@@ -485,7 +485,7 @@ async def serve():
               return True
             comm = (obj.get("comm") or "") or obj.get("attributes", {}).get("comm", "")
             path = (obj.get("path") or "") or obj.get("attributes", {}).get("path", "") or obj.get("attributes", {}).get("filename", "")
-            event_name = (obj.get("event_name") or "").lower()
+            event_name = (obj.get("syscall_name") or "").lower()
             path_s = (path or "").lower()
             comm_s = (comm or "").lower()
             hostname = (obj.get("hostname") or "").lower()
@@ -506,7 +506,7 @@ async def serve():
                   return False
                 if field in ("path", "file") and value not in path_s:
                   return False
-                if field in ("event", "event_name", "syscall") and value not in event_name:
+                if field in ("event", "event_name", "syscall", "syscall_name") and value not in event_name:
                   return False
                 if field == "hostname" and value not in hostname:
                   return False

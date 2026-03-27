@@ -182,6 +182,8 @@ def convert_syscall_to_envelope(
   event_id: str,
   hostname: str,
   syscall_to_group: dict[str, str],
+  recording_name: str = "",
+  recording_path: str = "",
 ) -> dict[str, Any]:
   event_name = _safe_str(syscall.name()).strip().lower()
   params_raw = syscall.params() or {}
@@ -194,7 +196,7 @@ def convert_syscall_to_envelope(
     "event_id": event_id,
     "ts_unix_nano": int(syscall.timestamp_unix_in_ns()),
     "hostname": hostname,
-    "event_name": event_name,
+    "syscall_name": event_name,
     "event_group": infer_event_group(event_name, syscall_to_group),
     "syscall_nr": int(EVENT_NAME_TO_ID.get(event_name, UNKNOWN_EVENT_ID)),
     "comm": _safe_str(syscall.process_name()),
@@ -208,6 +210,12 @@ def convert_syscall_to_envelope(
   }
   if not isinstance(env["attributes"], dict):
     env["attributes"] = {}
+  if recording_name:
+    env["attributes"]["recording_name"] = str(recording_name)
+  if recording_path:
+    env["attributes"]["recording_path"] = str(recording_path)
+  if getattr(syscall, "line_id", None) is not None:
+    env["attributes"]["recording_line_id"] = str(getattr(syscall, "line_id"))
   return env
 
 
@@ -216,7 +224,7 @@ def _iter_lidds_syscalls(
   split: str,
   recording_type: str | None,
   lidds_root: Path | None = None,
-) -> Iterable[Any]:
+) -> Iterable[tuple[str, str, Any]]:
   if lidds_root is not None:
     root_str = str(lidds_root.resolve())
     if root_str not in sys.path:
@@ -254,7 +262,7 @@ def _iter_lidds_syscalls(
   recordings = func(recording_type=type_obj)
   for rec in recordings:
     for syscall in rec.syscalls():
-      yield syscall
+      yield getattr(rec, "name", ""), getattr(rec, "path", ""), syscall
 
 
 def convert_lidds_to_jsonl(
@@ -277,7 +285,7 @@ def convert_lidds_to_jsonl(
   if tqdm is not None:
     syscall_iter = tqdm(syscall_iter, desc=f"Convert LID-DS ({split})", unit=" evt", file=sys.stderr)
   with out_jsonl.open("w", encoding="utf-8") as f:
-    for syscall in syscall_iter:
+    for recording_name, recording_path, syscall in syscall_iter:
       if max_events is not None and n >= max_events:
         break
       event_id = f"{event_id_prefix}-{split}-{n}"
@@ -286,6 +294,8 @@ def convert_lidds_to_jsonl(
         event_id=event_id,
         hostname=hostname,
         syscall_to_group=syscall_to_group,
+        recording_name=recording_name,
+        recording_path=recording_path,
       )
       f.write(json.dumps(env, separators=(",", ":")) + "\n")
       n += 1

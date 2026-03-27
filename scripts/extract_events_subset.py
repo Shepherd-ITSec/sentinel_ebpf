@@ -28,7 +28,7 @@ def _to_replay_event(obj: dict, from_key: str, to_key: str) -> dict:
         "namespace": obj.get("namespace", ""),
         "container_id": obj.get("container_id", ""),
         "ts_unix_nano": int(obj.get("ts_unix_nano", 0)),
-        "event_name": obj.get("event_name", ""),
+        "syscall_name": obj.get("syscall_name", ""),
         "event_group": event_group,
         "syscall_nr": syscall_nr,
         "comm": obj.get("comm", ""),
@@ -49,14 +49,14 @@ def main() -> None:
     ap.add_argument(
         "input",
         nargs="?",
-        default="events_17_03_26.jsonl",
-        help="Input JSONL file (default: events_17_03_26.jsonl)",
+        default="artifacts/datasets/events_17_03_26.jsonl",
+        help="Input JSONL file (default: artifacts/datasets/events_17_03_26.jsonl)",
     )
     ap.add_argument(
         "-o",
         "--output",
-        default="events_17_03_26_1M.jsonl",
-        help="Output JSONL file (default: events_17_03_26_1M.jsonl)",
+        default="artifacts/datasets/events_17_03_26_1M.jsonl",
+        help="Output JSONL file (default: artifacts/datasets/events_17_03_26_1M.jsonl)",
     )
     ap.add_argument(
         "-n",

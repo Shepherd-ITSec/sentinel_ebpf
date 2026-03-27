@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+from probe.events import EVENT_NAME_TO_ID, UNKNOWN_EVENT_ID
 from scripts.replay_lidds import convert_lidds_to_jsonl, convert_syscall_to_envelope, infer_event_group
 
 
@@ -62,6 +63,32 @@ def test_infer_event_group_prefers_rule_map():
   assert infer_event_group("openat", {"openat": "network"}) == "network"
 
 
+def test_lidds_registry_syscalls_are_not_unknown():
+  """Regression: these LID-DS syscall names must map to real x86_64 numbers (not 9999)."""
+  names = [
+    "fcntl",
+    "setsockopt",
+    "poll",
+    "accept",
+    "getsockname",
+    "mmap",
+    "mprotect",
+    "set_robust_list",
+    "getpeername",
+    "fstat",
+    "sendto",
+    "recvfrom",
+    "sendmmsg",
+    "ioctl",
+  ]
+  for n in names:
+    assert EVENT_NAME_TO_ID.get(n, UNKNOWN_EVENT_ID) != UNKNOWN_EVENT_ID
+  s = _FakeSyscall(name="poll", params={"ufds": "0", "nfds": "1", "timeout": "100", "res": "0"}, direction="CLOSE")
+  env = convert_syscall_to_envelope(s, event_id="x", hostname="h", syscall_to_group={})
+  assert env["syscall_nr"] == 7
+  assert env["syscall_name"] == "poll"
+
+
 def test_convert_syscall_to_envelope_enriched_network():
   s = _FakeSyscall(
     name="connect",
@@ -83,7 +110,7 @@ def test_convert_syscall_to_envelope_enriched_network():
     syscall_to_group={"connect": "network"},
   )
   assert env["event_id"] == "lidds-test-1"
-  assert env["event_name"] == "connect"
+  assert env["syscall_name"] == "connect"
   assert env["event_group"] == "network"
   assert env["syscall_nr"] == 42
   assert env["arg0"] == "3"
@@ -120,16 +147,16 @@ def test_convert_lidds_to_jsonl_writes_replay_compatible_rows(monkeypatch, temp_
   out = temp_dir / "lidds.jsonl"
 
   def _fake_iter(_scenario_path, _split, _recording_type, _lidds_root=None):
-    yield _FakeSyscall(
+    yield ("rec-1", "/tmp/rec-1.zip", _FakeSyscall(
       name="openat",
       params={"dirfd": "-100", "pathname": "L2V0Yy9wYXNzd2Q=", "flags": "0", "res": "3"},
       direction="CLOSE",
-    )
-    yield _FakeSyscall(
+    ))
+    yield ("rec-2", "/tmp/rec-2.zip", _FakeSyscall(
       name="connect",
       params={"fd": "7", "addrlen": "16", "dest_port": "443", "dest_ip": "1.2.3.4", "res": "0"},
       direction="CLOSE",
-    )
+    ))
 
   monkeypatch.setattr("scripts.replay_lidds._iter_lidds_syscalls", _fake_iter)
   n = convert_lidds_to_jsonl(
@@ -150,3 +177,5 @@ def test_convert_lidds_to_jsonl_writes_replay_compatible_rows(monkeypatch, temp_
     assert isinstance(row.get("attributes"), dict)
     assert row["hostname"] == "lidds-host"
     assert "ts_unix_nano" in row
+  assert rows[0]["attributes"]["recording_name"] == "rec-1"
+  assert rows[0]["attributes"]["recording_path"] == "/tmp/rec-1.zip"

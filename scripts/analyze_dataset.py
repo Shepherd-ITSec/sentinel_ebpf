@@ -155,8 +155,8 @@ def main():
   ap.add_argument(
     "logfile",
     nargs="?",
-    default="events_05_03_26.jsonl",
-    help="Path to detector event dump JSONL (default: events_05_03_26.jsonl)",
+    default="artifacts/datasets/events_05_03_26.jsonl",
+    help="Path to detector event dump JSONL (default: artifacts/datasets/events_05_03_26.jsonl)",
   )
   ap.add_argument(
     "--max-events",

@@ -24,7 +24,7 @@ from event_envelope_codec import envelope_to_dict
 from probe.config import AppConfig, load_config
 from probe.events import EVENT_ID_TO_NAME, EVENT_IDS_WITH_RETURN_VALUE
 from probe.flags import decode_flags
-from probe.bpf_build import build_bpf_program, enabled_event_ids_from_rules
+from probe.bpf_build import build_bpf_program, enabled_syscall_nrs_from_rules
 from probe.rules import RuleEngine
 
 # Fast UUID generation using counter + timestamp (much faster than uuid.uuid4())
@@ -180,7 +180,7 @@ PROBE_METRIC_SPECS = [
 class BpfRule(ctypes.Structure):
   _fields_ = [
     ("enabled", ctypes.c_uint32),
-    ("event_id", ctypes.c_uint32),  # 0 wildcard, otherwise curated event id
+    ("syscall_nr", ctypes.c_uint32),  # WILDCARD = match any, else Linux syscall number
     ("prefix_len", ctypes.c_uint32),
     ("comm_len", ctypes.c_uint32),
     ("pid", ctypes.c_uint32),
@@ -663,9 +663,9 @@ class ProbeRunner:
     self.cfg = cfg
     self.rule_engine = RuleEngine(cfg.rules_file)
     compiled, _ = self.rule_engine.compile_kernel_rules()
-    enabled_ids = enabled_event_ids_from_rules(compiled)
+    enabled_ids = enabled_syscall_nrs_from_rules(compiled)
     self.bpf = BPF(
-      text=build_bpf_program(cfg.stream.ring_buffer_pages, enabled_event_ids=enabled_ids)
+      text=build_bpf_program(cfg.stream.ring_buffer_pages, enabled_syscall_nrs=enabled_ids)
     )
     self.streamer = GrpcStreamer(cfg)
     self.filesink: Optional[FileSink] = None
@@ -741,7 +741,7 @@ class ProbeRunner:
       comm_bytes = item["comm"].encode("utf-8")[:COMM_LEN]
       entry = BpfRule(
         enabled=1,
-        event_id=item["event_id"],
+        syscall_nr=item["syscall_nr"],
         prefix_len=len(prefix_bytes),
         comm_len=len(comm_bytes),
         pid=item["pid"],
@@ -781,8 +781,8 @@ class ProbeRunner:
     comm_bytes = event.comm
     null_idx = comm_bytes.find(b'\x00')
     comm = comm_bytes[:null_idx].decode(errors="ignore") if null_idx >= 0 else comm_bytes.decode(errors="ignore")
-    event_id = int(event.event_id)
-    event_name = EVENT_ID_TO_NAME.get(event_id, f"event_{event_id}")
+    syscall_nr = int(event.syscall_nr)
+    syscall_name = EVENT_ID_TO_NAME.get(syscall_nr, f"syscall_{syscall_nr}")
 
     # Convert boot-relative timestamp to Unix epoch nanoseconds
     ts_unix_nano = event.ts + self._boot_time_ns
@@ -790,16 +790,16 @@ class ProbeRunner:
     # Build dynamic attributes per event (no syscall field duplication vs envelope).
     attributes = dict(self._static_attrs)
     return_val = int(getattr(event, "return_value", 0) or 0)
-    if event_id in EVENT_IDS_WITH_RETURN_VALUE:
+    if syscall_nr in EVENT_IDS_WITH_RETURN_VALUE:
       attributes["return_value"] = str(return_val)
 
-    decoded_flags = decode_flags(int(event.flags), event_id)
+    decoded_flags = decode_flags(int(event.flags), syscall_nr)
     if decoded_flags is not None:
       attributes["flags"] = decoded_flags
 
     rule_ctx = {
-        "event_name": event_name,
-        "event_id": event_id,
+        "syscall_name": syscall_name,
+        "syscall_nr": syscall_nr,
         "path": filename,
         "filename": filename,
         "comm": comm,
@@ -810,10 +810,10 @@ class ProbeRunner:
         "arg0": int(event.arg0),
         "arg1": int(event.arg1),
         "arg_flags": attributes.get("flags", ""),
-        "return_value": return_val if event_id in EVENT_IDS_WITH_RETURN_VALUE else None,
+        "return_value": return_val if syscall_nr in EVENT_IDS_WITH_RETURN_VALUE else None,
         "hostname": self._metadata["hostname"],
         "namespace": self._metadata["namespace"],
-      }
+    }
     allowed, group_val = self.rule_engine.classify_event(rule_ctx)
     if not allowed:
       return
@@ -833,9 +833,9 @@ class ProbeRunner:
       namespace=self._metadata["namespace"],
       container_id=self._metadata["container_id"],
       ts_unix_nano=ts_unix_nano,
-      event_name=event_name,
+      syscall_name=syscall_name,
       event_group=event_group_str,
-      syscall_nr=event_id,
+      syscall_nr=syscall_nr,
       comm=comm,
       pid=pid_str,
       tid=tid_str,

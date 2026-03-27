@@ -32,7 +32,7 @@ class TestDecodeLogs:
     log_file = temp_dir / "events.bin"
     payload = json.dumps({
       "event_id": "test-1",
-      "event_name": "openat",
+      "syscall_name": "openat",
       "event_group": "",
       "syscall_nr": 2,
       "comm": "bash",
@@ -51,7 +51,7 @@ class TestDecodeLogs:
     result = json.loads(out.getvalue().strip())
 
     assert result["event_id"] == "test-1"
-    assert result["event_name"] == "openat"
+    assert result["syscall_name"] == "openat"
     assert result["path"] == "/tmp/test"
     assert result["syscall_nr"] == 2
 
@@ -61,7 +61,7 @@ class TestDecodeLogs:
     for i in range(3):
       payload = json.dumps({
         "event_id": f"test-{i}",
-        "event_name": "openat",
+        "syscall_name": "openat",
         "event_group": "",
         "syscall_nr": 2,
         "comm": "bash",
@@ -88,7 +88,7 @@ class TestDecodeLogs:
     log_file = temp_dir / "events.bin.gz"
     payload = json.dumps({
       "event_id": "test-1",
-      "event_name": "openat",
+      "syscall_name": "openat",
       "event_group": "",
       "syscall_nr": 2,
       "comm": "bash",
