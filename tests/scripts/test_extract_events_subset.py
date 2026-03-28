@@ -24,13 +24,12 @@ def test_extract_renames_event_type_to_event_group_and_strips_unused_fields(temp
             "uid": "1000",
             "arg0": "0",
             "arg1": "0",
-            "path": "/tmp/x",
             "hostname": "h1",
             "pod_name": "p1",
             "namespace": "ns",
             "container_id": "c1",
             "ts_unix_nano": 1700000000000000000,
-            "attributes": {"a": "b"},
+            "attributes": {"fd_path": "/tmp/x", "a": "b"},
             "timestamp": "ignored",
             "anomaly": False,
             "score": 0.5,
@@ -53,6 +52,7 @@ def test_extract_renames_event_type_to_event_group_and_strips_unused_fields(temp
     assert "event_group" in obj
     assert obj["event_group"] == "file"
     assert "event_type" not in obj
+    assert obj.get("attributes", {}).get("fd_path") == "/tmp/x"
     assert set(obj.keys()) == {
         "event_id",
         "hostname",
@@ -69,7 +69,6 @@ def test_extract_renames_event_type_to_event_group_and_strips_unused_fields(temp
         "uid",
         "arg0",
         "arg1",
-        "path",
         "attributes",
     }
 

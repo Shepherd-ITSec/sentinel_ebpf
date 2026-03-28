@@ -11,22 +11,22 @@ def test_condition_rules_with_lists_and_macros(temp_dir):
   file_syscalls: [open, openat, openat2]
   shell_comms: [bash, sh]
 macros:
-  sensitive_open: "path startswith /etc or path startswith /root"
+  sensitive_open: "attributes.fd_path startswith /etc or attributes.fd_path startswith /root"
 groups:
-  file: {}
+  file:
+    syscalls: file_syscalls
 rules:
   - name: dsl-rule
     enabled: true
     group: file
-    syscalls: file_syscalls
-    condition: "sensitive_open and comm in (shell_comms)"
+    condition: "syscall_name in (file_syscalls) and sensitive_open and comm in (shell_comms)"
 """
   )
   engine = RuleEngine(str(rules_file))
   assert engine.allow_event(
     {
       "syscall_name": "openat",
-      "path": "/etc/passwd",
+      "attributes": {"fd_path": "/etc/passwd"},
       "comm": "bash",
       "pid": 1,
       "tid": 1,
@@ -39,7 +39,7 @@ rules:
   assert not engine.allow_event(
     {
       "syscall_name": "openat",
-      "path": "/tmp/file",
+      "attributes": {"fd_path": "/tmp/file"},
       "comm": "bash",
       "pid": 1,
       "tid": 1,
@@ -55,12 +55,12 @@ def test_rule_group_label_is_exposed_via_classify_event(temp_dir):
   rules_file = temp_dir / "rules.yaml"
   rules_file.write_text(
     """groups:
-  network: {}
+  network:
+    syscalls: [socket, connect]
 rules:
   - name: capture-network-connectivity
     enabled: true
     group: network
-    syscalls: [socket, connect]
 """
   )
   engine = RuleEngine(str(rules_file))
@@ -68,8 +68,7 @@ rules:
     {
       "syscall_name": "connect",
       "syscall_nr": 42,
-      "path": "",
-      "filename": "",
+      "attributes": {},
       "comm": "curl",
       "pid": 123,
       "tid": 123,
@@ -87,18 +86,18 @@ rules:
   assert group == "network"
 
 
-def test_kernel_compile_includes_read_write_from_rule_syscalls(temp_dir):
+def test_kernel_compile_includes_read_write_from_group_syscalls(temp_dir):
   rules_file = temp_dir / "rules.yaml"
   rules_file.write_text(
     """lists:
   file_syscalls: [open, openat, read, write]
 groups:
-  file: {}
+  file:
+    syscalls: file_syscalls
 rules:
   - name: capture-file
     enabled: true
     group: file
-    syscalls: file_syscalls
 """
   )
   engine = RuleEngine(str(rules_file))
@@ -112,12 +111,12 @@ def test_enabled_syscall_nrs_selective_probes(temp_dir):
   rules_file = temp_dir / "rules.yaml"
   rules_file.write_text(
     """groups:
-  file: {}
+  file:
+    syscalls: [openat]
 rules:
   - name: openat-only
     enabled: true
     group: file
-    syscalls: [openat]
 """
   )
   engine = RuleEngine(str(rules_file))
@@ -136,12 +135,12 @@ def test_enabled_syscall_nrs_read_only_includes_fd_map_deps(temp_dir):
   rules_file = temp_dir / "rules.yaml"
   rules_file.write_text(
     """groups:
-  file: {}
+  file:
+    syscalls: [read]
 rules:
   - name: read-only
     enabled: true
     group: file
-    syscalls: [read]
 """
   )
   engine = RuleEngine(str(rules_file))
@@ -155,16 +154,39 @@ rules:
   assert 57 in enabled
 
 
+def test_enabled_syscall_nrs_fcntl_only_includes_fd_map_deps(temp_dir):
+  rules_file = temp_dir / "rules.yaml"
+  rules_file.write_text(
+    """groups:
+  file:
+    syscalls: [fcntl]
+rules:
+  - name: fcntl-only
+    enabled: true
+    group: file
+"""
+  )
+  engine = RuleEngine(str(rules_file))
+  compiled, _ = engine.compile_kernel_rules()
+  enabled = enabled_syscall_nrs_from_rules(compiled)
+  assert 72 in enabled
+  assert 2 in enabled
+  assert 3 in enabled
+  assert 257 in enabled
+  assert 437 in enabled
+  assert 57 in enabled
+
+
 def test_enabled_syscall_nrs_without_syscall_wildcard(temp_dir):
   rules_file = temp_dir / "rules.yaml"
   rules_file.write_text(
     """groups:
-  file: {}
+  file:
+    syscalls: [openat]
 rules:
   - name: any-file-open
     enabled: true
     group: file
-    syscalls: [openat]
     condition: "comm = bash"
 """
   )
@@ -174,17 +196,37 @@ rules:
   assert enabled == {257}
 
 
+def test_rule_engine_accepts_unknown_group_syscall_when_rule_filters_syscalls(temp_dir):
+  rules_file = temp_dir / "rules.yaml"
+  rules_file.write_text(
+    """lists:
+  file_syscalls: [openat]
+groups:
+  file:
+    syscalls: [openat, reserved_future_syscall]
+rules:
+  - name: r
+    enabled: true
+    group: file
+    condition: "syscall_name in (file_syscalls)"
+"""
+  )
+  engine = RuleEngine(str(rules_file))
+  compiled, _ = engine.compile_kernel_rules()
+  assert {r["syscall_nr"] for r in compiled} == {257}
+
+
 def test_kernel_compile_with_userspace_fallback_predicates(temp_dir):
   rules_file = temp_dir / "rules.yaml"
   rules_file.write_text(
     """groups:
-  file: {}
+  file:
+    syscalls: [openat]
 rules:
   - name: mixed-rule
     enabled: true
     group: file
-    syscalls: [openat]
-    condition: "path startswith /etc and flags contains O_RDONLY and hostname = node-a"
+    condition: "attributes.fd_path startswith /etc and flags contains O_RDONLY and hostname = node-a"
 """
   )
   engine = RuleEngine(str(rules_file))
@@ -200,22 +242,22 @@ def test_startswithin_with_list(temp_dir):
     """lists:
   noisy_paths: [/proc, /sys, /tmp]
 macros:
-  noisy_path: "path startswithin (noisy_paths)"
+  noisy_path: "attributes.fd_path startswithin (noisy_paths)"
 groups:
-  file: {}
+  file:
+    syscalls: [openat]
 rules:
   - name: capture-non-noisy
     enabled: true
     group: file
-    syscalls: [openat]
-    condition: "not noisy_path"
+    condition: "syscall_name in (openat) and not noisy_path"
 """
   )
   engine = RuleEngine(str(rules_file))
   assert engine.allow_event(
     {
       "syscall_name": "openat",
-      "path": "/etc/passwd",
+      "attributes": {"fd_path": "/etc/passwd"},
       "comm": "bash",
       "pid": 1,
       "tid": 1,
@@ -228,7 +270,7 @@ rules:
   assert not engine.allow_event(
     {
       "syscall_name": "openat",
-      "path": "/proc/self/status",
+      "attributes": {"fd_path": "/proc/self/status"},
       "comm": "bash",
       "pid": 1,
       "tid": 1,
@@ -241,7 +283,7 @@ rules:
   assert not engine.allow_event(
     {
       "syscall_name": "openat",
-      "path": "/tmp/foo",
+      "attributes": {"fd_path": "/tmp/foo"},
       "comm": "bash",
       "pid": 1,
       "tid": 1,

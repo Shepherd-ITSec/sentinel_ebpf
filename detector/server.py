@@ -98,7 +98,6 @@ def _event_base_entry(evt: events_pb2.EventEnvelope) -> dict:
     "uid": evt.uid or "",
     "arg0": evt.arg0 or "",
     "arg1": evt.arg1 or "",
-    "path": evt.path or "",
     "hostname": evt.hostname or "",
     "pod_name": evt.pod_name or "",
     "namespace": evt.namespace or "",
@@ -484,17 +483,28 @@ async def serve():
             if not query:
               return True
             comm = (obj.get("comm") or "") or obj.get("attributes", {}).get("comm", "")
-            path = (obj.get("path") or "") or obj.get("attributes", {}).get("path", "") or obj.get("attributes", {}).get("filename", "")
+            path = obj.get("attributes", {}).get("fd_path", "") or obj.get("attributes", {}).get("filename", "")
             event_name = (obj.get("syscall_name") or "").lower()
             path_s = (path or "").lower()
             comm_s = (comm or "").lower()
             hostname = (obj.get("hostname") or "").lower()
             event_group = (obj.get("event_group") or "").lower()
+            a = obj.get("attributes", {}) or {}
+            sock_blob = " ".join(
+              str(a.get(k, "") or "")
+              for k in (
+                "fd_sock_local_addr",
+                "fd_sock_local_port",
+                "fd_sock_remote_addr",
+                "fd_sock_remote_port",
+                "fd_sock_family",
+              )
+            ).lower()
             parts_blob = " ".join(
               str(obj.get(k, "") or "")
               for k in ("pid", "tid", "uid", "arg0", "arg1", "syscall_nr")
             ).lower()
-            haystack = f"{event_name} {comm_s} {path_s} {hostname} {event_group} {parts_blob}"
+            haystack = f"{event_name} {comm_s} {path_s} {hostname} {event_group} {sock_blob} {parts_blob}"
             parts = query.strip().split()
             for part in parts:
               if not part:
@@ -504,7 +514,7 @@ async def serve():
                 field, value = m.group(1).lower(), m.group(2).lower()
                 if field == "comm" and value not in comm_s:
                   return False
-                if field in ("path", "file") and value not in path_s:
+                if field == "fd_path" and value not in path_s:
                   return False
                 if field in ("event", "event_name", "syscall", "syscall_name") and value not in event_name:
                   return False

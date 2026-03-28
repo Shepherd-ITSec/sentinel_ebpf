@@ -5,6 +5,8 @@
 - https://dl.acm.org/doi/pdf/10.1145/3606274.3606277 The paper is written a little odd but it describs the problem quite well
 - https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=9537291 use easy domains to identify anomaly and only present hard domain.
 - https://zenodo.org/records/6627050: DingDongData, syscall order malicious and not
+- https://dbs.uni-leipzig.de/files/research/publications/2023-6/pdf/978-3-031-35190-7_6.pdf LID-DS 2021 syscall dataset 
+
 
 ## Problems
 I want to measure the accuracy of my models. How do i label my dataset/find a ground truth? 

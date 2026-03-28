@@ -38,33 +38,37 @@ lists:
   shell_comms: [bash, sh, zsh]
   noisy_paths: [/proc, /sys, /dev, /run, /var/run, /tmp, /var/log, /var/lib/rancher/k3s/agent/containerd/io.containerd.snapshotter.v1.overlayfs]
 
+# groups.<name>.syscalls: expected syscall vocabulary for the per-group model (one-hots, etc.), not the capture filter.
+# Each rule should constrain capture with syscall_name in (…) using shared lists (e.g. file_syscalls). Probe attaches
+# tracepoints for known syscall IDs appearing in enabled groups’ syscall lists; unknown names are ignored for BPF.
 groups:
   file:
+    syscalls: file_syscalls
     features:
       sensitive_paths: [/etc, /root, /bin, /usr/bin, /sbin, /usr/sbin]
       tmp_paths: [/tmp, /var/tmp]
-  process: {}
-  network: {}
+  process:
+    syscalls: process_syscalls
+  network:
+    syscalls: network_syscalls
 
 macros:
-  noisy_path: "path startswithin (noisy_paths)"
-  filterable_path: "not (syscall_name in (read, write) and path = \"\")"
+  noisy_path: "attributes.fd_path startswithin (noisy_paths)"
+  filterable_path: "not (syscall_name in (read, write) and attributes.fd_path = \"\")"
   shell_proc: "comm in (shell_comms)"
 
 rules:
   - name: capture-file-events
     enabled: true
     group: file
-    syscalls: file_syscalls
-    condition: "not noisy_path and filterable_path"
+    condition: "syscall_name in (file_syscalls) and not noisy_path and filterable_path"
 
   - name: capture-shell-process-events
     enabled: false
     group: process
-    syscalls: process_syscalls
-    condition: "shell_proc"
+    condition: "syscall_name in (process_syscalls) and shell_proc"
 
   - name: capture-network-events
     enabled: false
     group: network
-    syscalls: network_syscalls
+    condition: "syscall_name in (network_syscalls)"

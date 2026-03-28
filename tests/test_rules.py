@@ -29,26 +29,25 @@ class TestRuleEngineDsl:
   def test_reload(self, temp_dir):
     rules_file = temp_dir / "rules.yaml"
     rules_file.write_text("""groups:
-  file: {}
+  file:
+    syscalls: [openat]
 rules:
   - name: rule1
     group: file
-    syscalls: [openat]
-    condition: "path startswith /"
+    condition: "attributes.fd_path startswith /"
 """)
     engine = RuleEngine(str(rules_file))
     assert len(engine.condition_rules) == 1
 
     rules_file.write_text("""groups:
-  file: {}
+  file:
+    syscalls: [openat, execve]
 rules:
   - name: rule1
     group: file
-    syscalls: [openat]
-    condition: "path startswith /"
+    condition: "attributes.fd_path startswith /"
   - name: rule2
     group: file
-    syscalls: [execve]
     condition: "comm = bash"
 """)
     engine.reload()
@@ -57,12 +56,24 @@ rules:
   def test_rejects_deprecated_type_field(self, temp_dir):
     rules_file = temp_dir / "rules.yaml"
     rules_file.write_text("""groups:
-  file: {}
+  file:
+    syscalls: [openat]
 rules:
   - name: capture-all
     type: file
-    syscalls: [openat]
-    condition: "path startswith /"
+    condition: "attributes.fd_path startswith /"
 """)
     with pytest.raises(ValueError, match="deprecated 'type'"):
+      RuleEngine(str(rules_file))
+
+  def test_rejects_undefined_group(self, temp_dir):
+    rules_file = temp_dir / "rules.yaml"
+    rules_file.write_text("""groups:
+  file:
+    syscalls: [openat]
+rules:
+  - name: r
+    group: network
+""")
+    with pytest.raises(ValueError, match="undefined group"):
       RuleEngine(str(rules_file))

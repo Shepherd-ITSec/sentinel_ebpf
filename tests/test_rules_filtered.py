@@ -14,13 +14,13 @@ class TestRuleEngineFiltered:
     """Test that path prefix filtering works when there's no catch-all rule."""
     rules_file = temp_dir / "rules.yaml"
     rules_file.write_text("""groups:
-  file: {}
+  file:
+    syscalls: [open, openat, openat2]
 rules:
   - name: capture-sensitive-opens
     enabled: true
     group: file
-    syscalls: [open, openat, openat2]
-    condition: "path startswith /etc or path startswith /bin"
+    condition: "attributes.fd_path startswith /etc or attributes.fd_path startswith /bin"
 """)
     engine = RuleEngine(str(rules_file))
     # Should match sensitive paths
@@ -34,12 +34,12 @@ rules:
     """Test that comm filtering works when there's no catch-all rule."""
     rules_file = temp_dir / "rules.yaml"
     rules_file.write_text("""groups:
-  process: {}
+  process:
+    syscalls: [execve]
 rules:
   - name: capture-specific-comm
     enabled: true
     group: process
-    syscalls: [execve]
     condition: "comm in (bash, sh)"
 """)
     engine = RuleEngine(str(rules_file))
@@ -54,13 +54,13 @@ rules:
     """Test combined path and comm filters without catch-all."""
     rules_file = temp_dir / "rules.yaml"
     rules_file.write_text("""groups:
-  file: {}
+  file:
+    syscalls: [openat]
 rules:
   - name: capture-sensitive-bash-opens
     enabled: true
     group: file
-    syscalls: [openat]
-    condition: "path startswith /etc and comm = bash"
+    condition: "attributes.fd_path startswith /etc and comm = bash"
 """)
     engine = RuleEngine(str(rules_file))
     # Should match: both path and comm match
@@ -76,13 +76,13 @@ rules:
     """Test that disabled rules are completely ignored."""
     rules_file = temp_dir / "rules.yaml"
     rules_file.write_text("""groups:
-  file: {}
+  file:
+    syscalls: [openat]
 rules:
   - name: capture-tmp-opens
     enabled: false
     group: file
-    syscalls: [openat]
-    condition: "path startswith /tmp"
+    condition: "attributes.fd_path startswith /tmp"
 """)
     engine = RuleEngine(str(rules_file))
     # Should NOT match because rule is disabled

@@ -63,7 +63,7 @@ def _filter_by_sequence(events: List[dict], normal_ops: int = 10) -> List[dict]:
     """Keep only events that match expected (comm,) sequence per path, in timestamp order."""
     by_path: Dict[str, List[dict]] = defaultdict(list)
     for e in events:
-        by_path[e["path"]].append(e)
+        by_path[_extract_path(e)].append(e)
 
     out: List[dict] = []
     for path, path_events in by_path.items():
@@ -88,12 +88,15 @@ def _filter_by_sequence(events: List[dict], normal_ops: int = 10) -> List[dict]:
                     break
                 out.append(evt)
                 taken += 1
-    return sorted(out, key=lambda x: (x.get("ts_unix_nano", 0), x["path"]))
+    return sorted(out, key=lambda x: (x.get("ts_unix_nano", 0), _extract_path(x)))
 
 
 def _extract_path(entry: dict) -> str:
     """Extract file path from event entry."""
-    return str(entry.get("path") or "").strip()
+    attrs = entry.get("attributes") or {}
+    if not isinstance(attrs, dict):
+        attrs = {}
+    return str(attrs.get("fd_path") or attrs.get("filename") or entry.get("fd_path") or "").strip()
 
 
 def _extract_comm(entry: dict) -> str:
@@ -264,7 +267,7 @@ def verify_with_scores(
         if comm_filter is not None and comm not in comm_filter:
             continue
         matched_events.append({
-            "path": path,
+            "fd_path": path,
             "pattern": pattern,
             "benign": benign_pat is not None,
             "score": score,
@@ -451,7 +454,7 @@ def main() -> None:
         # Compact per-path: path, ops, comms, count, score range, flagged count
         by_path: dict = defaultdict(lambda: {"scores": [], "flagged": 0, "benign": False, "ops": set(), "comms": set()})
         for e in events:
-            k = e["path"]
+            k = _extract_path(e)
             by_path[k]["scores"].append(e["score"])
             if e["anomaly"]:
                 by_path[k]["flagged"] += 1
@@ -478,21 +481,21 @@ def main() -> None:
         if args.verbose and events:
             print("")
             print("Per-event (verbose):")
-            for e in sorted(events, key=lambda x: (x["path"], x["event_id"])):
+            for e in sorted(events, key=lambda x: (_extract_path(x), x.get("event_id", ""))):
                 kind = "benign   " if e["benign"] else "sensitive"
                 flag = "FLAGGED" if e["anomaly"] else "ok"
                 op = e.get("syscall_name", "")
                 comm = e.get("comm", "")
-                print(f"  {e['path']:<45} {op:<10} {comm:<8} score={e['score']:.4f}  [{kind}] {flag}")
+                print(f"  {_extract_path(e):<45} {op:<10} {comm:<8} score={e['score']:.4f}  [{kind}] {flag}")
         if args.log_file:
             with args.log_file.open("w", encoding="utf-8", newline="") as f:
                 writer = csv.writer(f)
-                writer.writerow(["path", "comm", "syscall_name", "score", "kind", "anomaly", "status"])
-                for e in sorted(events, key=lambda x: (x["path"], x["event_id"])):
+                writer.writerow(["fd_path", "comm", "syscall_name", "score", "kind", "anomaly", "status"])
+                for e in sorted(events, key=lambda x: (_extract_path(x), x.get("event_id", ""))):
                     kind = "benign" if e["benign"] else "sensitive"
                     anomaly_val = "true" if e["anomaly"] else "false"
                     writer.writerow([
-                        e["path"],
+                        _extract_path(e),
                         e.get("comm", ""),
                         e.get("syscall_name", ""),
                         f"{e['score']:.4f}",
@@ -546,7 +549,7 @@ def main() -> None:
         if args.log_file and entries:
             with args.log_file.open("w", encoding="utf-8", newline="") as f:
                 writer = csv.writer(f)
-                writer.writerow(["path", "comm", "syscall_name", "score", "kind", "anomaly"])
+                writer.writerow(["fd_path", "comm", "syscall_name", "score", "kind", "anomaly"])
                 for e in entries:
                     path = _extract_path(e)
                     score = e.get("score", 0.0)

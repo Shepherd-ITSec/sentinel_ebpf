@@ -9,6 +9,7 @@ import yaml
 class RuleGroupConfig:
   name: str
   features: dict[str, tuple[str, ...]]
+  syscalls: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -16,7 +17,6 @@ class RuleConfig:
   name: str
   enabled: bool
   group: str
-  syscalls: tuple[str, ...]
   condition: str
 
 
@@ -113,7 +113,7 @@ def _normalize_features(raw: Any, *, field_name: str) -> dict[str, tuple[str, ..
   return features
 
 
-def _normalize_groups(raw: Any) -> dict[str, RuleGroupConfig]:
+def _normalize_groups(raw: Any, *, lists: dict[str, tuple[str, ...]]) -> dict[str, RuleGroupConfig]:
   if raw is None:
     return {}
   if not isinstance(raw, dict):
@@ -125,8 +125,21 @@ def _normalize_groups(raw: Any) -> dict[str, RuleGroupConfig]:
       raise ValueError("group name must not be empty")
     if not isinstance(body, dict):
       raise ValueError(f"group '{group_name}' must be a mapping")
+    if "feature_kind" in body:
+      raise ValueError(
+        f"group '{group_name}' uses removed 'feature_kind'; detector routing uses syscall shape internally"
+      )
     features = _normalize_features(body.get("features", {}), field_name=f"groups.{group_name}.features")
-    groups[group_name] = RuleGroupConfig(name=group_name, features=features)
+    try:
+      syscalls = _resolve_syscalls(
+        body.get("syscalls"), lists=lists, field_name=f"groups.{group_name}.syscalls"
+      )
+    except ValueError as e:
+      if "must not be empty" in str(e) or "must be a YAML list" in str(e):
+        raise ValueError(f"group '{group_name}' must declare non-empty 'syscalls'") from e
+      raise
+    # Names need not exist in probe/events.py yet: reserved for model vocabulary / forward names; BPF uses known IDs only.
+    groups[group_name] = RuleGroupConfig(name=group_name, features=features, syscalls=syscalls)
   return groups
 
 
@@ -134,7 +147,6 @@ def _normalize_rules(
   raw: Any,
   *,
   groups: dict[str, RuleGroupConfig],
-  lists: dict[str, tuple[str, ...]],
 ) -> tuple[RuleConfig, ...]:
   if not isinstance(raw, list):
     raise ValueError("rules file must contain a top-level 'rules' list")
@@ -150,13 +162,38 @@ def _normalize_rules(
       raise ValueError(f"Rule '{name or idx}' uses deprecated 'event_type'; use 'group'")
     if "event_group" in item:
       raise ValueError(f"Rule '{name or idx}' uses deprecated 'event_group'; use 'group'")
+    if "syscalls" in item:
+      raise ValueError(
+        f"Rule '{name or idx}' uses removed 'syscalls'; declare syscalls on the group under 'groups.<name>.syscalls'"
+      )
     group = _normalize_name(item.get("group"))
     if not group:
       raise ValueError(f"Rule '{name or idx}' is missing required 'group'")
-    syscalls = _resolve_syscalls(item.get("syscalls"), lists=lists, field_name=f"rules[{idx}].syscalls")
+    if group not in groups:
+      raise ValueError(
+        f"Rule '{name or idx}' references undefined group {group!r}; declare it under top-level 'groups'"
+      )
     condition = str(item.get("condition") or "").strip()
-    rules.append(RuleConfig(name=name, enabled=enabled, group=group, syscalls=syscalls, condition=condition))
+    rules.append(RuleConfig(name=name, enabled=enabled, group=group, condition=condition))
   return tuple(rules)
+
+
+def _validate_enabled_group_syscall_overlap(groups: dict[str, RuleGroupConfig], rules: tuple[RuleConfig, ...]) -> None:
+  enabled_groups = {r.group for r in rules if r.enabled}
+  syscall_to_groups: dict[str, set[str]] = {}
+  for gname in enabled_groups:
+    gcfg = groups[gname]
+    for sc in gcfg.syscalls:
+      syscall_to_groups.setdefault(sc, set()).add(gname)
+  conflicts = sorted((sc, sorted(gs)) for sc, gs in syscall_to_groups.items() if len(gs) > 1)
+  if not conflicts:
+    return
+  detail = "; ".join(f"{sc!r} -> {gs}" for sc, gs in conflicts[:12])
+  more = f" ({len(conflicts) - 12} more)" if len(conflicts) > 12 else ""
+  raise ValueError(
+    "The same syscall appears in groups that both have enabled rules (ambiguous event_group routing): "
+    f"{detail}{more}"
+  )
 
 
 def load_rules_config(path: str | Path) -> RulesConfig:
@@ -169,6 +206,7 @@ def load_rules_config(path: str | Path) -> RulesConfig:
     raise ValueError("pathPrefixExcludes is not supported; express exclusions in rule conditions")
   lists = _normalize_lists(raw.get("lists"))
   macros = _normalize_macros(raw.get("macros"))
-  groups = _normalize_groups(raw.get("groups"))
-  rules = _normalize_rules(raw.get("rules"), groups=groups, lists=lists)
+  groups = _normalize_groups(raw.get("groups"), lists=lists)
+  rules = _normalize_rules(raw.get("rules"), groups=groups)
+  _validate_enabled_group_syscall_overlap(groups, rules)
   return RulesConfig(lists=lists, macros=macros, groups=groups, rules=rules)

@@ -64,6 +64,25 @@ BPF_HASH(syscall_pending, u64, struct syscall_pending_t);
 /* Per-CPU scratch for syscall_pending_t in enter handlers (avoids stack overflow). */
 BPF_PERCPU_ARRAY(pend_scratch, struct syscall_pending_t, 1);
 
+#if ENABLE_CONNECT
+#define SENTINEL_AF_INET 2
+/* IPv4 peer from connect(2); userspace formats attributes.fd_sock_*. */
+struct sock_enrich_val_t {
+    u32 valid;
+    u32 remote_ip_be;
+    u16 remote_port_be;
+    u16 _pad;
+};
+BPF_HASH(connect_peer_temp, u64, struct sock_enrich_val_t);
+BPF_HASH(fd_to_sock, u64, struct sock_enrich_val_t);
+BPF_PERCPU_ARRAY(sock_enrich_scratch, struct sock_enrich_val_t, 1);
+
+static __inline void fd_sock_map_remove(u32 pid, u32 fd) {
+    u64 key = ((u64)pid << 32) | (u32)fd;
+    fd_to_sock.delete(&key);
+}
+#endif
+
 /* No early return/break in loop so clang can unroll (fixed trip count COMM_LEN). */
 static __inline int comm_matches(struct data_t *data, const struct rule_t *rule) {
     int match = 1;
@@ -533,6 +552,30 @@ TRACEPOINT_PROBE(syscalls, sys_exit_socket) {
 #if ENABLE_CONNECT
 TRACEPOINT_PROBE(syscalls, sys_enter_connect) {
     u64 pid_tgid = bpf_get_current_pid_tgid();
+    u32 zero = 0;
+    struct sock_enrich_val_t *se = sock_enrich_scratch.lookup(&zero);
+    if (se) {
+        se->valid = 0;
+        se->remote_ip_be = 0;
+        se->remote_port_be = 0;
+        se->_pad = 0;
+        if (args->uservaddr != 0 && args->addrlen >= 8) {
+            u16 family = 0;
+            bpf_probe_read_user(&family, sizeof(family), (void *)args->uservaddr);
+            if (family == SENTINEL_AF_INET) {
+                struct {
+                    u16 sin_family;
+                    u16 sin_port;
+                    u32 sin_addr;
+                } sa;
+                bpf_probe_read_user(&sa, sizeof(sa), (void *)args->uservaddr);
+                se->valid = 1;
+                se->remote_ip_be = sa.sin_addr;
+                se->remote_port_be = sa.sin_port;
+            }
+        }
+        connect_peer_temp.update(&pid_tgid, se);
+    }
     struct syscall_pending_t *pend = pend_scratch_get();
     if (!pend) return 0;
     pend_from_common(pend, 42);
@@ -544,8 +587,23 @@ TRACEPOINT_PROBE(syscalls, sys_enter_connect) {
 TRACEPOINT_PROBE(syscalls, sys_exit_connect) {
     long ret = args->ret;
     u64 pid_tgid = bpf_get_current_pid_tgid();
+    u32 pid = pid_tgid >> 32;
     struct syscall_pending_t *pend = syscall_pending.lookup(&pid_tgid);
     if (pend) {
+        if (ret == 0) {
+            struct sock_enrich_val_t *st = connect_peer_temp.lookup(&pid_tgid);
+            u32 z = 0;
+            struct sock_enrich_val_t *slot = sock_enrich_scratch.lookup(&z);
+            if (st && slot && st->valid) {
+                u64 keyfd = ((u64)pid << 32) | (u32)pend->arg0;
+                slot->valid = st->valid;
+                slot->remote_ip_be = st->remote_ip_be;
+                slot->remote_port_be = st->remote_port_be;
+                slot->_pad = 0;
+                fd_to_sock.update(&keyfd, slot);
+            }
+        }
+        connect_peer_temp.delete(&pid_tgid);
         submit_from_pending(pend, ret);
         syscall_pending.delete(&pid_tgid);
     }
@@ -675,14 +733,17 @@ TRACEPOINT_PROBE(syscalls, sys_exit_fork) {
 #if ENABLE_CLOSE
 TRACEPOINT_PROBE(syscalls, sys_enter_close) {
     u64 pid_tgid = bpf_get_current_pid_tgid();
+    u32 pid = pid_tgid >> 32;
     struct syscall_pending_t *pend = pend_scratch_get();
     if (!pend) return 0;
     pend_from_common(pend, 3);
     pend->arg0 = args->fd;
     syscall_pending.update(&pid_tgid, pend);
 #if (ENABLE_READ || ENABLE_WRITE)
-    u32 pid = pid_tgid >> 32;
     fd_map_remove(pid, (u32)args->fd);
+#endif
+#if ENABLE_CONNECT
+    fd_sock_map_remove(pid, (u32)args->fd);
 #endif
     return 0;
 }
@@ -815,6 +876,7 @@ TRACEPOINT_PROBE(syscalls, sys_enter_fchmod) {
     fill_common(&data, 91);
     data.arg0 = args->fd;
     data.arg1 = args->mode;
+    fd_map_lookup_buf(data.pid, (u32)args->fd, data.filename);
     return submit_if_allowed(&data);
 }
 #endif
@@ -838,6 +900,7 @@ TRACEPOINT_PROBE(syscalls, sys_enter_fchown) {
     fill_common(&data, 93);
     data.arg0 = args->fd;
     data.arg1 = args->user;
+    fd_map_lookup_buf(data.pid, (u32)args->fd, data.filename);
     return submit_if_allowed(&data);
 }
 #endif
@@ -850,6 +913,7 @@ TRACEPOINT_PROBE(syscalls, sys_enter_fstat) {
     pend_from_common(pend, 5);
     pend->arg0 = args->fd;
     pend->arg1 = 0;
+    fd_map_lookup_buf(pend->pid, (u32)args->fd, pend->filename);
     syscall_pending.update(&pid_tgid, pend);
     return 0;
 }
@@ -942,6 +1006,7 @@ TRACEPOINT_PROBE(syscalls, sys_enter_ioctl) {
     pend_from_common(pend, 16);
     pend->arg0 = args->fd;
     pend->arg1 = args->cmd;
+    fd_map_lookup_buf(pend->pid, (u32)args->fd, pend->filename);
     syscall_pending.update(&pid_tgid, pend);
     return 0;
 }
@@ -1080,6 +1145,7 @@ TRACEPOINT_PROBE(syscalls, sys_enter_fcntl) {
     pend_from_common(pend, 72);
     pend->arg0 = args->fd;
     pend->arg1 = args->cmd;
+    fd_map_lookup_buf(pend->pid, (u32)args->fd, pend->filename);
     syscall_pending.update(&pid_tgid, pend);
     return 0;
 }

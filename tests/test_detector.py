@@ -53,7 +53,7 @@ class TestDetector:
       uid="1000",
       arg0="-100",
       arg1="2",
-      path="/tmp/test",
+      attributes={"fd_path": "/tmp/test"},
     )
 
     resp = detector._score_event(evt)
@@ -87,7 +87,7 @@ class TestDetector:
       uid="1000",
       arg0="-100",
       arg1="2",
-      path="/tmp/test",
+      attributes={"fd_path": "/tmp/test"},
         )
 
     responses = []
@@ -125,7 +125,7 @@ class TestDetector:
       uid="1000",
       arg0="1",
       arg1="2",
-      path="",
+      attributes={},
     )
 
     resp = detector._score_event(evt)
@@ -158,7 +158,7 @@ class TestDetector:
       uid="1000",
       arg0="0",
       arg1="0",
-      path="/bin/bash",
+      attributes={"fd_path": "/bin/bash"},
     )
 
     resp = detector._score_event(evt)
@@ -187,7 +187,7 @@ class TestDetector:
       uid="1000",
       arg0="0",
       arg1="0",
-      path="/bin/bash",
+      attributes={"fd_path": "/bin/bash"},
     )
 
     resp = detector._score_event(evt)
@@ -217,7 +217,7 @@ class TestDetector:
       uid="1000",
       arg0="-100",
       arg1="2",
-      path="/tmp/test",
+      attributes={"fd_path": "/tmp/test"},
     )
 
     resp = detector._score_event(evt)
@@ -247,7 +247,7 @@ class TestDetector:
       uid="1000",
       arg0="0",
       arg1="0",
-      path="/bin/bash",
+      attributes={"fd_path": "/bin/bash"},
     )
 
     resp = detector._score_event(evt)
@@ -279,7 +279,7 @@ class TestDetector:
       uid="1000",
       arg0="-100",
       arg1="2",
-      path="/tmp/test",
+      attributes={"fd_path": "/tmp/test"},
     )
 
     resp = detector._score_event(evt)
@@ -313,7 +313,7 @@ class TestDetector:
       uid="1000",
       arg0="-100",
       arg1="2",
-      path="/tmp/test",
+      attributes={"fd_path": "/tmp/test"},
     )
 
     resp = detector._score_event(evt)
@@ -347,7 +347,7 @@ class TestDetector:
       uid="1000",
       arg0="-100",
       arg1="2",
-      path="/tmp/test",
+      attributes={"fd_path": "/tmp/test"},
     )
 
     resp = detector._score_event(evt)
@@ -378,7 +378,7 @@ class TestDetector:
       uid="1000",
       arg0="-100",
       arg1="2",
-      path="/tmp/test",
+      attributes={"fd_path": "/tmp/test"},
     )
 
     resp = detector._score_event(evt)
@@ -428,7 +428,7 @@ class TestDetector:
       uid="1000",
       arg0="-100",
       arg1="2",
-      path="/tmp/test",
+      attributes={"fd_path": "/tmp/test"},
         )
 
       async for _ in detector.StreamEvents(one_event(), None):

@@ -411,7 +411,7 @@
           <h3>Watch for</h3>
           <div class="section-inner">
             <div class="watch-filter-row">
-              <input type="text" id="watchFilterInput" placeholder="e.g. comm=cat path=/etc  or  event=openat  (space = AND)" class="watch-filter-input" />
+              <input type="text" id="watchFilterInput" placeholder="e.g. comm=cat fd_path=/etc  or  event=openat  (space = AND)" class="watch-filter-input" />
               <button type="button" class="toggle-btn" id="watchClearBtn">Clear table</button>
             </div>
             <div id="watchTable"></div>
@@ -988,17 +988,16 @@
       let lastLogsData = null;
       let lastWatchData = null;
       let lastLogsSignature = "";
-      /** Flat detector JSON (recent_events) uses comm/path/pid/…; legacy EVT1 rows used entry.data[] slots. */
+      /** Flat detector JSON (recent_events): VFS path in attributes.fd_path. */
       function extractEventRowFields(entry) {
-        const d = Array.isArray(entry?.data) ? entry.data : [];
         const attrs = entry?.attributes || {};
         return {
-          syscall: entry?.syscall_name ?? (d.length > 0 ? d[0] : ""),
-          comm: (d.length > 2 ? d[2] : "") || (attrs.comm != null ? String(attrs.comm) : "") || (entry?.comm != null ? String(entry.comm) : ""),
-          pid: (d.length > 3 ? d[3] : "") || (entry?.pid != null ? String(entry.pid) : ""),
-          tid: (d.length > 4 ? d[4] : "") || (entry?.tid != null ? String(entry.tid) : ""),
-          uid: (d.length > 5 ? d[5] : "") || (entry?.uid != null ? String(entry.uid) : ""),
-          path: (d.length > 8 ? d[8] : "") || (attrs.path != null ? String(attrs.path) : "") || (attrs.filename != null ? String(attrs.filename) : "") || (entry?.path != null ? String(entry.path) : ""),
+          syscall: entry?.syscall_name ?? "",
+          comm: (entry?.comm != null ? String(entry.comm) : "") || (attrs.comm != null ? String(attrs.comm) : ""),
+          pid: entry?.pid != null ? String(entry.pid) : "",
+          tid: entry?.tid != null ? String(entry.tid) : "",
+          uid: entry?.uid != null ? String(entry.uid) : "",
+          path: (attrs.fd_path != null ? String(attrs.fd_path) : "") || (attrs.filename != null ? String(attrs.filename) : ""),
         };
       }
       function renderLogs(data) {
@@ -1143,7 +1142,7 @@
             const value = m[2].toLowerCase();
             let match = false;
             if (field === "comm" && comm.includes(value)) match = true;
-            else if ((field === "path" || field === "file") && path.includes(value)) match = true;
+            else if (field === "fd_path" && path.includes(value)) match = true;
             else if ((field === "event" || field === "event_name" || field === "syscall" || field === "syscall_name") && syscallName.includes(value)) match = true;
             else if (field === "hostname" && hostname.includes(value)) match = true;
             else if (field === "type" && eventType.includes(value)) match = true;
@@ -1191,7 +1190,7 @@
         }
         if (watchedEvents.length === 0) {
           const hint = lastScanCount > 0
-            ? `Scanned ${lastScanCount} events, no matches. Try <code>path=/path</code> or <code>comm=name</code>`
+            ? `Scanned ${lastScanCount} events, no matches. Try <code>fd_path=/path</code> or <code>comm=name</code>`
             : "No events received yet. Check that probe and detector are running and connected.";
           el.innerHTML = "<p class=\"metrics-empty\">No matching events yet. " + hint + "</p>";
           return;
@@ -1290,7 +1289,7 @@
           score: Number(p.score) || 0,
           anomaly: !!p.anomaly,
           reason: p.reason || "",
-          path: p.path || "",
+          fd_path: p.fd_path || "",
           comm: p.comm || "",
           pid: p.pid || "",
           tid: p.tid || "",
@@ -1345,7 +1344,7 @@
                     return [
                       `host=${raw.hostname || "-"}`,
                       `comm=${raw.comm || "-"}`,
-                      `path=${raw.path || "-"}`,
+                      `fd_path=${raw.fd_path || "-"}`,
                       `pid/tid/uid=${raw.pid || "-"}/${raw.tid || "-"}/${raw.uid || "-"}`,
                       `reason=${raw.reason || "-"}`
                     ];
@@ -1814,7 +1813,7 @@
             if (eid) html += ` · <span style="font-size:0.75rem;">id=${escapeHtml(eid)}</span>`;
             html += `</div>`;
             if (reason) html += `<div style="color: var(--text-muted); font-size: 0.75rem; margin-top: 2px;">${escapeHtml(reason)}</div>`;
-            const details = [comm && `comm=${escapeHtml(comm)}`, (pid || tid) && `pid/tid=${escapeHtml(pid)}/${escapeHtml(tid)}`, path && `path=${escapeHtml(path)}`, pod && `pod=${escapeHtml(pod)}`, ns && `ns=${escapeHtml(ns)}`].filter(Boolean).join(" ");
+            const details = [comm && `comm=${escapeHtml(comm)}`, (pid || tid) && `pid/tid=${escapeHtml(pid)}/${escapeHtml(tid)}`, path && `fd_path=${escapeHtml(path)}`, pod && `pod=${escapeHtml(pod)}`, ns && `ns=${escapeHtml(ns)}`].filter(Boolean).join(" ");
             if (details) html += `<div style="color: var(--text-muted); font-size: 0.75rem; margin-top: 4px;">${details}</div>`;
             html += `</div>`;
           });

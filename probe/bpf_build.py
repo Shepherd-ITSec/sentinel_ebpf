@@ -46,9 +46,12 @@ SYSCALL_NR_TO_DEFINE = {
 }
 
 
-# fd_map needs open/openat/openat2/close to populate path cache for read/write.
-# fork needed for pid_to_parent so child's read/write can resolve path from inherited fds.
+# fd_map needs open/openat/openat2/close to populate path cache for read/write and fd-backed syscalls.
+# fork needed for pid_to_parent so a child can resolve paths for inherited fds.
 FD_MAP_DEPS = {2, 3, 257, 437, 57}  # open, close, openat, openat2, fork
+
+# Syscalls that fill envelope path from fd_to_path (same cache as read/write).
+_SYSCALL_NRS_USING_FD_PATH = frozenset({0, 1, 5, 16, 72, 91, 93})
 
 
 def enabled_syscall_nrs_from_rules(compiled: list) -> set[int]:
@@ -61,8 +64,7 @@ def enabled_syscall_nrs_from_rules(compiled: list) -> set[int]:
             return all_nrs
         nrs.add(snr)
     nrs = nrs if nrs else all_nrs
-    # When read or write is enabled, fd_map needs open/openat/openat2/close to populate path.
-    if 0 in nrs or 1 in nrs:
+    if nrs & _SYSCALL_NRS_USING_FD_PATH:
         nrs |= FD_MAP_DEPS
     return nrs
 

@@ -35,7 +35,7 @@ def load_from_file(path: Path, tail_lines: int | None = None) -> list:
             obj = json.loads(line)
             if obj.get("_meta"):
                 continue
-            if "event_id" in obj or "syscall_nr" in obj or "path" in obj:
+            if "event_id" in obj or "syscall_nr" in obj:
                 entries.append(obj)
         except json.JSONDecodeError:
             pass
@@ -44,7 +44,8 @@ def load_from_file(path: Path, tail_lines: int | None = None) -> list:
 
 def get_comm_path(e: dict) -> tuple[str, str]:
     comm = str(e.get("comm") or "")
-    path = str(e.get("path") or "")
+    attrs = e.get("attributes") if isinstance(e.get("attributes"), dict) else {}
+    path = str(attrs.get("fd_path") or e.get("fd_path") or "")
     return comm, path
 
 
@@ -59,7 +60,7 @@ def matches_filter(e: dict, filter_parts: list[str]) -> bool:
             k, v = k.strip().lower(), v.strip().lower()
             if k == "comm" and v not in comm_l:
                 return False
-            if k in ("path", "file") and v not in path_l:
+            if k == "fd_path" and v not in path_l:
                 return False
             if k in ("event", "event_name", "syscall", "syscall_name") and v not in event_name:
                 return False
@@ -84,7 +85,7 @@ def main():
         else:
             filter_parts.append(arg)
     if not filter_parts:
-        filter_parts = ["path=/etc"]
+        filter_parts = ["fd_path=/etc"]
 
     entries = []
     if log_path:

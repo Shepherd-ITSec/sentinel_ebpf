@@ -1161,7 +1161,7 @@ class OnlineFreq1D(_BothScoresMixin):
   so cold-start produces score ~0 (uniform baseline).
   """
 
-  _BINARY_FEATURES = frozenset({"return_success", "file_sensitive_path", "file_tmp_path", "process_is_execve", "process_is_fork"})
+  _BINARY_FEATURES = frozenset({"return_success", "group_sensitive_path", "group_tmp_path"})
   _HASH_KEY_SPACE = 10000  # hash mode keys are 0..9999
 
   def __init__(
@@ -1265,10 +1265,9 @@ class OnlineFreq1D(_BothScoresMixin):
     "comm_bucket_",
     "hostname_bucket_",
     "path_tok_d",
-    "file_event_name_",
-    "net_event_name_",
-    "file_extension_bucket_",
-    "file_flags_bucket_",
+    "group_syscall_",
+    "group_ext_bucket_",
+    "group_flags_bucket_",
     "net_socket_type_bucket_",
     "net_daddr_bucket_",
     "net_af_",

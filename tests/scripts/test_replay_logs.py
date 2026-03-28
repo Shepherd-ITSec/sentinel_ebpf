@@ -20,7 +20,7 @@ _SAMPLE_OPENAT = {
   "uid": "1000",
   "arg0": "-100",
   "arg1": "2",
-  "path": "/tmp/test",
+  "attributes": {"fd_path": "/tmp/test"},
 }
 
 
@@ -52,7 +52,7 @@ class TestReplayLogs:
     events = list(iter_events(log_file))
     assert len(events) == 1
     assert events[0]["event_id"] == "test-1"
-    assert events[0]["path"] == "/tmp/test"
+    assert events[0]["attributes"]["fd_path"] == "/tmp/test"
     assert events[0]["syscall_nr"] == 2
 
   def test_iter_events_multiple(self, temp_dir):
@@ -141,8 +141,8 @@ class TestReplayLogs:
     jsonl_file = temp_dir / "detector-events.jsonl"
     jsonl_file.write_text(
       '{"event_id": "a", "syscall_name": "openat", "event_group": "file", "syscall_nr": 2, "comm": "bash", "pid": "1", "tid": "2", "uid": "1000", '
-      '"arg0": "0", "arg1": "0", "path": "/tmp/x", '
-      '"hostname": "h", "pod_name": "p", "namespace": "ns", "container_id": "cid", "attributes": {"return_value": "0"}, "ts_unix_nano": 1234567890000000000}\n'
+      '"arg0": "0", "arg1": "0", '
+      '"hostname": "h", "pod_name": "p", "namespace": "ns", "container_id": "cid", "attributes": {"return_value": "0", "fd_path": "/tmp/x"}, "ts_unix_nano": 1234567890000000000}\n'
     )
     events = list(iter_events_jsonl(jsonl_file))
     assert len(events) == 1
@@ -150,7 +150,7 @@ class TestReplayLogs:
     assert obj["event_id"] == "a"
     assert obj["pod_name"] == "p"
     assert obj["container_id"] == "cid"
-    assert obj["attributes"] == {"return_value": "0"}
+    assert obj["attributes"] == {"return_value": "0", "fd_path": "/tmp/x"}
 
   def test_iter_events_jsonl_skips_metadata_line(self, temp_dir):
     """iter_events_jsonl skips _meta lines (no event_id) written by detector event dump."""

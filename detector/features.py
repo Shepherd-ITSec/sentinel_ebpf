@@ -1,10 +1,11 @@
 """Feature extraction for anomaly detection.
 
 EventEnvelope carries syscall fields by name (syscall_nr, comm, pid, tid, uid, arg0, arg1, path);
-syscall_name is the Linux syscall name; event_group is the rule-defined category (network, file, process, or empty).
-We always add general features; depending on event_group we add type-specific features.
+syscall_name is the Linux syscall name; event_group is the rule-defined category (any declared group name, or empty).
+Per-group features use only: (1) `groups.<event_group>.syscalls` for syscall one-hots, (2) optional
+`groups.<event_group>.features` lists (e.g. path prefixes), (3) numeric/bucket fields derived from whatever
+is present on the envelope (path, args, attributes, sockaddr parsing) without hardcoded syscall taxonomies.
 """
-import ast
 import hashlib
 import os
 import re
@@ -138,8 +139,6 @@ _FILE_EXTENSION_BUCKETS = 32
 _FILE_FLAGS_BUCKETS = 64
 _NET_SOCKET_TYPE_BUCKETS = 16
 _NET_DADDR_BUCKETS = 64
-_DEFAULT_FILE_EVENT_NAMES = ("open", "openat", "openat2", "unlink", "unlinkat", "rename", "renameat", "chmod", "chown", "read", "write")
-_DEFAULT_NET_EVENT_NAMES = ("socket", "connect", "bind", "listen", "accept", "accept4")
 _NET_AF_VALUES = ("af_inet", "af_inet6", "af_unix", "af_netlink", "af_other")
 _DEFAULT_SENSITIVE_PATH_PREFIXES = ("/etc", "/root", "/bin", "/usr/bin", "/sbin", "/usr/sbin")
 _DEFAULT_TMP_PATH_PREFIXES = ("/tmp", "/var/tmp")
@@ -267,10 +266,10 @@ def _group_syscalls(event_group: str, fallback: tuple[str, ...]) -> tuple[str, .
   if cfg is None:
     return tuple(sorted(set(fallback)))
   target = (event_group or "").strip().lower()
-  names = {syscall for rule in cfg.rules if rule.group == target for syscall in rule.syscalls}
-  if not names:
+  gcfg = cfg.groups.get(target)
+  if gcfg is None or not gcfg.syscalls:
     return tuple(sorted(set(fallback)))
-  return tuple(sorted(names))
+  return tuple(sorted(gcfg.syscalls))
 
 
 def _group_feature_values(event_group: str, feature_name: str, fallback: tuple[str, ...]) -> tuple[str, ...]:
@@ -444,27 +443,14 @@ def _normalize_af_label(raw: str, family_val: int) -> str:
 
 def _parse_sockaddr_from_evt(evt: Any) -> Dict[str, str]:
   """
-  Try to get destination port, address, and family from event (attributes or arg1).
-  Returns dict with keys sin_port, sin_addr, sa_family (values may be empty).
+  Socket endpoint fields for network features, from ``attributes.fd_sock_*``.
+  Returns dict with keys sin_port, sin_addr, sa_family (internal names; values from remote endpoint).
   """
   out: Dict[str, str] = {"sin_port": "", "sin_addr": "", "sa_family": ""}
   attrs = dict(evt.attributes or {})
-  out["sin_port"] = (attrs.get("sin_port") or attrs.get("dest_port") or "").strip()
-  out["sin_addr"] = (attrs.get("sin_addr") or attrs.get("dest_ip") or "").strip()
-  out["sa_family"] = (attrs.get("sa_family") or "").strip()
-
-  # Fallback: arg1 may contain stringified sockaddr dict (synthetic / legacy)
-  if not out["sin_port"] and not out["sin_addr"] and not out["sa_family"]:
-    raw = (getattr(evt, "arg1", None) or "").strip()
-    if raw and raw.startswith("{"):
-      try:
-        obj = ast.literal_eval(raw)
-        if isinstance(obj, dict):
-          out["sin_port"] = str(obj.get("sin_port", "") or "")
-          out["sin_addr"] = str(obj.get("sin_addr", "") or "")
-          out["sa_family"] = str(obj.get("sa_family", "") or "")
-      except (ValueError, SyntaxError):
-        pass
+  out["sin_port"] = (attrs.get("fd_sock_remote_port") or "").strip()
+  out["sin_addr"] = (attrs.get("fd_sock_remote_addr") or "").strip()
+  out["sa_family"] = (attrs.get("fd_sock_family") or "").strip()
   return out
 
 
@@ -492,8 +478,8 @@ def _extract_generic_features(evt: Any, view: _FeatureViewSpec) -> Dict[str, flo
   uid_str = evt.uid or "0"
   arg0_str = evt.arg0 or "0"
   arg1_str = evt.arg1 or "0"
-  path = (evt.path or "").strip()
   attrs = dict(evt.attributes or {})
+  path = str(attrs.get("fd_path", "") or "").strip()
 
   pid_val = _safe_int(pid_str, default=0)
   tid_val = _safe_int(tid_str, default=0)
@@ -567,29 +553,26 @@ def _extract_generic_features(evt: Any, view: _FeatureViewSpec) -> Dict[str, flo
   return out
 
 
-def _extract_file_features(evt: Any, view: _FeatureViewSpec = _FULL_FEATURE_VIEW) -> Dict[str, float]:
+def _extract_group_features(evt: Any, view: _FeatureViewSpec, event_group: str) -> Dict[str, float]:
   """
-  Type-specific features for event_group == 'file'.
-
-  Covers all file syscalls that trigger this extractor: open, openat, openat2,
-  unlink, unlinkat, rename, renameat, chmod, chown. They share the same event layout
-  (path, arg0/arg1, attributes flags for open*). One unified
-  feature set: path semantics, syscall identity, open flags (when applicable), and
-  Kitsune-style online stats (rate, interarrival, path-depth streams) per process,
-  host, path, and (comm, path) pair.
+  Features scoped to event_group: syscall one-hot from declared group syscalls, optional path-prefix flags
+  from group.features, path/flag buckets, path-centric online stats, and envelope-derived socket fields
+  (zeros when attributes/args are empty).
   """
-  path = (evt.path or "").strip()
+  attrs = dict(evt.attributes or {})
+  path = str(attrs.get("fd_path", "") or "").strip()
   path_lower = path.lower()
   comm = (evt.comm or "") or "unknown"
   host = (evt.hostname or "") or "unknown"
   event_name = (evt.syscall_name or "").strip().lower()
   ts_s = float(evt.ts_unix_nano) / 1_000_000_000.0
-  attrs = dict(evt.attributes or {})
+  g = (event_group or "").strip().lower()
+  syscall_vocab = _group_syscalls(g, ())
 
-  sensitive_prefixes = _group_feature_values("file", "sensitive_paths", _DEFAULT_SENSITIVE_PATH_PREFIXES)
-  tmp_prefixes = _group_feature_values("file", "tmp_paths", _DEFAULT_TMP_PATH_PREFIXES)
-  file_sensitive_path = 1.0 if any(path_lower.startswith(p) for p in sensitive_prefixes) else 0.0
-  file_tmp_path = 1.0 if any(path_lower.startswith(p) for p in tmp_prefixes) else 0.0
+  sensitive_prefixes = _group_feature_values(g, "sensitive_paths", _DEFAULT_SENSITIVE_PATH_PREFIXES)
+  tmp_prefixes = _group_feature_values(g, "tmp_paths", _DEFAULT_TMP_PATH_PREFIXES)
+  group_sensitive_path = 1.0 if any(path_lower.startswith(p) for p in sensitive_prefixes) else 0.0
+  group_tmp_path = 1.0 if any(path_lower.startswith(p) for p in tmp_prefixes) else 0.0
   components = _path_components(path) if (view.include_file_extension_bucket or view.include_file_online_stats) else []
   ext = ""
   if components:
@@ -600,61 +583,54 @@ def _extract_file_features(evt: Any, view: _FeatureViewSpec = _FULL_FEATURE_VIEW
 
   out: Dict[str, float] = {}
   if view.include_file_sensitive_tmp:
-    out["file_sensitive_path"] = file_sensitive_path
-    out["file_tmp_path"] = file_tmp_path
+    out["group_sensitive_path"] = group_sensitive_path
+    out["group_tmp_path"] = group_tmp_path
   if view.use_hash_for_categoricals:
     if view.include_file_extension_bucket:
-      out["file_extension_hash"] = _hash01(ext)
+      out["group_ext_hash"] = _hash01(ext)
     if view.include_file_flags_bucket:
-      out["file_flags_hash"] = _hash01(flags_str)
+      out["group_flags_hash"] = _hash01(flags_str)
   else:
     if view.include_file_event_name:
-      out.update(_onehot_features("file_event_name", event_name, _group_syscalls("file", _DEFAULT_FILE_EVENT_NAMES)))
+      out.update(_onehot_features("group_syscall", event_name, syscall_vocab))
     if view.include_file_extension_bucket:
-      out.update(_bucketize_value("file_extension_bucket", ext, _FILE_EXTENSION_BUCKETS))
+      out.update(_bucketize_value("group_ext_bucket", ext, _FILE_EXTENSION_BUCKETS))
     if view.include_file_flags_bucket:
       flag_tokens = _tokenize_flags(flags_str)
-      out.update(_bucketize_tokens("file_flags_bucket", flag_tokens, _FILE_FLAGS_BUCKETS))
+      out.update(_bucketize_tokens("group_flags_bucket", flag_tokens, _FILE_FLAGS_BUCKETS))
   if view.include_file_online_stats:
     path_depth_norm = _norm_path_depth(components)
     path_key = path or "unknown"
     pair_key = f"{comm}|{path_key}"
-    path_rate = _ONLINE_STATS.update_value("file", "rate", path_key, ts_s, 1.0)
-    pair_rate = _ONLINE_STATS.update_value("file", "rate", pair_key, ts_s, 1.0)
-    pair_dt = _ONLINE_STATS.update_interarrival("file", "interarrival", pair_key, ts_s, dt_scale_s=30.0)
-    proc_path_depth = _ONLINE_STATS.update_value("file", "path_depth", comm, ts_s, path_depth_norm)
-    host_path_depth = _ONLINE_STATS.update_value("file", "path_depth", host, ts_s, path_depth_norm)
-    pair_path_depth = _ONLINE_STATS.update_value("file", "path_depth", pair_key, ts_s, path_depth_norm)
+    path_rate = _ONLINE_STATS.update_value(g, "rate", path_key, ts_s, 1.0)
+    pair_rate = _ONLINE_STATS.update_value(g, "rate", pair_key, ts_s, 1.0)
+    pair_dt = _ONLINE_STATS.update_interarrival(g, "interarrival", pair_key, ts_s, dt_scale_s=30.0)
+    proc_path_depth = _ONLINE_STATS.update_value(g, "path_depth", comm, ts_s, path_depth_norm)
+    host_path_depth = _ONLINE_STATS.update_value(g, "path_depth", host, ts_s, path_depth_norm)
+    pair_path_depth = _ONLINE_STATS.update_value(g, "path_depth", pair_key, ts_s, path_depth_norm)
     for w in _ONLINE_WINDOWS:
       wn = w[0]
-      out[f"file_path_rate_{wn}"] = _rate01(path_rate[wn][2])
-      out[f"file_pair_rate_{wn}"] = _rate01(pair_rate[wn][2])
-      out[f"file_pair_interarrival_{wn}"] = pair_dt[wn][0]
-      out[f"file_pair_interarrival_std_{wn}"] = pair_dt[wn][1]
-      out[f"file_proc_path_depth_mean_{wn}"] = proc_path_depth[wn][0]
-      out[f"file_proc_path_depth_std_{wn}"] = proc_path_depth[wn][1]
-      out[f"file_host_path_depth_mean_{wn}"] = host_path_depth[wn][0]
-      out[f"file_host_path_depth_std_{wn}"] = host_path_depth[wn][1]
-      out[f"file_pair_path_depth_mean_{wn}"] = pair_path_depth[wn][0]
-      out[f"file_pair_path_depth_std_{wn}"] = pair_path_depth[wn][1]
-  return out
+      out[f"group_path_rate_{wn}"] = _rate01(path_rate[wn][2])
+      out[f"group_pair_rate_{wn}"] = _rate01(pair_rate[wn][2])
+      out[f"group_pair_interarrival_{wn}"] = pair_dt[wn][0]
+      out[f"group_pair_interarrival_std_{wn}"] = pair_dt[wn][1]
+      out[f"group_proc_path_depth_mean_{wn}"] = proc_path_depth[wn][0]
+      out[f"group_proc_path_depth_std_{wn}"] = proc_path_depth[wn][1]
+      out[f"group_host_path_depth_mean_{wn}"] = host_path_depth[wn][0]
+      out[f"group_host_path_depth_std_{wn}"] = host_path_depth[wn][1]
+      out[f"group_pair_path_depth_mean_{wn}"] = pair_path_depth[wn][0]
+      out[f"group_pair_path_depth_std_{wn}"] = pair_path_depth[wn][1]
 
-
-def _extract_network_features(evt: Any, view: _FeatureViewSpec = _FULL_FEATURE_VIEW) -> Dict[str, float]:
-  """Type-specific features for event_group == 'network'."""
   arg0_val = _safe_int(evt.arg0 or "0", default=0)
   arg1_val = _safe_int(evt.arg1 or "0", default=0)
-  event_name = evt.syscall_name or ""
-  comm = (evt.comm or "") or "unknown"
-  host = (evt.hostname or "") or "unknown"
-  ts_s = float(evt.ts_unix_nano) / 1_000_000_000.0
+  syscall_display = evt.syscall_name or ""
 
   net_fd_norm = _norm_arg(arg0_val)
   net_addrlen_norm = min(np.log1p(abs(arg1_val)) / _ADDRLEN_SCALE, 1.0)
 
   sockaddr = _parse_sockaddr_from_evt(evt)
   family_val = 0
-  if event_name == "socket":
+  if syscall_display == "socket":
     family_val = arg0_val
   else:
     af = (sockaddr.get("sa_family") or "").upper()
@@ -664,21 +640,22 @@ def _extract_network_features(evt: Any, view: _FeatureViewSpec = _FULL_FEATURE_V
       family_val = 2
   net_socket_family_norm = min(family_val / _SOCKET_FAMILY_MAX, 1.0)
 
-  type_val = arg1_val if event_name == "socket" else 0
+  type_val = arg1_val if syscall_display == "socket" else 0
   port_str = sockaddr.get("sin_port") or ""
   dport = _safe_int(port_str, default=0) if port_str else 0
   net_dport_norm = min(dport / _PORT_MAX, 1.0) if dport else 0.0
 
   daddr = sockaddr.get("sin_addr") or ""
   af_label = _normalize_af_label(sockaddr.get("sa_family") or "", family_val)
-  event_name_key = (evt.syscall_name or "").strip().lower()
 
-  out: Dict[str, float] = {
-    "net_addrlen_norm": net_addrlen_norm,
-    "net_fd_norm": net_fd_norm,
-    "net_socket_family_norm": net_socket_family_norm,
-    "net_dport_norm": net_dport_norm,
-  }
+  out.update(
+    {
+      "net_addrlen_norm": net_addrlen_norm,
+      "net_fd_norm": net_fd_norm,
+      "net_socket_family_norm": net_socket_family_norm,
+      "net_dport_norm": net_dport_norm,
+    }
+  )
   if view.use_hash_for_categoricals:
     if view.include_network_socket_type_bucket:
       out["net_socket_type_hash"] = _hash01(str(type_val))
@@ -688,10 +665,6 @@ def _extract_network_features(evt: Any, view: _FeatureViewSpec = _FULL_FEATURE_V
       af_str = sockaddr.get("sa_family") or ("AF_INET" if family_val == 2 else "AF_INET6" if family_val == 10 else "")
       out["net_af_hash"] = _hash01(af_str)
   else:
-    if view.include_network_event_name:
-      out.update(
-        _onehot_features("net_event_name", event_name_key, _group_syscalls("network", _DEFAULT_NET_EVENT_NAMES))
-      )
     if view.include_network_socket_type_bucket:
       out.update(_bucketize_value("net_socket_type_bucket", str(type_val), _NET_SOCKET_TYPE_BUCKETS))
     if view.include_network_daddr_bucket:
@@ -699,18 +672,18 @@ def _extract_network_features(evt: Any, view: _FeatureViewSpec = _FULL_FEATURE_V
     if view.include_network_af_onehot:
       out.update(_onehot_features("net_af", af_label, _NET_AF_VALUES))
   if view.include_network_online_stats:
-    pair_key = f"{comm}|{daddr}|{dport}"
+    pair_key_n = f"{comm}|{daddr}|{dport}"
     daddr_key = daddr or "unknown"
-    pair_rate = _ONLINE_STATS.update_value("network", "rate", pair_key, ts_s, 1.0)
-    daddr_rate = _ONLINE_STATS.update_value("network", "rate", daddr_key, ts_s, 1.0)
-    pair_dt = _ONLINE_STATS.update_interarrival("network", "interarrival", pair_key, ts_s, dt_scale_s=30.0)
-    proc_dport = _ONLINE_STATS.update_value("network", "dport", comm, ts_s, net_dport_norm)
-    proc_addrlen = _ONLINE_STATS.update_value("network", "addrlen", comm, ts_s, net_addrlen_norm)
-    host_dport = _ONLINE_STATS.update_value("network", "dport", host, ts_s, net_dport_norm)
-    host_addrlen = _ONLINE_STATS.update_value("network", "addrlen", host, ts_s, net_addrlen_norm)
-    daddr_dport = _ONLINE_STATS.update_value("network", "dport", daddr_key, ts_s, net_dport_norm)
+    pair_rate = _ONLINE_STATS.update_value(g, "net_rate", pair_key_n, ts_s, 1.0)
+    daddr_rate = _ONLINE_STATS.update_value(g, "net_rate", daddr_key, ts_s, 1.0)
+    pair_dt = _ONLINE_STATS.update_interarrival(g, "net_interarrival", pair_key_n, ts_s, dt_scale_s=30.0)
+    proc_dport = _ONLINE_STATS.update_value(g, "net_dport", comm, ts_s, net_dport_norm)
+    proc_addrlen = _ONLINE_STATS.update_value(g, "net_addrlen", comm, ts_s, net_addrlen_norm)
+    host_dport = _ONLINE_STATS.update_value(g, "net_dport", host, ts_s, net_dport_norm)
+    host_addrlen = _ONLINE_STATS.update_value(g, "net_addrlen", host, ts_s, net_addrlen_norm)
+    daddr_dport = _ONLINE_STATS.update_value(g, "net_dport", daddr_key, ts_s, net_dport_norm)
     proc_daddr_key = f"{comm}|{daddr}"
-    proc_daddr_dport = _ONLINE_STATS.update_value("network", "dport", proc_daddr_key, ts_s, net_dport_norm)
+    proc_daddr_dport = _ONLINE_STATS.update_value(g, "net_dport", proc_daddr_key, ts_s, net_dport_norm)
     for w in _ONLINE_WINDOWS:
       wn = w[0]
       out[f"net_pair_rate_{wn}"] = _rate01(pair_rate[wn][2])
@@ -730,17 +703,6 @@ def _extract_network_features(evt: Any, view: _FeatureViewSpec = _FULL_FEATURE_V
       out[f"net_proc_daddr_dport_mean_{wn}"] = proc_daddr_dport[wn][0]
       out[f"net_proc_daddr_dport_std_{wn}"] = proc_daddr_dport[wn][1]
   return out
-
-
-def _extract_process_features(evt: Any) -> Dict[str, float]:
-  """Type-specific features for event_group == 'process' (exec/spawn)."""
-  event_name = evt.syscall_name or ""
-  process_is_execve = 1.0 if event_name == "execve" else 0.0
-  process_is_fork = 1.0 if event_name == "fork" else 0.0
-  return {
-    "process_is_execve": process_is_execve,
-    "process_is_fork": process_is_fork,
-  }
 
 
 def _extract_general_online_stats(evt: Any) -> Dict[str, float]:
@@ -773,23 +735,20 @@ def extract_feature_dict(evt: Any, feature_view: str = "default") -> Dict[str, f
   feature_view:
     - default: full encoded schema (one-hot, bucket banks, path tokens)
     - frequency: scalar-hash schema for frequency-family models (`event_id_norm`, comm/path/hostname hashes,
-      type-specific *_hash); omits `flags_hash`, `file_sensitive_path`/`file_tmp_path`, and all online stats
+      type-specific `group_*_hash` / `net_*_hash`); omits `flags_hash`, `group_sensitive_path`/`group_tmp_path`, and all online stats
     - loda: bounded numerics + compact identity/boolean blocks
     - memstream: dense-ish bounded numerics + smallest identity/boolean blocks
 
-  Always includes general features. If evt.event_group is set (e.g. 'file', 'network',
-  'process'), appends type-specific features. Features and thus vector size can differ
-  per event group and per selected feature view.
+  Always includes general features. Non-empty event_group with a matching rules.yaml group appends
+  group-scoped features (syscall one-hots from that group's syscall list, optional path-prefix flags,
+  path/socket-derived numerics and online stats). Feature key sets differ per event_group (vocabulary size).
   """
   view = _feature_view_spec(feature_view or "default")
   out = _extract_generic_features(evt, view=view)
   if view.include_general_online_stats:
     out.update(_extract_general_online_stats(evt))
   event_group = (evt.event_group or "").strip().lower()
-  if event_group == "file":
-    out.update(_extract_file_features(evt, view=view))
-  elif event_group == "network":
-    out.update(_extract_network_features(evt, view=view))
-  elif event_group == "process":
-    out.update(_extract_process_features(evt))
+  cfg = _rules_config()
+  if cfg is not None and event_group and event_group in cfg.groups:
+    out.update(_extract_group_features(evt, view, event_group))
   return out

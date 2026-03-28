@@ -41,7 +41,7 @@ class TestDecodeLogs:
       "uid": "1000",
       "arg0": "-100",
       "arg1": "2",
-      "path": "/tmp/test",
+      "attributes": {"fd_path": "/tmp/test"},
     }).encode("utf-8")
     record = MAGIC + struct.pack("<I", len(payload)) + payload
     log_file.write_bytes(record)
@@ -52,7 +52,7 @@ class TestDecodeLogs:
 
     assert result["event_id"] == "test-1"
     assert result["syscall_name"] == "openat"
-    assert result["path"] == "/tmp/test"
+    assert result["attributes"]["fd_path"] == "/tmp/test"
     assert result["syscall_nr"] == 2
 
   def test_decode_multiple_events(self, temp_dir):
@@ -70,7 +70,7 @@ class TestDecodeLogs:
         "uid": "1000",
         "arg0": "-100",
         "arg1": "2",
-        "path": "/tmp/test",
+        "attributes": {"fd_path": "/tmp/test"},
       }).encode("utf-8")
       records.append(MAGIC + struct.pack("<I", len(payload)) + payload)
     log_file.write_bytes(b"".join(records))
@@ -97,7 +97,7 @@ class TestDecodeLogs:
       "uid": "1000",
       "arg0": "-100",
       "arg1": "2",
-      "path": "/tmp/test",
+      "attributes": {"fd_path": "/tmp/test"},
     }).encode("utf-8")
     record = MAGIC + struct.pack("<I", len(payload)) + payload
 

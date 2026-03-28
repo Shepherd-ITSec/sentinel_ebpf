@@ -19,8 +19,9 @@ def _event_signature(obj: dict) -> tuple | None:
         return None
     syscall_name = obj.get("syscall_name") or ""
     comm = obj.get("comm") or ""
-    path = obj.get("path") or ""
-    return (str(syscall_name), str(comm), str(path))
+    attrs = obj.get("attributes") if isinstance(obj.get("attributes"), dict) else {}
+    path = str(attrs.get("fd_path") or obj.get("fd_path") or "")
+    return (str(syscall_name), str(comm), path)
 
 
 def main() -> None:

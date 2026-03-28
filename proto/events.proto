@@ -29,7 +29,8 @@ message EventEnvelope {
   string uid = 15;
   string arg0 = 16;
   string arg1 = 17;
-  string path = 18; // path-based syscalls; empty otherwise.
+  reserved 18;
+  reserved "path";
 
   map<string, string> attributes = 20;
   uint64 ts_unix_nano = 30;

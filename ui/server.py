@@ -365,7 +365,10 @@ class Handler(BaseHTTPRequestHandler):
       for entry in entries:
         if not isinstance(entry, dict):
           continue
-        path = str(entry.get("path", ""))
+        attrs = entry.get("attributes", {})
+        if not isinstance(attrs, dict):
+          attrs = {}
+        path = str(attrs.get("fd_path", "") or attrs.get("filename", ""))
         comm = str(entry.get("comm", ""))
         pid = str(entry.get("pid", ""))
         tid = str(entry.get("tid", ""))
@@ -380,7 +383,7 @@ class Handler(BaseHTTPRequestHandler):
           "syscall_name": entry.get("syscall_name", ""),
           "event_group": entry.get("event_group", ""),
           "hostname": entry.get("hostname", ""),
-          "path": path,
+          "fd_path": path,
           "comm": comm,
           "pid": pid,
           "tid": tid,

@@ -143,8 +143,8 @@ def test_freq1d_treats_bucket_and_event_onehot_features_as_categorical():
     seed=10,
   )
   features = {
-    "file_event_name_openat": 1.0,
-    "net_event_name_connect": 0.0,
+    "group_syscall_openat": 1.0,
+    "group_syscall_connect": 0.0,
     "comm_bucket_000": 1.0,
     "comm_bucket_001": 0.0,
     "hostname_bucket_000": 1.0,
@@ -162,8 +162,8 @@ def test_freq1d_treats_bucket_and_event_onehot_features_as_categorical():
     for name, kind in zip(impl._feature_names, impl._kind)
     if kind == "cat"
   }
-  assert "file_event_name_openat" in categorical_names
-  assert "net_event_name_connect" in categorical_names
+  assert "group_syscall_openat" in categorical_names
+  assert "group_syscall_connect" in categorical_names
   assert "comm_bucket_000" in categorical_names
   assert "hostname_bucket_000" in categorical_names
   assert "path_tok_d0_bucket_000" in categorical_names
@@ -181,9 +181,9 @@ def test_freq1d_treats_type_specific_encoded_banks_as_categorical():
     seed=11,
   )
   features = {
-    "file_event_name_openat": 1.0,
-    "file_extension_bucket_000": 1.0,
-    "file_flags_bucket_000": 1.0,
+    "group_syscall_openat": 1.0,
+    "group_ext_bucket_000": 1.0,
+    "group_flags_bucket_000": 1.0,
     "net_socket_type_bucket_000": 1.0,
     "net_daddr_bucket_000": 1.0,
     "net_af_af_inet": 1.0,
@@ -199,9 +199,9 @@ def test_freq1d_treats_type_specific_encoded_banks_as_categorical():
     for name, kind in zip(impl._feature_names, impl._kind)
     if kind == "cat"
   }
-  assert "file_event_name_openat" in categorical_names
-  assert "file_extension_bucket_000" in categorical_names
-  assert "file_flags_bucket_000" in categorical_names
+  assert "group_syscall_openat" in categorical_names
+  assert "group_ext_bucket_000" in categorical_names
+  assert "group_flags_bucket_000" in categorical_names
   assert "net_socket_type_bucket_000" in categorical_names
   assert "net_daddr_bucket_000" in categorical_names
   assert "net_af_af_inet" in categorical_names

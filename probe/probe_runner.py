@@ -47,6 +47,63 @@ MAX_RULES = 24
 MAX_PREFIX_LEN = 24
 COMM_LEN = 16
 
+
+class _BpfSockEnrich(ctypes.Structure):
+  _fields_ = [
+    ("valid", ctypes.c_uint32),
+    ("remote_ip_be", ctypes.c_uint32),
+    ("remote_port_be", ctypes.c_uint16),
+    ("_pad", ctypes.c_uint16),
+  ]
+
+
+# Syscalls where arg0 is a file/socket descriptor for fd_to_sock / fd_path enrichment.
+_SYSCALL_NR_ARG0_IS_FD = frozenset(
+  {0, 1, 3, 5, 16, 42, 43, 44, 45, 51, 52, 54, 72, 91, 93, 307}
+)
+
+
+def _bpf_fd_sock_attrs(bpf: BPF, pid: int, fd: int) -> dict[str, str]:
+  if fd < 0 or fd >= 0x100000:
+    return {}
+  try:
+    tbl = bpf["fd_to_sock"]
+  except KeyError:
+    return {}
+  try:
+    k = ctypes.c_ulonglong((int(pid) << 32) | (fd & 0xFFFFFFFF))
+    v = tbl[k]
+  except (KeyError, TypeError, IndexError):
+    return {}
+  if not int(v.valid):
+    return {}
+  ip = socket.inet_ntoa(struct.pack("!I", int(v.remote_ip_be) & 0xFFFFFFFF))
+  port = str(socket.ntohs(int(v.remote_port_be) & 0xFFFF))
+  return {
+    "fd_sock_remote_addr": ip,
+    "fd_sock_remote_port": port,
+    "fd_sock_family": "2",
+  }
+
+
+def _envelope_fd_attributes(bpf: BPF, pid: int, syscall_nr: int, arg0: int, filename: str) -> dict[str, str]:
+  out: dict[str, str] = {}
+  fn = (filename or "").strip()
+  if fn:
+    out["fd_path"] = fn
+    out["fd_resource_kind"] = "file"
+  sock: dict[str, str] = {}
+  if syscall_nr in _SYSCALL_NR_ARG0_IS_FD:
+    sock = _bpf_fd_sock_attrs(bpf, pid, int(arg0))
+  if sock:
+    out.update(sock)
+    if "fd_resource_kind" not in out:
+      out["fd_resource_kind"] = "tcp"
+  if "fd_resource_kind" not in out:
+    out["fd_resource_kind"] = "unknown"
+  return out
+
+
 PROBE_METRIC_SPECS = [
   (
     "sentinel_ebpf_probe_events_sent_total",
@@ -797,11 +854,13 @@ class ProbeRunner:
     if decoded_flags is not None:
       attributes["flags"] = decoded_flags
 
+    fd_attrs = _envelope_fd_attributes(self.bpf, int(event.pid), syscall_nr, int(event.arg0), filename)
+    attributes.update(fd_attrs)
+
     rule_ctx = {
         "syscall_name": syscall_name,
         "syscall_nr": syscall_nr,
-        "path": filename,
-        "filename": filename,
+        "attributes": {**attributes},
         "comm": comm,
         "pid": int(event.pid),
         "tid": int(event.tid),
@@ -842,8 +901,7 @@ class ProbeRunner:
       uid=uid_str,
       arg0=arg0_str,
       arg1=arg1_str,
-      path=filename,
-      attributes=attributes,
+      attributes={**attributes},
     )
 
     if self.cfg.stream.mode == "stdout":

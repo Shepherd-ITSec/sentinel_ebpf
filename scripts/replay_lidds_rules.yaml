@@ -1,0 +1,65 @@
+# Syscall -> event_group mapping for scripts/replay_lidds.py (LID-DS JSONL conversion / replay).
+# Only enabled rules + per-group syscall lists are used; conditions are ignored. Production filtering lives in
+# charts/sentinel-ebpf/rules.yaml. Enabled rules must use disjoint syscall sets.
+
+lists:
+  file_syscalls:
+    [
+      open,
+      openat,
+      openat2,
+      unlink,
+      unlinkat,
+      rename,
+      renameat,
+      chmod,
+      chown,
+      read,
+      write,
+      fcntl,
+      poll,
+      mmap,
+      mprotect,
+      ioctl,
+      fstat,
+    ]
+  process_syscalls: [execve, fork, set_robust_list]
+  network_syscalls:
+    [
+      socket,
+      connect,
+      bind,
+      listen,
+      accept,
+      accept4,
+      setsockopt,
+      getpeername,
+      getsockname,
+      sendto,
+      recvfrom,
+      sendmmsg,
+    ]
+
+groups:
+  file:
+    syscalls: file_syscalls
+  process:
+    syscalls: process_syscalls
+  network:
+    syscalls: network_syscalls
+
+rules:
+  - name: lidds-map-file
+    enabled: true
+    group: file
+    condition: ""
+
+  - name: lidds-map-process
+    enabled: true
+    group: process
+    condition: ""
+
+  - name: lidds-map-network
+    enabled: true
+    group: network
+    condition: ""

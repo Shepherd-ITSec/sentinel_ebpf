@@ -49,12 +49,11 @@ def _make_synthetic_events(n: int, base_ts_ns: int = 1700000000000000000) -> lis
       "uid": uid,
       "arg0": arg0,
       "arg1": arg1,
-      "path": path,
       "hostname": "test-host",
       "pod_name": "test-pod",
       "namespace": "default",
       "container_id": "",
-      "attributes": {"flags": flags, "return_value": return_value},
+      "attributes": {"flags": flags, "return_value": return_value, "fd_path": path},
     })
   return events
 

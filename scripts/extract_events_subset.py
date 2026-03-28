@@ -16,6 +16,9 @@ def _to_replay_event(obj: dict, from_key: str, to_key: str) -> dict:
     attributes = obj.get("attributes") or {}
     if not isinstance(attributes, dict):
         attributes = {}
+    fd_path = str(attributes.get("fd_path") or obj.get("fd_path") or "")
+    if fd_path and "fd_path" not in attributes:
+        attributes["fd_path"] = fd_path
     try:
         syscall_nr = int(obj.get("syscall_nr", 0) or 0)
     except (TypeError, ValueError):
@@ -37,7 +40,6 @@ def _to_replay_event(obj: dict, from_key: str, to_key: str) -> dict:
         "uid": obj.get("uid", ""),
         "arg0": obj.get("arg0", ""),
         "arg1": obj.get("arg1", ""),
-        "path": obj.get("path", ""),
         "attributes": attributes,
     }
 

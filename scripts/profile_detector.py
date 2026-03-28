@@ -33,8 +33,7 @@ def make_event(i: int, event_group: str = "file") -> events_pb2.EventEnvelope:
         uid="1000",
         arg0=str(i % 100),
         arg1="2",
-        path=f"/etc/config/file_{i % 50}.conf",
-        attributes={"flags": "O_RDONLY"},
+        attributes={"flags": "O_RDONLY", "fd_path": f"/etc/config/file_{i % 50}.conf"},
     )
 
 

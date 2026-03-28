@@ -24,8 +24,12 @@ def _evt(*, event_id: str = "x", **kwargs) -> str:
     "uid": "0",
     "arg0": "0",
     "arg1": "0",
-    "path": "/etc/passwd",
+    "attributes": {"fd_path": "/etc/passwd"},
   }
+  if "path" in kwargs:
+    base["attributes"]["fd_path"] = kwargs.pop("path")
+  if "fd_path" in kwargs:
+    base["attributes"]["fd_path"] = kwargs.pop("fd_path")
   base.update(kwargs)
   return json.dumps(base, separators=(",", ":"))
 
@@ -36,7 +40,7 @@ def test_script_extract_path():
   assert _extract_path(entry) == "/etc/passwd"
 
   assert _extract_path({}) == ""
-  assert _extract_path({"path": ""}) == ""
+  assert _extract_path({"attributes": {"fd_path": ""}}) == ""
 
 
 def test_script_path_matches():

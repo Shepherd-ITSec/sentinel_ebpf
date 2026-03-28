@@ -16,31 +16,34 @@ def temp_dir():
 def sample_rules_yaml(temp_dir):
   """Create a sample rules.yaml file."""
   rules_file = temp_dir / "rules.yaml"
-  rules_file.write_text("""groups:
-  file: {}
-  process: {}
-  network: {}
+  rules_file.write_text("""lists:
+  file_syscalls: [open, openat, openat2]
+  process_syscalls: [execve]
+  network_syscalls: [connect]
+groups:
+  file:
+    syscalls: file_syscalls
+  process:
+    syscalls: process_syscalls
+  network:
+    syscalls: network_syscalls
 rules:
   - name: capture-all-file-events
     enabled: true
     group: file
-    syscalls: [open, openat, openat2]
-    condition: "path startswith /"
+    condition: "syscall_name in (file_syscalls) and attributes.fd_path startswith /"
   - name: capture-sensitive-file-events
     enabled: true
     group: file
-    syscalls: [open, openat, openat2]
-    condition: "path startswith /etc or path startswith /bin"
+    condition: "syscall_name in (file_syscalls) and (attributes.fd_path startswith /etc or attributes.fd_path startswith /bin)"
   - name: capture-specific-comm
     enabled: true
     group: process
-    syscalls: [execve]
-    condition: "comm in (bash, sh)"
+    condition: "syscall_name in (process_syscalls) and comm in (bash, sh)"
   - name: disabled-rule
     enabled: false
     group: network
-    syscalls: [connect]
-    condition: "path startswith /tmp"
+    condition: "syscall_name in (network_syscalls) and attributes.fd_path startswith /tmp"
 """)
   return rules_file
 

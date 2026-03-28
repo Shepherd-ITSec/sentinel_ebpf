@@ -53,9 +53,12 @@ def _build_evt(row: Dict[str, str], out_idx: int, start_ts_unix_nano: int, event
 
   attrs: Dict[str, str] = {}
   if row.get("sin_port") or row.get("sin_addr") or row.get("sa_family"):
-    attrs["sin_port"] = str(row.get("sin_port", ""))
-    attrs["sin_addr"] = str(row.get("sin_addr", ""))
-    attrs["sa_family"] = str(row.get("sa_family", ""))
+    if row.get("sin_port"):
+      attrs["fd_sock_remote_port"] = str(row.get("sin_port", ""))
+    if row.get("sin_addr"):
+      attrs["fd_sock_remote_addr"] = str(row.get("sin_addr", ""))
+    if row.get("sa_family"):
+      attrs["fd_sock_family"] = str(row.get("sa_family", ""))
   elif row.get("sockaddr"):
     arg1 = str(row["sockaddr"])
 
@@ -71,8 +74,10 @@ def _build_evt(row: Dict[str, str], out_idx: int, start_ts_unix_nano: int, event
     "uid": str(row.get("uid", "0")),
     "arg0": arg0,
     "arg1": arg1,
-    "path": (row.get("path") or "").strip(),
   }
+  path = (row.get("path") or "").strip()
+  if path:
+    attrs["fd_path"] = path
   if attrs:
     evt["attributes"] = attrs
 

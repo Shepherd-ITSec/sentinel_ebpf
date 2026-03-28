@@ -31,7 +31,7 @@ def sample_event():
     uid="1000",
     arg0="-100",
     arg1="2",
-    path="/tmp/test.txt",
+    attributes={"fd_path": "/tmp/test.txt"},
   )
 
 
@@ -62,7 +62,7 @@ class TestFileSink:
       assert payload["event_group"] == ""
       assert payload["syscall_nr"] == 2
       assert payload["comm"] == "bash"
-      assert payload["path"] == "/tmp/test.txt"
+      assert payload["attributes"]["fd_path"] == "/tmp/test.txt"
     finally:
       sink.close()
 
@@ -110,7 +110,7 @@ class TestFileSink:
           uid="1000",
           arg0="-100",
           arg1="2",
-          path="/tmp/test.txt",
+          attributes={"fd_path": "/tmp/test.txt"},
         )
         sink.publish(evt)
       sink.close()
@@ -154,7 +154,7 @@ class TestFileSink:
           uid="1000",
           arg0="-100",
           arg1="2",
-          path="/tmp/test.txt",
+          attributes={"fd_path": "/tmp/test.txt"},
         )
         sink.publish(evt)
       sink.close()
@@ -189,7 +189,7 @@ class TestFileSink:
           uid="1000",
           arg0="-100",
           arg1="2",
-          path="/tmp/test.txt",
+          attributes={"fd_path": "/tmp/test.txt"},
         )
         sink.publish(evt)
       sink.close()

@@ -13,7 +13,13 @@ SUPPORTED_FIELDS = {
   "syscall_name",
   "syscall_nr",
   "event_id",
-  "path",
+  "attributes.fd_path",
+  "attributes.fd_resource_kind",
+  "attributes.fd_sock_local_addr",
+  "attributes.fd_sock_local_port",
+  "attributes.fd_sock_remote_addr",
+  "attributes.fd_sock_remote_port",
+  "attributes.fd_sock_family",
   "comm",
   "pid",
   "tid",
@@ -238,17 +244,16 @@ class RuleEngine:
         tokens = _tokenize_condition(expanded)
         parser = _ConditionParser(tokens=tokens, lists=cfg.lists)
         ast = parser.parse()
-      missing = [name for name in raw.syscalls if name not in EVENT_NAME_TO_ID]
-      if missing:
-        raise ValueError(f"Rule '{raw.name or '<unnamed>'}' references unknown syscall(s): {', '.join(missing)}")
+      syscalls = cfg.groups[raw.group].syscalls
+      syscall_nrs = frozenset(EVENT_NAME_TO_ID[name] for name in syscalls if name in EVENT_NAME_TO_ID)
       self.condition_rules.append(
         ConditionRule(
           name=raw.name,
           condition=raw.condition,
           enabled=raw.enabled,
           group=raw.group,
-          syscalls=raw.syscalls,
-          syscall_nrs=frozenset(EVENT_NAME_TO_ID[name] for name in raw.syscalls),
+          syscalls=syscalls,
+          syscall_nrs=syscall_nrs,
           ast=ast,
         )
       )
@@ -263,9 +268,12 @@ class RuleEngine:
   def _eval_predicate(self, pred: Predicate, ctx: Dict[str, Any]) -> bool:
     field = pred.field
     op = pred.op
-    value = ctx.get(field)
-    if field == "path" and value is None:
-      value = ctx.get("filename")
+    value: Any = ctx
+    for part in field.split("."):
+      if not isinstance(value, dict):
+        value = None
+        break
+      value = value.get(part)
     if field == "arg_flags" and value is None:
       value = ctx.get("flags")
     if value is None:
@@ -331,8 +339,7 @@ class RuleEngine:
       {
         "syscall_name": syscall_name,
         "syscall_nr": EVENT_NAME_TO_ID.get(syscall_name, UNKNOWN_EVENT_ID),
-        "path": filename,
-        "filename": filename,
+        "attributes": {"fd_path": filename} if filename else {},
         "comm": comm,
         "pid": None,
         "tid": None,
@@ -398,7 +405,8 @@ class RuleEngine:
           nrs.add(nval)
       return nrs
 
-    # Explicit syscall membership is always part of the kernel filter; condition adds extra branch-wise predicates.
+    # Kernel syscall set: from compilable syscall_name / syscall_nr literals in each DNF branch when present;
+    # otherwise fall back to known IDs from the group's syscall list (model vocabulary, not a userspace filter).
     for rule in self.condition_rules:
       if not rule.enabled:
         continue
@@ -406,7 +414,7 @@ class RuleEngine:
       stats.branches_total += len(branches)
 
       for branch in branches:
-        branch_syscall_nrs: Optional[set[int]] = set(rule.syscall_nrs)
+        branch_syscall_nrs: Optional[set[int]] = None
         prefixes: Optional[set[str]] = None
         comms: Optional[set[str]] = None
         pids: Optional[set[int]] = None
@@ -457,7 +465,7 @@ class RuleEngine:
               possible = False
               break
             compiled_here += 1
-          elif field == "path" and op in ("startswith", "startswithin"):
+          elif field == "attributes.fd_path" and op in ("startswith", "startswithin"):
             pset = {str(val)} if op == "startswith" else {str(v) for v in val}
             prefixes = pset if prefixes is None else {p for p in prefixes if any(p.startswith(x) or x.startswith(p) for x in pset)}
             if prefixes is not None and len(prefixes) == 0:
@@ -501,6 +509,9 @@ class RuleEngine:
         if not possible:
           stats.branches_impossible += 1
           continue
+
+        if branch_syscall_nrs is None:
+          branch_syscall_nrs = set(rule.syscall_nrs) if rule.syscall_nrs else None
 
         syscall_nr_vals = list(branch_syscall_nrs) if branch_syscall_nrs else [WILDCARD]
         prefix_vals = list(prefixes) if prefixes else [""]

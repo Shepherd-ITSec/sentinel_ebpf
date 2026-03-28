@@ -23,7 +23,6 @@ def envelope_to_dict(evt: events_pb2.EventEnvelope) -> dict[str, Any]:
     "uid": evt.uid,
     "arg0": evt.arg0,
     "arg1": evt.arg1,
-    "path": evt.path,
     "attributes": dict(evt.attributes),
   }
 
@@ -55,6 +54,5 @@ def envelope_from_dict(obj: dict) -> events_pb2.EventEnvelope:
     uid=str(obj.get("uid", "")),
     arg0=str(obj.get("arg0", "")),
     arg1=str(obj.get("arg1", "")),
-    path=str(obj.get("path", "")),
     attributes=dict(obj.get("attributes", {}) or {}),
   )

@@ -35,7 +35,7 @@ class TestEventEnvelope:
       uid="1000",
       arg0="-100",
       arg1="2",
-      path="/tmp/test.txt",
+      attributes={"fd_path": "/tmp/test.txt"},
     )
     assert evt.syscall_nr == 2
     assert evt.comm == "bash"
@@ -60,7 +60,7 @@ class TestEventEnvelope:
       uid="0",
       arg0="-100",
       arg1="2",
-      path="/etc/hosts",
+      attributes={"fd_path": "/etc/hosts"},
     )
     assert evt.hostname == "node-1"
     assert evt.pod_name == "test-pod"
@@ -81,8 +81,7 @@ class TestEventEnvelope:
       uid="1000",
       arg0="-100",
       arg1="2",
-      path="/tmp/test",
-      attributes={"env": "prod", "team": "security"},
+      attributes={"env": "prod", "team": "security", "fd_path": "/tmp/test"},
     )
     assert evt.attributes["env"] == "prod"
     assert evt.attributes["team"] == "security"
@@ -105,7 +104,7 @@ class TestEventEnvelope:
       uid="1000",
       arg0="-100",
       arg1="2",
-      path="/tmp/test.txt",
+      attributes={"fd_path": "/tmp/test.txt"},
     )
 
     payload = envelope_to_dict(evt)
@@ -116,7 +115,7 @@ class TestEventEnvelope:
     assert parsed["syscall_name"] == "openat"
     assert parsed["event_group"] == ""
     assert parsed["syscall_nr"] == 2
-    assert parsed["path"] == "/tmp/test.txt"
+    assert parsed["attributes"]["fd_path"] == "/tmp/test.txt"
 
   def test_generic_event_format(self):
     """Syscall fields match probe layout."""
@@ -132,7 +131,7 @@ class TestEventEnvelope:
       uid="1000",
       arg0="-100",
       arg1="2",
-      path="/etc/passwd",
+      attributes={"fd_path": "/etc/passwd"},
     )
 
     assert evt.comm == "cat"
