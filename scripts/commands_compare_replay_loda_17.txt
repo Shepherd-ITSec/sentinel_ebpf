@@ -1,1 +1,0 @@
-uv run python scripts/compare_replay_scores.py events_17_03_26.jsonl --algorithm loda_ema --threshold 0.7 --out-dir test_data/compare_replay_loda_17 --score-mode scaled --detector-port 50055

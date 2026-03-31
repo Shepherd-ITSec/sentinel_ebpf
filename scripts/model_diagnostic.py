@@ -14,6 +14,10 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import numpy as np
+try:
+  from tqdm import tqdm  # type: ignore[import-not-found]
+except ImportError:
+  tqdm = None
 
 if __package__ is None or __package__ == "":
   here = Path(__file__).resolve()
@@ -600,7 +604,12 @@ def main() -> None:
   overall_syscall_names: Counter[str] = Counter()
 
   with timeseries_path.open("w", encoding="utf-8") as timeseries_file:
-    for i, obj in enumerate(_iter_event_dicts(events_path, args.limit)):
+    event_iter = _iter_event_dicts(events_path, args.limit)
+    if tqdm is not None:
+      event_iter = tqdm(event_iter, total=int(args.limit), desc="Diagnostic replay", unit=" evt", file=sys.stderr, leave=True)
+    else:
+      log.info("tqdm not installed; running diagnostic without progress bar")
+    for i, obj in enumerate(event_iter):
       evt = _dict_to_event_envelope(obj)
       features = extract_feature_dict(
         evt,

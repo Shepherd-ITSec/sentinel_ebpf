@@ -61,7 +61,7 @@ detector:
   eventDumpPath: "/var/log/sentinel-ebpf/events.jsonl"   # Path to dump all incoming events to file (empty to disable, e.g., /var/log/sentinel-ebpf/events.jsonl)
   # Model configurations
   model:
-    algorithm: "grimmer_mlp"  # halfspacetrees | loda | loda_ema | memstream | kitnet | zscore | freq1d | copulatree | latentcluster | grimmer_mlp
+    algorithm: "sequence_mlp"  # halfspacetrees | loda | loda_ema | memstream | kitnet | zscore | freq1d | copulatree | latentcluster | sequence_mlp
     threshold: 0.98  # Anomaly score threshold
     score_mode: "percentile"  # raw | scaled | percentile
     # General parameters
@@ -131,11 +131,11 @@ detector:
     latentcluster_update_alpha: 0.05
     latentcluster_spawn_threshold: 6.0
     # MLP parameters (Syscall-sequence next-token prediction, ported/adapted from LID-DS)
-    grimmer_ngram_length: 8
-    grimmer_thread_aware: true
-    grimmer_mlp_hidden_size: 150
-    grimmer_mlp_hidden_layers: 4
-    grimmer_mlp_lr: 0.003
+    sequence_ngram_length: 8
+    sequence_thread_aware: true
+    sequence_mlp_hidden_size: 150
+    sequence_mlp_hidden_layers: 4
+    sequence_mlp_lr: 0.003
   resources: {}
   nodeSelector: {}
   tolerations: []

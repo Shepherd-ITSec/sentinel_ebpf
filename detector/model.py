@@ -29,7 +29,7 @@ except ImportError:
   NearestNeighbors = None
 
 import events_pb2
-from detector.grimmer.pipeline import GrimmerPipeline
+from detector.sequence.mlp import OnlineSequenceMLP
 
 
 def _auto_loda_projections(input_dim: int) -> int:
@@ -2201,12 +2201,10 @@ class OnlineAnomalyDetector:
     embedding_word2vec_update_every: int = 25,
     embedding_word2vec_epochs: int = 1,
     embedding_word2vec_post_warmup_lr_scale: float = 0.1,
-    # Grimmer (MLP) config (used only by algorithm=grimmer_mlp)
-    grimmer_ngram_length: int = 8,
-    grimmer_thread_aware: bool = True,
-    grimmer_mlp_hidden_size: int = 150,
-    grimmer_mlp_hidden_layers: int = 4,
-    grimmer_mlp_lr: float = 0.003,
+    # Sequence MLP config (used only by algorithm=sequence_mlp)
+    sequence_mlp_hidden_size: int = 150,
+    sequence_mlp_hidden_layers: int = 4,
+    sequence_mlp_lr: float = 0.003,
     warmup_events: int = 0,
   ):
     algo = algorithm.lower()
@@ -2316,33 +2314,18 @@ class OnlineAnomalyDetector:
         model_device=model_device,
         seed=seed,
       )
-    elif algo == "grimmer_mlp":
-      # Create a tiny config object with only the fields GrimmerPipeline reads.
-      # This keeps `grimmer_mlp` inside the normal model factory; server does not special-case it.
-      class _Cfg:
-        pass
-
-      cfg = _Cfg()
-      cfg.grimmer_ngram_length = int(grimmer_ngram_length)
-      cfg.grimmer_thread_aware = bool(grimmer_thread_aware)
-      cfg.embedding_word2vec_dim = int(embedding_word2vec_dim)
-      cfg.embedding_word2vec_sentence_len = int(embedding_word2vec_sentence_len)
-      cfg.embedding_word2vec_window = int(embedding_word2vec_window)
-      cfg.embedding_word2vec_sg = int(embedding_word2vec_sg)
-      cfg.embedding_word2vec_update_every = int(embedding_word2vec_update_every)
-      cfg.embedding_word2vec_epochs = int(embedding_word2vec_epochs)
-      cfg.embedding_word2vec_post_warmup_lr_scale = float(embedding_word2vec_post_warmup_lr_scale)
-      cfg.grimmer_mlp_hidden_size = int(grimmer_mlp_hidden_size)
-      cfg.grimmer_mlp_hidden_layers = int(grimmer_mlp_hidden_layers)
-      cfg.grimmer_mlp_lr = float(grimmer_mlp_lr)
-      cfg.warmup_events = int(warmup_events)
-      cfg.model_device = str(model_device)
-      cfg.model_seed = int(seed)
-      self.impl = GrimmerPipeline(cfg)  # type: ignore[arg-type]
+    elif algo == "sequence_mlp":
+      self.impl = OnlineSequenceMLP(
+        hidden_size=sequence_mlp_hidden_size,
+        hidden_layers=sequence_mlp_hidden_layers,
+        learning_rate=sequence_mlp_lr,
+        model_device=model_device,
+        seed=seed,
+      )
     else:
       raise ValueError(
         "Unknown algorithm: %s. Choose from: halfspacetrees, loda_ema, kitnet, memstream, zscore, knn, "
-        "freq1d, copulatree, latentcluster, grimmer_mlp"
+        "freq1d, copulatree, latentcluster, sequence_mlp"
         % algorithm
       )
     self.algorithm = self.impl.algorithm
@@ -2353,13 +2336,7 @@ class OnlineAnomalyDetector:
     *,
     feature_fn: Callable[["events_pb2.EventEnvelope"], Dict[str, float]],
   ) -> tuple[float, float]:
-    """Unified server entrypoint: some models consume `evt`, others consume `features`.
-
-    - For most algorithms, `feature_fn(evt)` is computed and passed to `score_and_learn(features)`.
-    - For `grimmer_mlp`, the model is stateful and consumes the full event.
-    """
-    if self.algorithm == "grimmer_mlp":
-      return self.impl.score_and_learn_event(evt)  # type: ignore[attr-defined]
+    """Unified server entrypoint: extract features, then pass the feature dict to the model."""
     features = feature_fn(evt)
     return self.score_and_learn(features)
 

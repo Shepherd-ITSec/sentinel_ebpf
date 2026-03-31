@@ -145,16 +145,16 @@ spec:
               value: {{ .Values.detector.model.embeddings.word2vec.epochs | default 1 | quote }}
             - name: DETECTOR_EMBEDDING_WORD2VEC_POST_WARMUP_LR_SCALE
               value: {{ .Values.detector.model.embeddings.word2vec.post_warmup_lr_scale | default 0.1 | quote }}
-            - name: DETECTOR_GRIMMER_NGRAM_LENGTH
-              value: {{ .Values.detector.model.grimmer_ngram_length | default 8 | quote }}
-            - name: DETECTOR_GRIMMER_THREAD_AWARE
-              value: {{ .Values.detector.model.grimmer_thread_aware | default true | quote }}
-            - name: DETECTOR_GRIMMER_MLP_HIDDEN_SIZE
-              value: {{ .Values.detector.model.grimmer_mlp_hidden_size | default 150 | quote }}
-            - name: DETECTOR_GRIMMER_MLP_HIDDEN_LAYERS
-              value: {{ .Values.detector.model.grimmer_mlp_hidden_layers | default 4 | quote }}
-            - name: DETECTOR_GRIMMER_MLP_LR
-              value: {{ .Values.detector.model.grimmer_mlp_lr | default 0.003 | quote }}
+            - name: DETECTOR_SEQUENCE_NGRAM_LENGTH
+              value: {{ .Values.detector.model.sequence_ngram_length | default 8 | quote }}
+            - name: DETECTOR_SEQUENCE_THREAD_AWARE
+              value: {{ .Values.detector.model.sequence_thread_aware | default true | quote }}
+            - name: DETECTOR_SEQUENCE_MLP_HIDDEN_SIZE
+              value: {{ .Values.detector.model.sequence_mlp_hidden_size | default 150 | quote }}
+            - name: DETECTOR_SEQUENCE_MLP_HIDDEN_LAYERS
+              value: {{ .Values.detector.model.sequence_mlp_hidden_layers | default 4 | quote }}
+            - name: DETECTOR_SEQUENCE_MLP_LR
+              value: {{ .Values.detector.model.sequence_mlp_lr | default 0.003 | quote }}
             {{- if .Values.detector.recentEventsBufferSize }}
             - name: DETECTOR_RECENT_EVENTS_BUFFER_SIZE
               value: {{ .Values.detector.recentEventsBufferSize | quote }}

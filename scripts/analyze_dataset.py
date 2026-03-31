@@ -120,6 +120,17 @@ def count_duplicates(
           full_hashes, exact_dup_hashes, one_field_recs, two_field_recs, three_field_recs)
 
 
+def _score_from_record(obj: dict) -> float | None:
+  for key in ("score", "score_scaled", "score_raw"):
+    if key not in obj:
+      continue
+    try:
+      return float(obj[key])
+    except (TypeError, ValueError):
+      return None
+  return None
+
+
 def load_records(path: Path, max_events: int | None = None) -> tuple[list[dict], list[float]]:
   """Load full records and scores from JSONL."""
   records: list[dict] = []
@@ -138,19 +149,17 @@ def load_records(path: Path, max_events: int | None = None) -> tuple[list[dict],
         obj = json.loads(line)
       except json.JSONDecodeError:
         continue
-      if "score" not in obj:
+      score = _score_from_record(obj)
+      if score is None:
         continue
-      try:
-        scores.append(float(obj["score"]))
-        records.append(obj)
-      except (TypeError, ValueError):
-        continue
+      scores.append(score)
+      records.append(obj)
   return records, scores
 
 
 def main():
   ap = argparse.ArgumentParser(
-    description="Plot loss (anomaly score) over samples from detector log. Expects JSONL with 'score' per line.",
+    description="Plot loss (anomaly score) over samples from detector log. Accepts JSONL with score, score_scaled, or score_raw.",
   )
   ap.add_argument(
     "logfile",
@@ -211,7 +220,7 @@ def main():
   print("Loading records...", file=sys.stderr)
   records, scores = load_records(path, max_events=args.max_events)
   if not scores:
-    print("No scores found in log (expect 'score' field per JSONL line)", file=sys.stderr)
+    print("No scores found in log (expect 'score', 'score_scaled', or 'score_raw' per JSONL line)", file=sys.stderr)
     sys.exit(1)
 
   n_events = len(records)

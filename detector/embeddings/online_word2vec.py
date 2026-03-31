@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 logging.getLogger("gensim").setLevel(logging.WARNING)
 
 
-class OnlineSyscallWord2Vec:
+class OnlineTokenWord2Vec:
   """
   Per-thread sentence streams → periodic gensim Word2Vec updates.
 
@@ -122,4 +122,3 @@ class OnlineSyscallWord2Vec:
     if self._model is None or tok not in self._model.wv:
       return np.zeros(self.vector_size, dtype=np.float32)
     return np.asarray(self._model.wv[tok], dtype=np.float32)
-

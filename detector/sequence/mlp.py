@@ -1,14 +1,3 @@
-"""
-Online MLP next-syscall predictor with anomaly score ``1 - p(correct)``.
-
-Architecture and scoring match the LID-DS MLP building block (PyTorch softmax output,
-score from predicted probability of the true class).
-
-References:
-  - ``third_party/LID-DS/algorithms/decision_engines/mlp.py`` — ``MLP._cached_results``
-  - ``third_party/LID-DS/algorithms/decision_engines/mlp.py`` — ``Feedforward._get_mlp_sequence``
-"""
-
 from __future__ import annotations
 
 import logging
@@ -18,6 +7,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+
+from detector.sequence.context import SequenceFeatureDict
 
 logger = logging.getLogger(__name__)
 
@@ -36,12 +27,6 @@ def _resolve_device(preference: str) -> torch.device:
 
 
 class _FeedforwardCore(nn.Module):
-  """
-  Same layer pattern as LID-DS ``Feedforward`` (Linear, Dropout, ReLU × depth, then Linear + Softmax).
-
-  Reference: ``third_party/LID-DS/algorithms/decision_engines/mlp.py`` — ``Feedforward``.
-  """
-
   def __init__(
     self,
     input_size: int,
@@ -76,42 +61,41 @@ class _FeedforwardCore(nn.Module):
     return self.net(x)
 
 
-class GrimmerOnlineMLP:
-  """
-  One gradient step per event after the n-gram window is warm.
-
-  Uses softmax outputs and raw anomaly score ``1 - p[y]`` like LID-DS ``MLP``.
-  When new syscalls appear, the final linear layer is expanded (new rows/cols).
-  """
+class OnlineSequenceMLP:
+  """Online next-token predictor consuming the generic sequence feature view."""
 
   def __init__(
     self,
     *,
-    input_dim: int,
     hidden_size: int,
     hidden_layers: int,
     learning_rate: float,
     model_device: str,
     seed: int,
   ) -> None:
-    self._input_dim = int(input_dim)
+    self.algorithm = "sequence_mlp"
     self._hidden_size = int(hidden_size)
     self._hidden_layers = int(hidden_layers)
     self._lr = float(learning_rate)
     self._device = _resolve_device(model_device)
     self._seed = int(seed)
+    self._feature_names: list[str] | None = None
+    self._input_dim = 0
     self._num_classes = 0
     self._model: _FeedforwardCore | None = None
     self._optimizer: optim.Optimizer | None = None
     torch.manual_seed(self._seed)
 
-  @property
-  def algorithm(self) -> str:
-    return "grimmer_mlp"
+  def _init_from_features(self, features: dict[str, float]) -> None:
+    self._feature_names = sorted(features.keys())
+    self._input_dim = len(self._feature_names)
 
-  def ensure_num_classes(self, num_classes: int) -> None:
-    """Grow the softmax layer if the syscall vocabulary grew."""
-    self._ensure_model(int(num_classes))
+  def _vectorize(self, features: dict[str, float]) -> np.ndarray:
+    if self._feature_names is None:
+      self._init_from_features(features)
+    if self._feature_names is None:
+      raise RuntimeError("SequenceMLP feature names not initialized")
+    return np.array([float(features[k]) for k in self._feature_names], dtype=np.float32)
 
   def _ensure_model(self, num_classes: int) -> None:
     n = int(num_classes)
@@ -127,7 +111,7 @@ class GrimmerOnlineMLP:
       ).to(self._device)
       self._optimizer = optim.Adam(self._model.parameters(), lr=self._lr)
       logger.info(
-        "GrimmerOnlineMLP init input_dim=%d hidden=%d layers=%d classes=%d device=%s",
+        "SequenceMLP init input_dim=%d hidden=%d layers=%d classes=%d device=%s",
         self._input_dim,
         self._hidden_size,
         self._hidden_layers,
@@ -135,30 +119,27 @@ class GrimmerOnlineMLP:
         self._device,
       )
       return
-
     if n <= self._num_classes:
       return
-
     self._grow_output_linear(n)
     self._num_classes = n
 
   def _grow_output_linear(self, new_out: int) -> None:
-    """Expand the final Linear + rebuild Softmax tail (LID-DS fixed vocab at train time; we grow online)."""
     assert self._model is not None and self._optimizer is not None
     mods = list(self._model.net.children())
     idx_last = None
-    for i, m in enumerate(mods):
-      if isinstance(m, nn.Linear):
+    for i, mod in enumerate(mods):
+      if isinstance(mod, nn.Linear):
         idx_last = i
     if idx_last is None:
-      raise RuntimeError("GrimmerOnlineMLP: no Linear layer found")
+      raise RuntimeError("SequenceMLP: no Linear layer found")
     last = mods[idx_last]
     assert isinstance(last, nn.Linear)
     old_out = last.out_features
     if new_out <= old_out:
       return
-    in_f = last.in_features
-    new_lin = nn.Linear(in_f, new_out, bias=True).to(self._device)
+    in_features = last.in_features
+    new_lin = nn.Linear(in_features, new_out, bias=True).to(self._device)
     with torch.no_grad():
       new_lin.weight[:old_out, :] = last.weight
       new_lin.bias[:old_out] = last.bias
@@ -168,32 +149,56 @@ class GrimmerOnlineMLP:
     self._model.net = nn.Sequential(*new_mods).to(self._device)
     self._optimizer = optim.Adam(self._model.parameters(), lr=self._lr)
 
-  def score_and_learn(
-    self,
-    x: np.ndarray | list[float],
-    y_class: int,
-  ) -> tuple[float, float]:
-    """
-    Returns ``(raw, scaled)`` with raw = ``1 - p[y]`` (LID-DS MLP).
+  @staticmethod
+  def _meta_from_features(features: dict[str, float]) -> Any | None:
+    meta = getattr(features, "sequence_meta", None)
+    if meta is None and isinstance(features, SequenceFeatureDict):
+      meta = features.sequence_meta
+    return meta
 
-    Reference: ``third_party/LID-DS/algorithms/decision_engines/mlp.py`` — ``_cached_results``.
-    """
-    y = int(y_class)
-    self._ensure_model(max(y + 1, 1))
+  def score_only_raw(self, features: dict[str, float]) -> float:
+    meta = self._meta_from_features(features)
+    if meta is None or not bool(meta.ready):
+      return 0.0
+    x = self._vectorize(features)
+    self._ensure_model(int(meta.num_classes))
+    if self._model is None:
+      return 0.0
+    xv = torch.tensor(x, device=self._device).view(1, -1)
+    self._model.eval()
+    with torch.no_grad():
+      probs = self._model(xv).view(-1)
+      target_id = int(meta.target_id)
+      if target_id < 0 or target_id >= probs.numel():
+        return 0.0
+      py = float(probs[target_id].clamp(1e-8, 1.0).item())
+    return float(1.0 - py)
+
+  def score_only(self, features: dict[str, float]) -> tuple[float, float]:
+    raw = self.score_only_raw(features)
+    scaled = 1.0 - float(np.exp(-max(0.0, raw)))
+    return float(raw), float(scaled)
+
+  def score_and_learn_raw(self, features: dict[str, float]) -> float:
+    meta = self._meta_from_features(features)
+    if meta is None or not bool(meta.ready):
+      return 0.0
+    x = self._vectorize(features)
+    self._ensure_model(int(meta.num_classes))
     if self._model is None or self._optimizer is None:
-      return 0.0, 0.0
+      return 0.0
 
-    xv = torch.tensor(np.asarray(x, dtype=np.float32), device=self._device).view(1, -1)
+    xv = torch.tensor(x, device=self._device).view(1, -1)
     if xv.shape[1] != self._input_dim:
       raise ValueError(f"Expected input dim {self._input_dim}, got {xv.shape[1]}")
 
+    target_id = int(meta.target_id)
     self._model.train()
     self._optimizer.zero_grad()
     probs = self._model(xv).view(-1)
-    if y < 0 or y >= probs.numel():
-      return 0.0, 0.0
-    # Numerical safety: clamp probability used for score
-    py = probs[y].clamp(1e-8, 1.0)
+    if target_id < 0 or target_id >= probs.numel():
+      return 0.0
+    py = probs[target_id].clamp(1e-8, 1.0)
     loss = -torch.log(py)
     loss.backward()
     self._optimizer.step()
@@ -201,13 +206,17 @@ class GrimmerOnlineMLP:
     self._model.eval()
     with torch.no_grad():
       p_eval = self._model(xv).view(-1)
-      py_eval = float(p_eval[y].clamp(1e-8, 1.0).item())
-    raw = 1.0 - py_eval
+      py_eval = float(p_eval[target_id].clamp(1e-8, 1.0).item())
+    return float(1.0 - py_eval)
+
+  def score_and_learn(self, features: dict[str, float]) -> tuple[float, float]:
+    raw = self.score_and_learn_raw(features)
     scaled = 1.0 - float(np.exp(-max(0.0, raw)))
     return float(raw), float(scaled)
 
   def get_state(self) -> dict[str, Any]:
     return {
+      "feature_names": list(self._feature_names) if self._feature_names is not None else None,
       "input_dim": self._input_dim,
       "hidden_size": self._hidden_size,
       "hidden_layers": self._hidden_layers,
@@ -218,11 +227,14 @@ class GrimmerOnlineMLP:
     }
 
   def set_state(self, state: dict[str, Any]) -> None:
+    feature_names = state.get("feature_names")
+    self._feature_names = list(feature_names) if feature_names is not None else None
+    self._input_dim = int(state.get("input_dim", 0))
     n = int(state.get("num_classes", 0))
     self._model = None
     self._optimizer = None
     self._num_classes = 0
-    if n <= 0 or state.get("model") is None:
+    if n <= 0 or state.get("model") is None or self._input_dim <= 0:
       return
     self._ensure_model(n)
     assert self._model is not None and self._optimizer is not None
@@ -231,4 +243,4 @@ class GrimmerOnlineMLP:
       try:
         self._optimizer.load_state_dict(state["optim"])
       except Exception:
-        logger.warning("GrimmerOnlineMLP: could not load optimizer state; using fresh Adam moments")
+        logger.warning("SequenceMLP: could not load optimizer state; using fresh Adam moments")

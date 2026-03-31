@@ -22,7 +22,7 @@ from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 import events_pb2
 import events_pb2_grpc
 from detector.config import DetectorConfig, load_config
-from detector.features import extract_feature_dict, feature_view_for_algorithm
+from detector.features import build_feature_extractor, feature_view_for_algorithm
 from detector.model import OnlineAnomalyDetector
 from detector.model import OnlinePercentileCalibrator
 
@@ -187,6 +187,7 @@ class DeterministicScorer:
   def __init__(self, cfg: DetectorConfig):
     self.cfg = cfg
     self._models: dict[str, OnlineAnomalyDetector] = {}
+    self._feature_extractors = {}
     self._percentiles: dict[str, OnlinePercentileCalibrator] = {}
     self._warmup_counts: dict[str, int] = {}
     self._lock = threading.Lock()
@@ -253,12 +254,10 @@ class DeterministicScorer:
       "embedding_word2vec_update_every": getattr(self.cfg, "embedding_word2vec_update_every", 25),
       "embedding_word2vec_epochs": getattr(self.cfg, "embedding_word2vec_epochs", 1),
       "embedding_word2vec_post_warmup_lr_scale": getattr(self.cfg, "embedding_word2vec_post_warmup_lr_scale", 0.1),
-      # Grimmer config passthrough (used only when algorithm=grimmer_mlp)
-      "grimmer_ngram_length": getattr(self.cfg, "grimmer_ngram_length", 8),
-      "grimmer_thread_aware": getattr(self.cfg, "grimmer_thread_aware", True),
-      "grimmer_mlp_hidden_size": getattr(self.cfg, "grimmer_mlp_hidden_size", 150),
-      "grimmer_mlp_hidden_layers": getattr(self.cfg, "grimmer_mlp_hidden_layers", 4),
-      "grimmer_mlp_lr": getattr(self.cfg, "grimmer_mlp_lr", 0.003),
+      # Sequence-MLP config passthrough (used only when algorithm=sequence_mlp)
+      "sequence_mlp_hidden_size": getattr(self.cfg, "sequence_mlp_hidden_size", 150),
+      "sequence_mlp_hidden_layers": getattr(self.cfg, "sequence_mlp_hidden_layers", 4),
+      "sequence_mlp_lr": getattr(self.cfg, "sequence_mlp_lr", 0.003),
     }
 
   def _get_model(self, event_group: str) -> OnlineAnomalyDetector:
@@ -269,6 +268,14 @@ class DeterministicScorer:
       self._models[key] = model
       logging.info("Initialized model for event_group=%r (algorithm=%s)", key, model.algorithm)
     return model
+
+  def _get_feature_extractor(self, event_group: str):
+    key = self._key_for_type(event_group)
+    extractor = self._feature_extractors.get(key)
+    if extractor is None:
+      extractor = build_feature_extractor(self.cfg)
+      self._feature_extractors[key] = extractor
+    return extractor
 
   def _get_percentile(self, event_group: str) -> OnlinePercentileCalibrator:
     key = self._key_for_type(event_group)
@@ -305,9 +312,10 @@ class DeterministicScorer:
         suppress_primary = warmup_suppress and self._warmup_counts[key] <= warmup_events
 
         model = self._get_model(evt.event_group or "")
+        extractor = self._get_feature_extractor(evt.event_group or "")
         score_raw, score_scaled = model.score_and_learn_event(
           evt,
-          feature_fn=lambda e: extract_feature_dict(
+          feature_fn=lambda e: extractor.extract_feature_dict(
             e,
             feature_view=feature_view_for_algorithm(getattr(self.cfg, "model_algorithm", "")),
           ),

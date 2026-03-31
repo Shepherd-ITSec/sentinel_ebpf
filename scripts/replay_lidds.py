@@ -782,8 +782,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
   ap.add_argument("--detector-port", type=int, default=50051, help="Detector gRPC port when using --start-detector.")
   ap.add_argument(
     "--detector-algorithm",
-    default="grimmer_mlp",
-    help="Value for DETECTOR_MODEL_ALGORITHM when using --start-detector (default: grimmer_mlp).",
+    default="sequence_mlp",
+    help="Value for DETECTOR_MODEL_ALGORITHM when using --start-detector (default: sequence_mlp).",
   )
   ap.add_argument(
     "--event-dump-path",
@@ -799,7 +799,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
   ap.add_argument(
     "--save-checkpoint",
     default=None,
-    help="After replay, write a detector checkpoint (.pkl) by training offline on the converted JSONL. Intended for --detector-algorithm=grimmer_mlp.",
+    help="After replay, write a detector checkpoint (.pkl) by training offline on the converted JSONL. Intended for --detector-algorithm=sequence_mlp.",
   )
   return ap
 

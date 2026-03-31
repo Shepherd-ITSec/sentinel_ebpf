@@ -168,11 +168,12 @@ class TestDetector:
   def test_score_event_uses_model_specific_feature_view(self, monkeypatch):
     captured = {}
 
-    def fake_extract(evt, feature_view="default"):
-      captured["feature_view"] = feature_view
-      return {"f0": 0.0, "f1": 1.0}
+    class FakeExtractor:
+      def extract_feature_dict(self, evt, feature_view="default"):
+        captured["feature_view"] = feature_view
+        return {"f0": 0.0, "f1": 1.0}
 
-    monkeypatch.setattr(server_mod, "extract_feature_dict", fake_extract)
+    monkeypatch.setattr(server_mod, "build_feature_extractor", lambda cfg: FakeExtractor())
     cfg = DetectorConfig(model_algorithm="memstream", score_mode="scaled")
     detector = RuleBasedDetector(cfg)
     evt = events_pb2.EventEnvelope(
@@ -198,11 +199,12 @@ class TestDetector:
   def test_freq_models_use_frequency_feature_view(self, monkeypatch, model_algorithm):
     captured = {}
 
-    def fake_extract(evt, feature_view="default"):
-      captured["feature_view"] = feature_view
-      return {"f0": 0.0, "f1": 1.0}
+    class FakeExtractor:
+      def extract_feature_dict(self, evt, feature_view="default"):
+        captured["feature_view"] = feature_view
+        return {"f0": 0.0, "f1": 1.0}
 
-    monkeypatch.setattr(server_mod, "extract_feature_dict", fake_extract)
+    monkeypatch.setattr(server_mod, "build_feature_extractor", lambda cfg: FakeExtractor())
     cfg = DetectorConfig(model_algorithm=model_algorithm, score_mode="scaled")
     detector = RuleBasedDetector(cfg)
     evt = events_pb2.EventEnvelope(

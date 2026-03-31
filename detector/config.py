@@ -8,7 +8,7 @@ class DetectorConfig:
   events_http_port: int = 50052  # 0 to disable; serves GET /recent_events for UI log tail in gRPC mode
   recent_events_buffer_size: int = 10000  # Size of recent events ring buffer for UI (default: 10000)
   # River model configuration
-  model_algorithm: str = "freq1d"  # halfspacetrees | loda_ema | kitnet | memstream | zscore | knn | freq1d | copulatree | latentcluster | grimmer_mlp
+  model_algorithm: str = "freq1d"  # halfspacetrees | loda_ema | kitnet | memstream | zscore | knn | freq1d | copulatree | latentcluster | sequence_mlp
   threshold: float = 0.7  # Anomaly score threshold (0-1). Lower (e.g. 0.3) to flag more events when scores are mostly low.
   hst_n_trees: int = 25
   hst_height: int = 15
@@ -86,11 +86,11 @@ class DetectorConfig:
   embedding_word2vec_post_warmup_lr_scale: float = 0.1
 
   # Syscall-sequence next-token prediction (MLP), ported/adapted from LID-DS.
-  grimmer_ngram_length: int = 8  # full window: N syscalls in buffer; MLP input uses first N-1 embeddings (cf. ids_mlp_main NGRAM_LENGTH+1)
-  grimmer_thread_aware: bool = True
-  grimmer_mlp_hidden_size: int = 150
-  grimmer_mlp_hidden_layers: int = 4
-  grimmer_mlp_lr: float = 0.003
+  sequence_ngram_length: int = 8  # full window: N syscalls in buffer; MLP input uses first N-1 embeddings.
+  sequence_thread_aware: bool = True
+  sequence_mlp_hidden_size: int = 150
+  sequence_mlp_hidden_layers: int = 4
+  sequence_mlp_lr: float = 0.003
 
 
 def load_config() -> DetectorConfig:
@@ -246,11 +246,11 @@ def load_config() -> DetectorConfig:
   ).strip().lower()
   suppress_anomalies_during_warmup = _swg in ("1", "true", "yes")
 
-  grimmer_ngram_length = int(os.environ.get("DETECTOR_GRIMMER_NGRAM_LENGTH", str(defaults.grimmer_ngram_length)))
-  if grimmer_ngram_length < 2:
-    raise ValueError(f"Invalid DETECTOR_GRIMMER_NGRAM_LENGTH={grimmer_ngram_length!r}; must be >= 2")
-  _ta = os.environ.get("DETECTOR_GRIMMER_THREAD_AWARE", str(defaults.grimmer_thread_aware)).strip().lower()
-  grimmer_thread_aware = _ta in ("1", "true", "yes")
+  sequence_ngram_length = int(os.environ.get("DETECTOR_SEQUENCE_NGRAM_LENGTH", str(defaults.sequence_ngram_length)))
+  if sequence_ngram_length < 2:
+    raise ValueError(f"Invalid DETECTOR_SEQUENCE_NGRAM_LENGTH={sequence_ngram_length!r}; must be >= 2")
+  _ta = os.environ.get("DETECTOR_SEQUENCE_THREAD_AWARE", str(defaults.sequence_thread_aware)).strip().lower()
+  sequence_thread_aware = _ta in ("1", "true", "yes")
   embedding_word2vec_dim = int(
     os.environ.get("DETECTOR_EMBEDDING_WORD2VEC_DIM", str(defaults.embedding_word2vec_dim))
   )
@@ -293,11 +293,11 @@ def load_config() -> DetectorConfig:
       str(defaults.embedding_word2vec_post_warmup_lr_scale),
     )
   )
-  grimmer_mlp_hidden_size = int(os.environ.get("DETECTOR_GRIMMER_MLP_HIDDEN_SIZE", str(defaults.grimmer_mlp_hidden_size)))
-  grimmer_mlp_hidden_layers = int(
-    os.environ.get("DETECTOR_GRIMMER_MLP_HIDDEN_LAYERS", str(defaults.grimmer_mlp_hidden_layers))
+  sequence_mlp_hidden_size = int(os.environ.get("DETECTOR_SEQUENCE_MLP_HIDDEN_SIZE", str(defaults.sequence_mlp_hidden_size)))
+  sequence_mlp_hidden_layers = int(
+    os.environ.get("DETECTOR_SEQUENCE_MLP_HIDDEN_LAYERS", str(defaults.sequence_mlp_hidden_layers))
   )
-  grimmer_mlp_lr = float(os.environ.get("DETECTOR_GRIMMER_MLP_LR", str(defaults.grimmer_mlp_lr)))
+  sequence_mlp_lr = float(os.environ.get("DETECTOR_SEQUENCE_MLP_LR", str(defaults.sequence_mlp_lr)))
 
   return DetectorConfig(
     port=port,
@@ -364,9 +364,9 @@ def load_config() -> DetectorConfig:
     embedding_word2vec_update_every=embedding_word2vec_update_every,
     embedding_word2vec_epochs=embedding_word2vec_epochs,
     embedding_word2vec_post_warmup_lr_scale=embedding_word2vec_post_warmup_lr_scale,
-    grimmer_ngram_length=grimmer_ngram_length,
-    grimmer_thread_aware=grimmer_thread_aware,
-    grimmer_mlp_hidden_size=grimmer_mlp_hidden_size,
-    grimmer_mlp_hidden_layers=grimmer_mlp_hidden_layers,
-    grimmer_mlp_lr=grimmer_mlp_lr,
+    sequence_ngram_length=sequence_ngram_length,
+    sequence_thread_aware=sequence_thread_aware,
+    sequence_mlp_hidden_size=sequence_mlp_hidden_size,
+    sequence_mlp_hidden_layers=sequence_mlp_hidden_layers,
+    sequence_mlp_lr=sequence_mlp_lr,
   )

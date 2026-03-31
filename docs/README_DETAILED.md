@@ -299,8 +299,15 @@ Representative test areas:
 - `scripts/preflight-check.sh`: host checks for kernel/BCC prerequisites.
 - `scripts/decode_logs.py`: convert EVT1 (or gzip EVT1) to NDJSON.
 - `scripts/replay_logs.py`: replay EVT1 to detector gRPC endpoint with `fast`/`realtime` pacing and optional time-window filters.
+- `scripts/replay_lidds.py`: convert LID-DS recordings to detector JSONL and optionally replay them.
+- `scripts/train_detector_checkpoint.py`: train a detector offline from JSONL or EVT1 and save a checkpoint.
+- `scripts/score_from_checkpoint.py`: load a detector checkpoint and score a JSONL or EVT1 stream.
 - `scripts/evaluate_replay.py`: evaluate replay anomaly outputs against labels NDJSON.
 - `scripts/run_detector_eval.py`: run detector eval (requires --evt1 and --labels); replay, report metrics.
+- `scripts/generate_synthetic_evt1_dataset.py`: generate synthetic EVT1 plus labels for controlled eval runs.
+- `scripts/run_synthetic_overnight.sh`: launch the synthetic eval matrix under `nohup`.
+- `scripts/feature_attribution.py`: compute perturbation-based feature attribution for detector events.
+- `scripts/model_diagnostic.py`: run a compact unlabeled detector diagnostic over a replay stream.
 
 ## Optional debug UI
 

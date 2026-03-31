@@ -45,7 +45,7 @@ Optional `attributes` (map, producer-filled when available):
 **Public API:**
 
 - `extract_feature_dict(evt, feature_view="default") -> Dict[str, float]`: general features always; if **`evt.event_group`** matches a **`groups`** entry in rules, appends group-scoped features (same key template for every event in that group). Key set can differ per **event_group** and per **feature view**.
-- `feature_view_for_algorithm(algorithm) -> str`: maps algorithm to feature view. `freq1d`, `copulatree`, `latentcluster` → **`frequency`**; `loda` / `loda_ema` → `loda`; `memstream` → `memstream`; **`grimmer_mlp`** → **`grimmer_mlp`** (stateful; the model consumes events directly; do not call `extract_feature_dict` for this view); else → `default`.
+- `feature_view_for_algorithm(algorithm) -> str`: maps algorithm to feature view. `freq1d`, `copulatree`, `latentcluster` → **`frequency`**; `loda` / `loda_ema` → `loda`; `memstream` → `memstream`; **`sequence_mlp`** / **`sequence_transformer`** → **`sequence`**; else → `default`.
 
 **Feature views:** One extractor; the view toggles encodings (`_FeatureViewSpec` in `features.py`). **`default`**: sparse buckets + **`group_syscall_*`** one-hots (from rules) and the tables below. **`frequency`**: MD5-derived scalars for comm/hostname/path + **`event_id_norm`**, plus **`group_ext_hash`**, **`group_flags_hash`**, **`net_*_hash`** as applicable. Omits **`flags_hash`**, **`group_sensitive_path`** / **`group_tmp_path`**, and **all** online streams. **`loda`** / **`loda_ema`**: drops general `comm`/`hostname`/`path` banks; drops **`group_syscall_*`**, **`group_ext_bucket_*`**, **`group_flags_bucket_*`**, **`net_daddr_bucket_*`**. **`memstream`**: same as loda and also drops **`net_socket_type_bucket_*`**.
 
@@ -118,8 +118,8 @@ Missing or invalid fields use safe defaults. Each per-event_group model sees a c
 
 **Public API:**
 
-- `DetectorConfig`: dataclass of default values (port, events_http_port, recent_events_buffer_size, model_algorithm, threshold, score_mode, and all HST/LODA/KitNet/MemStream/ZScore/KNN/Freq1D parameters, plus **Grimmer** fields: `grimmer_ngram_length`, `syscall_embedding_dim`, `grimmer_warmup_events`, `DETECTOR_GRIMMER_*` envs). The feature view is derived from `model_algorithm` via `feature_view_for_algorithm`.
-- `load_config() -> DetectorConfig`: builds a `DetectorConfig` from the environment. Environment variables override defaults (e.g. `DETECTOR_PORT`, `DETECTOR_MODEL_ALGORITHM`, `DETECTOR_THRESHOLD`, `DETECTOR_SCORE_MODE`, `DETECTOR_KITNET_*`, `DETECTOR_MEMSTREAM_*`, `DETECTOR_GRIMMER_*`, `DETECTOR_SYSCALL_EMBEDDING_DIM`, etc.).
+- `DetectorConfig`: dataclass of default values (port, events_http_port, recent_events_buffer_size, model_algorithm, threshold, score_mode, and all HST/LODA/KitNet/MemStream/ZScore/KNN/Freq1D parameters, plus **sequence** fields: `sequence_ngram_length`, `sequence_thread_aware`, `sequence_mlp_hidden_size`, `sequence_mlp_hidden_layers`, `sequence_mlp_lr`, `DETECTOR_SEQUENCE_*` envs). The feature view is derived from `model_algorithm` via `feature_view_for_algorithm`.
+- `load_config() -> DetectorConfig`: builds a `DetectorConfig` from the environment. Environment variables override defaults (e.g. `DETECTOR_PORT`, `DETECTOR_MODEL_ALGORITHM`, `DETECTOR_THRESHOLD`, `DETECTOR_SCORE_MODE`, `DETECTOR_KITNET_*`, `DETECTOR_MEMSTREAM_*`, `DETECTOR_SEQUENCE_*`, etc.).
 
 No config file is read; configuration is env-only so it works well in containers and eval runs.
 
@@ -144,7 +144,7 @@ No config file is read; configuration is env-only so it works well in containers
 9. **CopulaTree** – Streaming copula-tree detector on top of `freq1d`: marginals come from `freq1d`, pairwise dependence is tracked online in Gaussianized space, and a maximum-spanning tree is refreshed periodically. This keeps the sparse-tree idea from the paper without requiring offline family fitting or Monte Carlo calibration. CPU-only.
 10. **LatentCluster** – Online latent clustering on top of `freq1d` marginals: events are mapped to CDF/probit coordinates, scored against a small bank of latent clusters with diagonal variance, and only likely-normal points update clusters. CPU-only.
 
-**`grimmer_mlp`** — thread-aware syscall n-gram + gensim Word2Vec + PyTorch MLP (score `1 − p(correct syscall)`), ported from LID-DS building blocks. Implemented as a normal `OnlineAnomalyDetector` algorithm; the model consumes the full `EventEnvelope` (see `OnlineAnomalyDetector.score_and_learn_event`). Word2Vec lives in `detector/embeddings/` so it can be reused by other models/views. Requires `gensim` (`uv sync --extra detector`). Logic is GPL-3.0–derived from vendored `third_party/LID-DS`.
+**`sequence_mlp`** — thread-aware syscall n-gram + gensim Word2Vec + PyTorch MLP (score `1 − p(correct syscall)`), ported from LID-DS building blocks. Implemented as a normal `OnlineAnomalyDetector` algorithm that consumes the **`sequence`** feature view like any other feature-dict model. Word2Vec lives in `detector/embeddings/` so it can be reused by other models/views. Requires `gensim` (`uv sync --extra detector`). Logic is GPL-3.0-derived from vendored `third_party/LID-DS`.
 
 Device selection is via config (`model_device`: `auto` / `cpu` / `cuda`). The server uses one model per event_group and calls `score_and_learn` under a lock so only one thread updates any model per event.
 
@@ -159,7 +159,7 @@ Device selection is via config (`model_device`: `auto` / `cpu` / `cuda`). The se
 **Flow:**
 
 1. **Startup:** `load_config()`, create `RECENT_EVENTS` deque (size from config), optionally enable anomaly log file via `ANOMALY_LOG_PATH`, instantiate `RuleBasedDetector(cfg)` (which wraps `DeterministicScorer` and one scorer **per event_group**).
-2. **gRPC:** Implements `DetectorService`: `StreamEvents(stream EventEnvelope) -> stream DetectionResponse`. For each event: pick/create the per-`event_group` model and call `model.score_and_learn_event(evt, feature_fn=extract_feature_dict)` (feature_fn is only used by feature-dict algorithms; `grimmer_mlp` consumes the event directly). Build `DetectionResponse` (event_id, anomaly, reason, score, ts). Responses are yielded back to the client. Anomalies and recent events are pushed to in-memory buffers; if `ANOMALY_LOG_PATH` is set, anomalies are also appended as JSONL.
+2. **gRPC:** Implements `DetectorService`: `StreamEvents(stream EventEnvelope) -> stream DetectionResponse`. For each event: pick/create the per-`event_group` model, extract the configured feature view, and call `model.score_and_learn_event(evt, feature_fn=extract_feature_dict)`. Build `DetectionResponse` (event_id, anomaly, reason, score, ts). Responses are yielded back to the client. Anomalies and recent events are pushed to in-memory buffers; if `ANOMALY_LOG_PATH` is set, anomalies are also appended as JSONL.
 3. **DeterministicScorer:** Holds the config and one model per `event_group`. `score_event(evt)` applies an optional **model-independent** warmup gate (`DETECTOR_WARMUP_EVENTS` + `DETECTOR_SUPPRESS_ANOMALIES_DURING_WARMUP`) to suppress anomaly decisions and UI score early in a run.
 4. **HTTP (optional):** If `events_http_port` > 0, a small HTTP server serves:
   - `GET /recent_events?limit=N` – last N events (for UI log tail)

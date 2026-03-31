@@ -19,6 +19,8 @@ from typing import Any, Dict, Iterable
 import numpy as np
 
 import events_pb2
+from detector.config import load_config
+from detector.sequence.context import SequenceContextFeatureExtractor
 from rules_config import RulesConfig, load_rules_config
 
 
@@ -186,6 +188,70 @@ _FREQUENCY_FEATURE_VIEW = _FeatureViewSpec(
   include_file_online_stats=False,
   include_network_online_stats=False,
 )
+_SEQUENCE_CONTEXT_PREFIX = "sequence_ctx"
+
+
+class FeatureExtractor:
+  """Stateful feature extractor that keeps online stats and sequence context state."""
+
+  def __init__(
+    self,
+    *,
+    online_stats: _OnlineFeatureStats,
+    sequence_context: SequenceContextFeatureExtractor,
+  ) -> None:
+    self._online_stats = online_stats
+    self._sequence_context = sequence_context
+
+  @classmethod
+  def from_config(cls, cfg: Any) -> "FeatureExtractor":
+    return cls(
+      online_stats=_OnlineFeatureStats(_ONLINE_WINDOWS),
+      sequence_context=SequenceContextFeatureExtractor(
+        vector_size=int(getattr(cfg, "embedding_word2vec_dim", 5)),
+        sentence_len=int(getattr(cfg, "embedding_word2vec_sentence_len", 7)),
+        seed=int(getattr(cfg, "model_seed", 42)),
+        w2v_window=int(getattr(cfg, "embedding_word2vec_window", 5)),
+        w2v_sg=int(getattr(cfg, "embedding_word2vec_sg", 1)),
+        update_every=int(getattr(cfg, "embedding_word2vec_update_every", 25)),
+        epochs=int(getattr(cfg, "embedding_word2vec_epochs", 1)),
+        post_warmup_lr_scale=float(getattr(cfg, "embedding_word2vec_post_warmup_lr_scale", 0.1)),
+        warmup_events=int(getattr(cfg, "warmup_events", 0)),
+        ngram_length=int(getattr(cfg, "sequence_ngram_length", 8)),
+        thread_aware=bool(getattr(cfg, "sequence_thread_aware", True)),
+        feature_prefix=_SEQUENCE_CONTEXT_PREFIX,
+      ),
+    )
+
+  def _syscall_token(self, evt: Any) -> str:
+    return (getattr(evt, "syscall_name", "") or "").strip().lower() or "__empty__"
+
+  def _tid(self, evt: Any) -> int:
+    try:
+      return int((getattr(evt, "tid", "0") or "0").strip() or "0")
+    except ValueError:
+      return 0
+
+  def _extract_sequence_features(self, evt: Any) -> Dict[str, float]:
+    features = self._sequence_context.observe_token(
+      stream_id=self._tid(evt),
+      token=self._syscall_token(evt),
+    )
+    return features
+
+  def extract_feature_dict(self, evt: Any, feature_view: str = "default") -> Dict[str, float]:
+    fv = (feature_view or "default").strip().lower()
+    if fv == "sequence":
+      return self._extract_sequence_features(evt)
+    view = _feature_view_spec(feature_view or "default")
+    out = _extract_generic_features(evt, view=view)
+    if view.include_general_online_stats:
+      out.update(_extract_general_online_stats(evt, self._online_stats))
+    event_group = (evt.event_group or "").strip().lower()
+    cfg = _rules_config()
+    if cfg is not None and event_group and event_group in cfg.groups:
+      out.update(_extract_group_features(evt, view, event_group, self._online_stats))
+    return out
 
 
 def _safe_int(raw: str, default: int = 0) -> int:
@@ -288,8 +354,8 @@ def _group_feature_values(event_group: str, feature_name: str, fallback: tuple[s
 def feature_view_for_algorithm(algorithm: str | None) -> str:
   """Map algorithm to feature view."""
   algo = (algorithm or "").strip().lower()
-  if algo == "grimmer_mlp":
-    return "grimmer_mlp"
+  if algo in ("sequence_mlp", "sequence_transformer"):
+    return "sequence"
   if algo in ("freq1d", "copulatree", "latentcluster"):
     return "frequency"
   if algo in ("loda", "loda_ema"):
@@ -309,7 +375,7 @@ def _feature_view_spec(feature_view: str | None) -> _FeatureViewSpec:
     return _LODA_FEATURE_VIEW
   if normalized == "memstream":
     return _MEMSTREAM_FEATURE_VIEW
-  raise ValueError(f"Unknown feature_view={feature_view!r}; expected one of: default, frequency, loda, memstream")
+  raise ValueError(f"Unknown feature_view={feature_view!r}; expected one of: default, frequency, loda, memstream, sequence")
 
 
 @lru_cache(maxsize=16)
@@ -555,7 +621,12 @@ def _extract_generic_features(evt: Any, view: _FeatureViewSpec) -> Dict[str, flo
   return out
 
 
-def _extract_group_features(evt: Any, view: _FeatureViewSpec, event_group: str) -> Dict[str, float]:
+def _extract_group_features(
+  evt: Any,
+  view: _FeatureViewSpec,
+  event_group: str,
+  online_stats: _OnlineFeatureStats,
+) -> Dict[str, float]:
   """
   Features scoped to event_group: syscall one-hot from declared group syscalls, optional path-prefix flags
   from group.features, path/flag buckets, path-centric online stats, and envelope-derived socket fields
@@ -604,12 +675,12 @@ def _extract_group_features(evt: Any, view: _FeatureViewSpec, event_group: str) 
     path_depth_norm = _norm_path_depth(components)
     path_key = path or "unknown"
     pair_key = f"{comm}|{path_key}"
-    path_rate = _ONLINE_STATS.update_value(g, "rate", path_key, ts_s, 1.0)
-    pair_rate = _ONLINE_STATS.update_value(g, "rate", pair_key, ts_s, 1.0)
-    pair_dt = _ONLINE_STATS.update_interarrival(g, "interarrival", pair_key, ts_s, dt_scale_s=30.0)
-    proc_path_depth = _ONLINE_STATS.update_value(g, "path_depth", comm, ts_s, path_depth_norm)
-    host_path_depth = _ONLINE_STATS.update_value(g, "path_depth", host, ts_s, path_depth_norm)
-    pair_path_depth = _ONLINE_STATS.update_value(g, "path_depth", pair_key, ts_s, path_depth_norm)
+    path_rate = online_stats.update_value(g, "rate", path_key, ts_s, 1.0)
+    pair_rate = online_stats.update_value(g, "rate", pair_key, ts_s, 1.0)
+    pair_dt = online_stats.update_interarrival(g, "interarrival", pair_key, ts_s, dt_scale_s=30.0)
+    proc_path_depth = online_stats.update_value(g, "path_depth", comm, ts_s, path_depth_norm)
+    host_path_depth = online_stats.update_value(g, "path_depth", host, ts_s, path_depth_norm)
+    pair_path_depth = online_stats.update_value(g, "path_depth", pair_key, ts_s, path_depth_norm)
     for w in _ONLINE_WINDOWS:
       wn = w[0]
       out[f"group_path_rate_{wn}"] = _rate01(path_rate[wn][2])
@@ -676,16 +747,16 @@ def _extract_group_features(evt: Any, view: _FeatureViewSpec, event_group: str) 
   if view.include_network_online_stats:
     pair_key_n = f"{comm}|{daddr}|{dport}"
     daddr_key = daddr or "unknown"
-    pair_rate = _ONLINE_STATS.update_value(g, "net_rate", pair_key_n, ts_s, 1.0)
-    daddr_rate = _ONLINE_STATS.update_value(g, "net_rate", daddr_key, ts_s, 1.0)
-    pair_dt = _ONLINE_STATS.update_interarrival(g, "net_interarrival", pair_key_n, ts_s, dt_scale_s=30.0)
-    proc_dport = _ONLINE_STATS.update_value(g, "net_dport", comm, ts_s, net_dport_norm)
-    proc_addrlen = _ONLINE_STATS.update_value(g, "net_addrlen", comm, ts_s, net_addrlen_norm)
-    host_dport = _ONLINE_STATS.update_value(g, "net_dport", host, ts_s, net_dport_norm)
-    host_addrlen = _ONLINE_STATS.update_value(g, "net_addrlen", host, ts_s, net_addrlen_norm)
-    daddr_dport = _ONLINE_STATS.update_value(g, "net_dport", daddr_key, ts_s, net_dport_norm)
+    pair_rate = online_stats.update_value(g, "net_rate", pair_key_n, ts_s, 1.0)
+    daddr_rate = online_stats.update_value(g, "net_rate", daddr_key, ts_s, 1.0)
+    pair_dt = online_stats.update_interarrival(g, "net_interarrival", pair_key_n, ts_s, dt_scale_s=30.0)
+    proc_dport = online_stats.update_value(g, "net_dport", comm, ts_s, net_dport_norm)
+    proc_addrlen = online_stats.update_value(g, "net_addrlen", comm, ts_s, net_addrlen_norm)
+    host_dport = online_stats.update_value(g, "net_dport", host, ts_s, net_dport_norm)
+    host_addrlen = online_stats.update_value(g, "net_addrlen", host, ts_s, net_addrlen_norm)
+    daddr_dport = online_stats.update_value(g, "net_dport", daddr_key, ts_s, net_dport_norm)
     proc_daddr_key = f"{comm}|{daddr}"
-    proc_daddr_dport = _ONLINE_STATS.update_value(g, "net_dport", proc_daddr_key, ts_s, net_dport_norm)
+    proc_daddr_dport = online_stats.update_value(g, "net_dport", proc_daddr_key, ts_s, net_dport_norm)
     for w in _ONLINE_WINDOWS:
       wn = w[0]
       out[f"net_pair_rate_{wn}"] = _rate01(pair_rate[wn][2])
@@ -707,7 +778,7 @@ def _extract_group_features(evt: Any, view: _FeatureViewSpec, event_group: str) 
   return out
 
 
-def _extract_general_online_stats(evt: Any) -> Dict[str, float]:
+def _extract_general_online_stats(evt: Any, online_stats: _OnlineFeatureStats) -> Dict[str, float]:
   """
   Online stats that share the same composition across event types: proc rate,
   host rate, proc interarrival. Used for all events so type-specific extractors
@@ -716,9 +787,9 @@ def _extract_general_online_stats(evt: Any) -> Dict[str, float]:
   comm = (evt.comm or "") or "unknown"
   host = (evt.hostname or "") or "unknown"
   ts_s = float(evt.ts_unix_nano) / 1_000_000_000.0
-  proc_rate = _ONLINE_STATS.update_value("general", "rate", comm, ts_s, 1.0)
-  host_rate = _ONLINE_STATS.update_value("general", "rate", host, ts_s, 1.0)
-  proc_dt = _ONLINE_STATS.update_interarrival("general", "interarrival", comm, ts_s, dt_scale_s=30.0)
+  proc_rate = online_stats.update_value("general", "rate", comm, ts_s, 1.0)
+  host_rate = online_stats.update_value("general", "rate", host, ts_s, 1.0)
+  proc_dt = online_stats.update_interarrival("general", "interarrival", comm, ts_s, dt_scale_s=30.0)
 
   out: Dict[str, float] = {}
   for w in _ONLINE_WINDOWS:
@@ -728,6 +799,17 @@ def _extract_general_online_stats(evt: Any) -> Dict[str, float]:
     out[f"proc_interarrival_{wn}"] = proc_dt[wn][0]
     out[f"proc_interarrival_std_{wn}"] = proc_dt[wn][1]
   return out
+
+
+def build_feature_extractor(cfg: Any | None = None) -> FeatureExtractor:
+  if cfg is None:
+    cfg = load_config()
+  return FeatureExtractor.from_config(cfg)
+
+
+@lru_cache(maxsize=1)
+def _default_feature_extractor() -> FeatureExtractor:
+  return build_feature_extractor()
 
 
 def extract_feature_dict(evt: Any, feature_view: str = "default") -> Dict[str, float]:
@@ -745,18 +827,4 @@ def extract_feature_dict(evt: Any, feature_view: str = "default") -> Dict[str, f
   group-scoped features (syscall one-hots from that group's syscall list, optional path-prefix flags,
   path/socket-derived numerics and online stats). Feature key sets differ per event_group (vocabulary size).
   """
-  fv = (feature_view or "default").strip().lower()
-  if fv == "grimmer_mlp":
-    raise ValueError(
-      "feature_view 'grimmer_mlp' is stateful: use DETECTOR_MODEL_ALGORITHM=grimmer_mlp and "
-      "GrimmerPipeline.score_and_learn_event() (see detector/grimmer/pipeline.py)."
-    )
-  view = _feature_view_spec(feature_view or "default")
-  out = _extract_generic_features(evt, view=view)
-  if view.include_general_online_stats:
-    out.update(_extract_general_online_stats(evt))
-  event_group = (evt.event_group or "").strip().lower()
-  cfg = _rules_config()
-  if cfg is not None and event_group and event_group in cfg.groups:
-    out.update(_extract_group_features(evt, view, event_group))
-  return out
+  return _default_feature_extractor().extract_feature_dict(evt, feature_view=feature_view)

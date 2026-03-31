@@ -16,6 +16,11 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
+try:
+    from tqdm import tqdm  # type: ignore[import-not-found]
+except ImportError:
+    tqdm = None
+
 # Canonical data vector: [syscall_name, event_id, comm, pid, tid, uid, arg0, arg1, path, flags]
 
 # Default: benign paths (expected NOT flagged); sensitive paths (expected flagged)
@@ -137,7 +142,10 @@ def _load_all_events(
     if not event_dump or not event_dump.exists():
         return entries
     with event_dump.open("r", encoding="utf-8") as f:
-        for line in f:
+        line_iter = f
+        if tqdm is not None:
+            line_iter = tqdm(line_iter, desc="Load events", unit=" line", file=sys.stderr)
+        for line in line_iter:
             line = line.strip()
             if not line:
                 continue
@@ -166,7 +174,10 @@ def _load_anomaly_entries(
 
     if anomaly_log and anomaly_log.exists():
         with anomaly_log.open("r", encoding="utf-8") as f:
-            for line in f:
+            line_iter = f
+            if tqdm is not None:
+                line_iter = tqdm(line_iter, desc="Load anomalies", unit=" line", file=sys.stderr)
+            for line in line_iter:
                 line = line.strip()
                 if not line:
                     continue
@@ -184,7 +195,10 @@ def _load_anomaly_entries(
 
     if event_dump and event_dump.exists():
         with event_dump.open("r", encoding="utf-8") as f:
-            for line in f:
+            line_iter = f
+            if tqdm is not None:
+                line_iter = tqdm(line_iter, desc="Scan event dump for anomalies", unit=" line", file=sys.stderr)
+            for line in line_iter:
                 line = line.strip()
                 if not line:
                     continue

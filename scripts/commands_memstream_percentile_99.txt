@@ -1,8 +1,0 @@
-# MemStream diagnostic with percentile mode at 99% threshold.
-# Test if MemStream still fails after paper-style gating (raw <= beta, no scaling).
-# Run with:
-#   ./scripts/run_commands_overnight.sh -f scripts/commands_memstream_percentile_99.txt memstream_percentile_99.log
-
-mkdir -p test_data/memstream_percentile_99
-
-env DETECTOR_SCORE_MODE=percentile DETECTOR_THRESHOLD=0.99 uv run python scripts/memstream_diagnostic.py --limit 500000 --out-dir test_data/memstream_percentile_99 events_17_03_26.jsonl
