@@ -58,6 +58,10 @@ spec:
             - name: debugfs
               mountPath: /sys/kernel/debug
               readOnly: true
+            # BCC expects tracefs at /sys/kernel/debug/tracing.
+            - name: tracefs
+              mountPath: /sys/kernel/debug/tracing
+              readOnly: true
           env:
             - name: PROBE_CONFIG
               value: /etc/sentinel-ebpf/probe-config.yaml
@@ -122,3 +126,6 @@ spec:
         - name: debugfs
           hostPath:
             path: /sys/kernel/debug
+        - name: tracefs
+          hostPath:
+            path: /sys/kernel/debug/tracing

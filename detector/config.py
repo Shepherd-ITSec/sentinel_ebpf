@@ -8,7 +8,7 @@ class DetectorConfig:
   events_http_port: int = 50052  # 0 to disable; serves GET /recent_events for UI log tail in gRPC mode
   recent_events_buffer_size: int = 10000  # Size of recent events ring buffer for UI (default: 10000)
   # River model configuration
-  model_algorithm: str = "freq1d"  # halfspacetrees | loda_ema | kitnet | memstream | zscore | knn | freq1d | copulatree | latentcluster
+  model_algorithm: str = "freq1d"  # halfspacetrees | loda_ema | kitnet | memstream | zscore | knn | freq1d | copulatree | latentcluster | grimmer_mlp
   threshold: float = 0.7  # Anomaly score threshold (0-1). Lower (e.g. 0.3) to flag more events when scores are mostly low.
   hst_n_trees: int = 25
   hst_height: int = 15
@@ -73,6 +73,24 @@ class DetectorConfig:
   # cpu/cuda: force explicit device choice
   model_device: str = "auto"
   model_seed: int = 42
+  # Model-independent warmup gate (per event_group): suppress anomaly decisions and UI score for first N events.
+  warmup_events: int = 10000
+  suppress_anomalies_during_warmup: bool = True
+  # Word2Vec syscall embedding (general feature extractor component).
+  embedding_word2vec_dim: int = 5
+  embedding_word2vec_sentence_len: int = 7
+  embedding_word2vec_window: int = 5
+  embedding_word2vec_sg: int = 1  # 1=skip-gram, 0=CBOW
+  embedding_word2vec_update_every: int = 250
+  embedding_word2vec_epochs: int = 1
+  embedding_word2vec_post_warmup_lr_scale: float = 0.1
+
+  # Syscall-sequence next-token prediction (MLP), ported/adapted from LID-DS.
+  grimmer_ngram_length: int = 8  # full window: N syscalls in buffer; MLP input uses first N-1 embeddings (cf. ids_mlp_main NGRAM_LENGTH+1)
+  grimmer_thread_aware: bool = True
+  grimmer_mlp_hidden_size: int = 150
+  grimmer_mlp_hidden_layers: int = 4
+  grimmer_mlp_lr: float = 0.003
 
 
 def load_config() -> DetectorConfig:
@@ -219,6 +237,67 @@ def load_config() -> DetectorConfig:
     )
   model_device = os.environ.get("DETECTOR_MODEL_DEVICE", defaults.model_device).strip().lower()
   model_seed = int(os.environ.get("DETECTOR_MODEL_SEED", str(defaults.model_seed)))
+  warmup_events = int(os.environ.get("DETECTOR_WARMUP_EVENTS", str(defaults.warmup_events)))
+  if warmup_events < 0:
+    raise ValueError(f"Invalid DETECTOR_WARMUP_EVENTS={warmup_events!r}; must be >= 0")
+  _swg = os.environ.get(
+    "DETECTOR_SUPPRESS_ANOMALIES_DURING_WARMUP",
+    str(defaults.suppress_anomalies_during_warmup),
+  ).strip().lower()
+  suppress_anomalies_during_warmup = _swg in ("1", "true", "yes")
+
+  grimmer_ngram_length = int(os.environ.get("DETECTOR_GRIMMER_NGRAM_LENGTH", str(defaults.grimmer_ngram_length)))
+  if grimmer_ngram_length < 2:
+    raise ValueError(f"Invalid DETECTOR_GRIMMER_NGRAM_LENGTH={grimmer_ngram_length!r}; must be >= 2")
+  _ta = os.environ.get("DETECTOR_GRIMMER_THREAD_AWARE", str(defaults.grimmer_thread_aware)).strip().lower()
+  grimmer_thread_aware = _ta in ("1", "true", "yes")
+  embedding_word2vec_dim = int(
+    os.environ.get("DETECTOR_EMBEDDING_WORD2VEC_DIM", str(defaults.embedding_word2vec_dim))
+  )
+  if embedding_word2vec_dim < 1:
+    raise ValueError(f"Invalid DETECTOR_EMBEDDING_WORD2VEC_DIM={embedding_word2vec_dim!r}; must be >= 1")
+  embedding_word2vec_sentence_len = int(
+    os.environ.get(
+      "DETECTOR_EMBEDDING_WORD2VEC_SENTENCE_LEN",
+      str(defaults.embedding_word2vec_sentence_len),
+    )
+  )
+  if embedding_word2vec_sentence_len < 2:
+    raise ValueError(
+      f"Invalid DETECTOR_EMBEDDING_WORD2VEC_SENTENCE_LEN={embedding_word2vec_sentence_len!r}; must be >= 2"
+    )
+  embedding_word2vec_window = int(
+    os.environ.get("DETECTOR_EMBEDDING_WORD2VEC_WINDOW", str(defaults.embedding_word2vec_window))
+  )
+  embedding_word2vec_sg = int(
+    os.environ.get("DETECTOR_EMBEDDING_WORD2VEC_SG", str(defaults.embedding_word2vec_sg))
+  )
+  if embedding_word2vec_sg not in (0, 1):
+    raise ValueError(f"Invalid DETECTOR_EMBEDDING_WORD2VEC_SG={embedding_word2vec_sg!r}; must be 0 or 1")
+  embedding_word2vec_update_every = int(
+    os.environ.get(
+      "DETECTOR_EMBEDDING_WORD2VEC_UPDATE_EVERY",
+      str(defaults.embedding_word2vec_update_every),
+    )
+  )
+  if embedding_word2vec_update_every < 1:
+    raise ValueError(
+      f"Invalid DETECTOR_EMBEDDING_WORD2VEC_UPDATE_EVERY={embedding_word2vec_update_every!r}; must be >= 1"
+    )
+  embedding_word2vec_epochs = int(
+    os.environ.get("DETECTOR_EMBEDDING_WORD2VEC_EPOCHS", str(defaults.embedding_word2vec_epochs))
+  )
+  embedding_word2vec_post_warmup_lr_scale = float(
+    os.environ.get(
+      "DETECTOR_EMBEDDING_WORD2VEC_POST_WARMUP_LR_SCALE",
+      str(defaults.embedding_word2vec_post_warmup_lr_scale),
+    )
+  )
+  grimmer_mlp_hidden_size = int(os.environ.get("DETECTOR_GRIMMER_MLP_HIDDEN_SIZE", str(defaults.grimmer_mlp_hidden_size)))
+  grimmer_mlp_hidden_layers = int(
+    os.environ.get("DETECTOR_GRIMMER_MLP_HIDDEN_LAYERS", str(defaults.grimmer_mlp_hidden_layers))
+  )
+  grimmer_mlp_lr = float(os.environ.get("DETECTOR_GRIMMER_MLP_LR", str(defaults.grimmer_mlp_lr)))
 
   return DetectorConfig(
     port=port,
@@ -276,4 +355,18 @@ def load_config() -> DetectorConfig:
     percentile_warmup=percentile_warmup,
     model_device=model_device,
     model_seed=model_seed,
+    warmup_events=warmup_events,
+    suppress_anomalies_during_warmup=suppress_anomalies_during_warmup,
+    embedding_word2vec_dim=embedding_word2vec_dim,
+    embedding_word2vec_sentence_len=embedding_word2vec_sentence_len,
+    embedding_word2vec_window=embedding_word2vec_window,
+    embedding_word2vec_sg=embedding_word2vec_sg,
+    embedding_word2vec_update_every=embedding_word2vec_update_every,
+    embedding_word2vec_epochs=embedding_word2vec_epochs,
+    embedding_word2vec_post_warmup_lr_scale=embedding_word2vec_post_warmup_lr_scale,
+    grimmer_ngram_length=grimmer_ngram_length,
+    grimmer_thread_aware=grimmer_thread_aware,
+    grimmer_mlp_hidden_size=grimmer_mlp_hidden_size,
+    grimmer_mlp_hidden_layers=grimmer_mlp_hidden_layers,
+    grimmer_mlp_lr=grimmer_mlp_lr,
   )

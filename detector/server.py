@@ -86,7 +86,7 @@ def _init_event_dump(cfg: Optional[DetectorConfig] = None):
     logging.info("Event dump enabled: %s", _event_dump_path)
 
 
-def _event_base_entry(evt: events_pb2.EventEnvelope) -> dict:
+def _event_base_entry(evt) -> dict:
   return {
     "event_id": evt.event_id,
     "syscall_name": evt.syscall_name or "",
@@ -105,7 +105,7 @@ def _event_base_entry(evt: events_pb2.EventEnvelope) -> dict:
   }
 
 
-def _event_result_fields(resp: events_pb2.DetectionResponse) -> dict:
+def _event_result_fields(resp) -> dict:
   score_raw = round(getattr(resp, "score_raw", resp.score), 4)
   return {
     "anomaly": resp.anomaly,
@@ -115,7 +115,7 @@ def _event_result_fields(resp: events_pb2.DetectionResponse) -> dict:
   }
 
 
-def _event_entry(evt: events_pb2.EventEnvelope, resp: events_pb2.DetectionResponse) -> dict:
+def _event_entry(evt, resp) -> dict:
   entry = _event_base_entry(evt)
   entry.update(_event_result_fields(resp))
   entry["container_id"] = evt.container_id or ""
@@ -181,14 +181,14 @@ class DeterministicScorer:
   """Per-event_group scorer that preserves deterministic learning semantics.
 
   We maintain one OnlineAnomalyDetector instance per event_group (including the
-  empty/default type). Each model sees a consistent feature vector shape, since
-  extract_feature_dict() always returns the same feature set for a given type.
+  empty/default type).
   """
 
   def __init__(self, cfg: DetectorConfig):
     self.cfg = cfg
     self._models: dict[str, OnlineAnomalyDetector] = {}
     self._percentiles: dict[str, OnlinePercentileCalibrator] = {}
+    self._warmup_counts: dict[str, int] = {}
     self._lock = threading.Lock()
 
   def _key_for_type(self, event_group: str) -> str:
@@ -244,6 +244,21 @@ class DeterministicScorer:
       "latentcluster_spawn_threshold": self.cfg.latentcluster_spawn_threshold,
       "model_device": self.cfg.model_device,
       "seed": self.cfg.model_seed,
+      "warmup_events": getattr(self.cfg, "warmup_events", 0),
+      # Embedding config (Word2Vec)
+      "embedding_word2vec_dim": getattr(self.cfg, "embedding_word2vec_dim", 5),
+      "embedding_word2vec_sentence_len": getattr(self.cfg, "embedding_word2vec_sentence_len", 7),
+      "embedding_word2vec_window": getattr(self.cfg, "embedding_word2vec_window", 5),
+      "embedding_word2vec_sg": getattr(self.cfg, "embedding_word2vec_sg", 1),
+      "embedding_word2vec_update_every": getattr(self.cfg, "embedding_word2vec_update_every", 25),
+      "embedding_word2vec_epochs": getattr(self.cfg, "embedding_word2vec_epochs", 1),
+      "embedding_word2vec_post_warmup_lr_scale": getattr(self.cfg, "embedding_word2vec_post_warmup_lr_scale", 0.1),
+      # Grimmer config passthrough (used only when algorithm=grimmer_mlp)
+      "grimmer_ngram_length": getattr(self.cfg, "grimmer_ngram_length", 8),
+      "grimmer_thread_aware": getattr(self.cfg, "grimmer_thread_aware", True),
+      "grimmer_mlp_hidden_size": getattr(self.cfg, "grimmer_mlp_hidden_size", 150),
+      "grimmer_mlp_hidden_layers": getattr(self.cfg, "grimmer_mlp_hidden_layers", 4),
+      "grimmer_mlp_lr": getattr(self.cfg, "grimmer_mlp_lr", 0.003),
     }
 
   def _get_model(self, event_group: str) -> OnlineAnomalyDetector:
@@ -272,33 +287,46 @@ class DeterministicScorer:
       )
     return cal
 
-  def score_event(self, evt: events_pb2.EventEnvelope) -> events_pb2.DetectionResponse:
+  def score_event(self, evt):  # type: ignore[valid-type]
     anomaly = False
     reason = ""
     score_raw = 0.0
     score_scaled = 0.0
     score_primary = 0.0
 
+    alg_name = ""
+    suppress_primary = False
     try:
       with self._lock:
-        features = extract_feature_dict(
-          evt,
-          feature_view=feature_view_for_algorithm(getattr(self.cfg, "model_algorithm", "")),
-        )
+        key = self._key_for_type(evt.event_group or "")
+        self._warmup_counts[key] = self._warmup_counts.get(key, 0) + 1
+        warmup_events = int(getattr(self.cfg, "warmup_events", 0))
+        warmup_suppress = bool(getattr(self.cfg, "suppress_anomalies_during_warmup", False))
+        suppress_primary = warmup_suppress and self._warmup_counts[key] <= warmup_events
+
         model = self._get_model(evt.event_group or "")
-        score_raw, score_scaled = model.score_and_learn(features)
+        score_raw, score_scaled = model.score_and_learn_event(
+          evt,
+          feature_fn=lambda e: extract_feature_dict(
+            e,
+            feature_view=feature_view_for_algorithm(getattr(self.cfg, "model_algorithm", "")),
+          ),
+        )
+        alg_name = model.algorithm
         score_mode = getattr(self.cfg, "score_mode", "raw")
-        if score_mode == "scaled":
+        if suppress_primary:
+          score_primary = 0.0
+        elif score_mode == "scaled":
           score_primary = float(score_scaled)
         elif score_mode == "percentile":
           cal = self._get_percentile(evt.event_group or "")
           score_primary = float(cal.percentile_prequential(float(score_raw)))
         else:
           score_primary = float(score_raw)
-        anomaly = score_primary >= float(self.cfg.threshold)
+        anomaly = (not suppress_primary) and score_primary >= float(self.cfg.threshold)
 
       if anomaly:
-        reason = f"{model.algorithm} anomaly score {score_primary:.3f} exceeds threshold {self.cfg.threshold}"
+        reason = f"{alg_name} anomaly score {score_primary:.3f} exceeds threshold {self.cfg.threshold}"
     except Exception as e:
       logging.error("Error scoring event %s: %s", evt.event_id, e, exc_info=True)
       anomaly = False
@@ -307,7 +335,10 @@ class DeterministicScorer:
       reason = f"Scoring error: {str(e)}"
 
     # `score` is the primary score used for thresholding/UI (bounded 0..1).
-    resp_score = float(score_primary) if getattr(self.cfg, "score_mode", "raw") == "percentile" else float(score_scaled)
+    if getattr(self.cfg, "score_mode", "raw") == "percentile":
+      resp_score = float(score_primary)
+    else:
+      resp_score = 0.0 if suppress_primary else float(score_scaled)
     resp_score = min(resp_score, 1.0)
 
     return events_pb2.DetectionResponse(  # type: ignore[attr-defined]
@@ -326,7 +357,7 @@ class RuleBasedDetector(events_pb2_grpc.DetectorServiceServicer):
     self.scorer = DeterministicScorer(cfg)
     logging.info("Initialized detector in deterministic single-model mode")
   
-  def _score_event(self, evt: events_pb2.EventEnvelope) -> events_pb2.DetectionResponse:
+  def _score_event(self, evt):  # type: ignore[valid-type]
     return self.scorer.score_event(evt)
 
   async def StreamEvents(self, request_iterator, context):  # noqa: N802
@@ -392,7 +423,14 @@ async def serve():
     class DetectorHTTPHandler(BaseHTTPRequestHandler):
       def do_GET(self):  # noqa: N802
         parsed = urlparse(self.path)
-        if parsed.path == "/recent_events":
+        if parsed.path == "/healthz":
+          body = b"ok"
+          self.send_response(200)
+          self.send_header("Content-Type", "text/plain; charset=utf-8")
+          self.send_header("Content-Length", str(len(body)))
+          self.end_headers()
+          self.wfile.write(body)
+        elif parsed.path == "/recent_events":
           limit = 50
           try:
             qs = parse_qs(parsed.query)
@@ -579,7 +617,7 @@ async def serve():
     events_http_server = HTTPServer(("0.0.0.0", cfg.events_http_port), DetectorHTTPHandler)
     thread = threading.Thread(target=events_http_server.serve_forever, daemon=True)
     thread.start()
-    logging.info("detector HTTP API on port %s (/recent_events, /metrics)", cfg.events_http_port)
+    logging.info("detector HTTP API on port %s (/healthz, /recent_events, /metrics)", cfg.events_http_port)
 
   logging.info("ready; accepting events.")
   try:

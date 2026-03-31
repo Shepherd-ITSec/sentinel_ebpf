@@ -41,6 +41,10 @@ spec:
               value: {{ .Values.detector.model.threshold | quote }}
             - name: DETECTOR_SCORE_MODE
               value: {{ .Values.detector.model.score_mode | quote }}
+            - name: DETECTOR_WARMUP_EVENTS
+              value: {{ .Values.detector.model.warmup.events | default 0 | quote }}
+            - name: DETECTOR_SUPPRESS_ANOMALIES_DURING_WARMUP
+              value: {{ .Values.detector.model.warmup.suppress_anomalies | default false | quote }}
             - name: DETECTOR_PERCENTILE_WINDOW_SIZE
               value: {{ .Values.detector.model.percentile.window_size | default 2048 | quote }}
             - name: DETECTOR_PERCENTILE_WARMUP
@@ -127,6 +131,30 @@ spec:
               value: {{ .Values.detector.model.kitnet_hidden_ratio | quote }}
             - name: DETECTOR_MODEL_SEED
               value: {{ .Values.detector.model.seed | quote }}
+            - name: DETECTOR_EMBEDDING_WORD2VEC_DIM
+              value: {{ .Values.detector.model.embeddings.word2vec.dim | default 5 | quote }}
+            - name: DETECTOR_EMBEDDING_WORD2VEC_SENTENCE_LEN
+              value: {{ .Values.detector.model.embeddings.word2vec.sentence_len | default 7 | quote }}
+            - name: DETECTOR_EMBEDDING_WORD2VEC_WINDOW
+              value: {{ .Values.detector.model.embeddings.word2vec.window | default 5 | quote }}
+            - name: DETECTOR_EMBEDDING_WORD2VEC_SG
+              value: {{ .Values.detector.model.embeddings.word2vec.sg | default 1 | quote }}
+            - name: DETECTOR_EMBEDDING_WORD2VEC_UPDATE_EVERY
+              value: {{ .Values.detector.model.embeddings.word2vec.update_every | default 25 | quote }}
+            - name: DETECTOR_EMBEDDING_WORD2VEC_EPOCHS
+              value: {{ .Values.detector.model.embeddings.word2vec.epochs | default 1 | quote }}
+            - name: DETECTOR_EMBEDDING_WORD2VEC_POST_WARMUP_LR_SCALE
+              value: {{ .Values.detector.model.embeddings.word2vec.post_warmup_lr_scale | default 0.1 | quote }}
+            - name: DETECTOR_GRIMMER_NGRAM_LENGTH
+              value: {{ .Values.detector.model.grimmer_ngram_length | default 8 | quote }}
+            - name: DETECTOR_GRIMMER_THREAD_AWARE
+              value: {{ .Values.detector.model.grimmer_thread_aware | default true | quote }}
+            - name: DETECTOR_GRIMMER_MLP_HIDDEN_SIZE
+              value: {{ .Values.detector.model.grimmer_mlp_hidden_size | default 150 | quote }}
+            - name: DETECTOR_GRIMMER_MLP_HIDDEN_LAYERS
+              value: {{ .Values.detector.model.grimmer_mlp_hidden_layers | default 4 | quote }}
+            - name: DETECTOR_GRIMMER_MLP_LR
+              value: {{ .Values.detector.model.grimmer_mlp_lr | default 0.003 | quote }}
             {{- if .Values.detector.recentEventsBufferSize }}
             - name: DETECTOR_RECENT_EVENTS_BUFFER_SIZE
               value: {{ .Values.detector.recentEventsBufferSize | quote }}

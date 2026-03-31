@@ -288,6 +288,8 @@ def _group_feature_values(event_group: str, feature_name: str, fallback: tuple[s
 def feature_view_for_algorithm(algorithm: str | None) -> str:
   """Map algorithm to feature view."""
   algo = (algorithm or "").strip().lower()
+  if algo == "grimmer_mlp":
+    return "grimmer_mlp"
   if algo in ("freq1d", "copulatree", "latentcluster"):
     return "frequency"
   if algo in ("loda", "loda_ema"):
@@ -743,6 +745,12 @@ def extract_feature_dict(evt: Any, feature_view: str = "default") -> Dict[str, f
   group-scoped features (syscall one-hots from that group's syscall list, optional path-prefix flags,
   path/socket-derived numerics and online stats). Feature key sets differ per event_group (vocabulary size).
   """
+  fv = (feature_view or "default").strip().lower()
+  if fv == "grimmer_mlp":
+    raise ValueError(
+      "feature_view 'grimmer_mlp' is stateful: use DETECTOR_MODEL_ALGORITHM=grimmer_mlp and "
+      "GrimmerPipeline.score_and_learn_event() (see detector/grimmer/pipeline.py)."
+    )
   view = _feature_view_spec(feature_view or "default")
   out = _extract_generic_features(evt, view=view)
   if view.include_general_online_stats:

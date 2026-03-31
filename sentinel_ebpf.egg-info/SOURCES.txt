@@ -20,6 +20,7 @@ tests/test_features.py
 tests/test_filesink.py
 tests/test_flags.py
 tests/test_freq1d.py
+tests/test_grimmer.py
 tests/test_kitnet.py
 tests/test_knn.py
 tests/test_latentcluster.py
@@ -30,6 +31,7 @@ tests/test_probe_host_metrics.py
 tests/test_probe_metrics_server.py
 tests/test_pysad_loda.py
 tests/test_rules.py
+tests/test_rules_config.py
 tests/test_rules_dsl.py
 tests/test_rules_filtered.py
 tests/test_speed.py

@@ -34,7 +34,9 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -87,6 +89,63 @@ def _safe_str(value: Any, default: str = "") -> str:
   if value is None:
     return default
   return str(value)
+
+
+def _wait_for_detector(target: str, timeout_s: float) -> None:
+  """Wait for gRPC health to become SERVING."""
+  try:
+    import grpc  # local import to avoid hard dependency for conversion-only usage
+    from grpc_health.v1 import health_pb2, health_pb2_grpc
+  except Exception as exc:  # pragma: no cover
+    raise RuntimeError("grpc + grpcio-health-checking are required to manage a detector process") from exc
+
+  deadline = time.time() + timeout_s
+  last_error = ""
+  while time.time() < deadline:
+    try:
+      channel = grpc.insecure_channel(target)
+      stub = health_pb2_grpc.HealthStub(channel)
+      resp = stub.Check(health_pb2.HealthCheckRequest(service=""), timeout=2.0)  # pyright: ignore[reportAttributeAccessIssue]
+      if resp.status == health_pb2.HealthCheckResponse.SERVING:
+        return
+      last_error = f"health status={resp.status}"
+    except Exception as exc:
+      last_error = str(exc)
+    time.sleep(0.5)
+  raise RuntimeError(f"detector at {target} did not become ready: {last_error}")
+
+
+def _start_detector(
+  *,
+  port: int,
+  env_overrides: dict[str, str] | None,
+  quiet: bool,
+) -> subprocess.Popen:
+  env = os.environ.copy()
+  env["DETECTOR_PORT"] = str(port)
+  env["DETECTOR_EVENTS_PORT"] = str(port + 1)  # avoid HTTP port collision when using custom gRPC port
+  if quiet:
+    env["DETECTOR_QUIET"] = "1"
+  if env_overrides:
+    env.update(env_overrides)
+  cmd = [sys.executable, "-m", "detector.server"]
+  return subprocess.Popen(
+    cmd,
+    env=env,
+    stdout=subprocess.DEVNULL if quiet else None,
+    stderr=subprocess.DEVNULL if quiet else None,
+  )
+
+
+def _stop_detector(proc: subprocess.Popen) -> None:
+  if proc.poll() is not None:
+    return
+  proc.terminate()
+  try:
+    proc.wait(timeout=10)
+  except subprocess.TimeoutExpired:
+    proc.kill()
+    proc.wait(timeout=5)
 
 
 def _maybe_b64_decode(value: str) -> str:
@@ -616,12 +675,11 @@ def _iter_lidds_syscalls_from_recordings(
     md = getattr(rec, "metadata", None)
     if callable(md):
       try:
-        meta = md()
+        raw_meta = md()
+        meta = raw_meta if isinstance(raw_meta, dict) else None
       except Exception as exc:
         log.warning("LID-DS metadata() failed for %s: %s", rec_path, exc)
         meta = None
-    if meta is not None and not isinstance(meta, dict):
-      meta = None
     for syscall in rec.syscalls():
       yield rec_name, rec_path, meta, syscall
 
@@ -715,6 +773,34 @@ def _build_arg_parser() -> argparse.ArgumentParser:
   ap.add_argument("--max-events", type=int, default=None, help="Max events to replay (after conversion).")
   ap.add_argument("--skip", type=int, default=None)
   ap.add_argument("--convert-only", action="store_true", help="Only convert to JSONL; do not replay.")
+
+  ap.add_argument(
+    "--start-detector",
+    action="store_true",
+    help="Start a local detector subprocess for replay. Overrides --target to localhost:<--detector-port>.",
+  )
+  ap.add_argument("--detector-port", type=int, default=50051, help="Detector gRPC port when using --start-detector.")
+  ap.add_argument(
+    "--detector-algorithm",
+    default="grimmer_mlp",
+    help="Value for DETECTOR_MODEL_ALGORITHM when using --start-detector (default: grimmer_mlp).",
+  )
+  ap.add_argument(
+    "--event-dump-path",
+    default=None,
+    help="When using --start-detector, set EVENT_DUMP_PATH so detector writes JSONL entries with scores/anomaly flags.",
+  )
+  ap.add_argument(
+    "--detector-startup-timeout",
+    type=float,
+    default=30.0,
+    help="Seconds to wait for detector readiness when using --start-detector.",
+  )
+  ap.add_argument(
+    "--save-checkpoint",
+    default=None,
+    help="After replay, write a detector checkpoint (.pkl) by training offline on the converted JSONL. Intended for --detector-algorithm=grimmer_mlp.",
+  )
   return ap
 
 
@@ -739,17 +825,56 @@ def main() -> None:
   log.info("Converted %d LID-DS events to %s", converted, out_jsonl)
   if args.convert_only:
     return
-  replay(
-    out_jsonl,
-    args.target,
-    args.pace,
-    args.start_ms,
-    args.end_ms,
-    total=converted,
-    label="Replay LID-DS",
-    max_events=args.max_events,
-    skip=args.skip,
-  )
+
+  detector_proc: subprocess.Popen | None = None
+  target = args.target
+  if args.start_detector:
+    target = f"localhost:{int(args.detector_port)}"
+    env_overrides: dict[str, str] = {"DETECTOR_MODEL_ALGORITHM": str(args.detector_algorithm)}
+    if args.event_dump_path:
+      env_overrides["EVENT_DUMP_PATH"] = str(Path(args.event_dump_path))
+    log.info("Starting detector for replay (target=%s, overrides=%s)", target, env_overrides)
+    detector_proc = _start_detector(port=int(args.detector_port), env_overrides=env_overrides, quiet=True)
+    try:
+      _wait_for_detector(target, timeout_s=float(args.detector_startup_timeout))
+    except Exception:
+      _stop_detector(detector_proc)
+      raise
+
+  try:
+    replay(
+      out_jsonl,
+      target,
+      args.pace,
+      args.start_ms,
+      args.end_ms,
+      total=converted,
+      label="Replay LID-DS",
+      max_events=args.max_events,
+      skip=args.skip,
+    )
+  finally:
+    if detector_proc is not None:
+      _stop_detector(detector_proc)
+
+  if args.save_checkpoint:
+    ckpt_path = Path(args.save_checkpoint)
+    log.info("Saving checkpoint to %s (offline train from converted JSONL)...", ckpt_path)
+    repo_root = Path(__file__).resolve().parent.parent
+    subprocess.run(
+      [
+        sys.executable,
+        "-m",
+        "scripts.train_detector_checkpoint",
+        str(out_jsonl),
+        "--algorithm",
+        str(args.detector_algorithm),
+        "--out",
+        str(ckpt_path),
+      ],
+      cwd=repo_root,
+      check=True,
+    )
 
 
 if __name__ == "__main__":

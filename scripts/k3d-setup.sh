@@ -94,26 +94,24 @@ if k3d cluster list "${CLUSTER_NAME}" >/dev/null 2>&1; then
 fi
 
 # Handle cluster creation/update
-if [[ "${PURGE_CLUSTER}" == "true" ]]; then
-  if [[ "${CLUSTER_EXISTS}" == "true" ]]; then
-    info "Purging existing cluster ${CLUSTER_NAME}"
-    k3d cluster delete "${CLUSTER_NAME}" || true
-  fi
-  info "Creating fresh k3d cluster ${CLUSTER_NAME}"
-  k3d cluster create "${CLUSTER_NAME}" \
-    --agents 0 \
-    --servers 1 \
-    --k3s-arg "--disable=traefik@server:0" \
-    --volume /lib/modules:/lib/modules:ro@all \
-    --volume /sys/kernel/debug:/sys/kernel/debug:rw@all
-elif [[ "${CLUSTER_EXISTS}" == "false" ]]; then
+K3D_CREATE_ARGS=(
+  --agents 0
+  --servers 1
+  --k3s-arg "--disable=traefik@server:0"
+  --volume /lib/modules:/lib/modules:ro@all
+  --volume /sys/kernel/debug:/sys/kernel/debug:rw@all
+  --volume /sys/kernel/tracing:/sys/kernel/debug/tracing:rw@all
+)
+
+if [[ "${PURGE_CLUSTER}" == "true" && "${CLUSTER_EXISTS}" == "true" ]]; then
+  info "Purging existing cluster ${CLUSTER_NAME}"
+  k3d cluster delete "${CLUSTER_NAME}" || true
+  CLUSTER_EXISTS=false
+fi
+
+if [[ "${CLUSTER_EXISTS}" == "false" ]]; then
   info "Creating k3d cluster ${CLUSTER_NAME}"
-  k3d cluster create "${CLUSTER_NAME}" \
-    --agents 0 \
-    --servers 1 \
-    --k3s-arg "--disable=traefik@server:0" \
-    --volume /lib/modules:/lib/modules:ro@all \
-    --volume /sys/kernel/debug:/sys/kernel/debug:rw@all
+  k3d cluster create "${CLUSTER_NAME}" "${K3D_CREATE_ARGS[@]}"
 else
   info "Using existing cluster ${CLUSTER_NAME}"
 fi

@@ -26,6 +26,7 @@ dev = [
 # Use detector for CPU-only environments and detector-cuda on GPU hosts.
 detector = [
   "fenwick>=0.2.0",
+  "gensim>=4.3.0",
   "numpy>=1.24.0,<2.0.0",
   "pysad>=0.3.0; python_version >= '3.10'",
   "river>=0.21.0",
@@ -33,6 +34,7 @@ detector = [
   "torch>=2.2.0",
 ]
 detector-cuda = [
+  "gensim>=4.3.0",
   "numpy>=1.24.0,<2.0.0",
   "pysad>=0.3.0; python_version >= '3.10'",
   "river>=0.21.0",

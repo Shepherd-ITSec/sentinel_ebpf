@@ -61,12 +61,27 @@ detector:
   eventDumpPath: "/var/log/sentinel-ebpf/events.jsonl"   # Path to dump all incoming events to file (empty to disable, e.g., /var/log/sentinel-ebpf/events.jsonl)
   # Model configurations
   model:
-    algorithm: "freq1d"  # halfspacetrees | loda | loda_ema | memstream | kitnet | zscore | freq1d | copulatree | latentcluster
+    algorithm: "grimmer_mlp"  # halfspacetrees | loda | loda_ema | memstream | kitnet | zscore | freq1d | copulatree | latentcluster | grimmer_mlp
     threshold: 0.98  # Anomaly score threshold
     score_mode: "percentile"  # raw | scaled | percentile
+    # General parameters
+    seed: 42
+    warmup:
+      events: 10000
+      suppress_anomalies: true
     percentile:
       window_size: 16384   # number of past scores kept per event_type
       warmup: 512         # events before percentile thresholding becomes active
+    embeddings:
+      word2vec:
+        dim: 5
+        sentence_len: 7
+        window: 5
+        sg: 1
+        update_every: 25
+        epochs: 1
+        post_warmup_lr_scale: 0.1
+
     # Half-Space Trees parameters
     hst_n_trees: 25
     hst_height: 15
@@ -115,8 +130,12 @@ detector:
     latentcluster_reg: 0.25
     latentcluster_update_alpha: 0.05
     latentcluster_spawn_threshold: 6.0
-    # General parameters
-    seed: 42
+    # MLP parameters (Syscall-sequence next-token prediction, ported/adapted from LID-DS)
+    grimmer_ngram_length: 8
+    grimmer_thread_aware: true
+    grimmer_mlp_hidden_size: 150
+    grimmer_mlp_hidden_layers: 4
+    grimmer_mlp_lr: 0.003
   resources: {}
   nodeSelector: {}
   tolerations: []

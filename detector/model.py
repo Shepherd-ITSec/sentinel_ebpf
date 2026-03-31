@@ -7,7 +7,7 @@ import math
 import pickle
 from collections import deque
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 from fenwick import FenwickTree
@@ -27,6 +27,9 @@ try:
   from sklearn.neighbors import NearestNeighbors
 except ImportError:
   NearestNeighbors = None
+
+import events_pb2
+from detector.grimmer.pipeline import GrimmerPipeline
 
 
 def _auto_loda_projections(input_dim: int) -> int:
@@ -2190,6 +2193,21 @@ class OnlineAnomalyDetector:
     latentcluster_spawn_threshold: float = 6.0,
     model_device: str = "auto",
     seed: int = 42,
+    # Word2Vec embedding config (general feature extractor component)
+    embedding_word2vec_dim: int = 5,
+    embedding_word2vec_sentence_len: int = 7,
+    embedding_word2vec_window: int = 5,
+    embedding_word2vec_sg: int = 1,
+    embedding_word2vec_update_every: int = 25,
+    embedding_word2vec_epochs: int = 1,
+    embedding_word2vec_post_warmup_lr_scale: float = 0.1,
+    # Grimmer (MLP) config (used only by algorithm=grimmer_mlp)
+    grimmer_ngram_length: int = 8,
+    grimmer_thread_aware: bool = True,
+    grimmer_mlp_hidden_size: int = 150,
+    grimmer_mlp_hidden_layers: int = 4,
+    grimmer_mlp_lr: float = 0.003,
+    warmup_events: int = 0,
   ):
     algo = algorithm.lower()
     if algo == "halfspacetrees":
@@ -2298,12 +2316,52 @@ class OnlineAnomalyDetector:
         model_device=model_device,
         seed=seed,
       )
+    elif algo == "grimmer_mlp":
+      # Create a tiny config object with only the fields GrimmerPipeline reads.
+      # This keeps `grimmer_mlp` inside the normal model factory; server does not special-case it.
+      class _Cfg:
+        pass
+
+      cfg = _Cfg()
+      cfg.grimmer_ngram_length = int(grimmer_ngram_length)
+      cfg.grimmer_thread_aware = bool(grimmer_thread_aware)
+      cfg.embedding_word2vec_dim = int(embedding_word2vec_dim)
+      cfg.embedding_word2vec_sentence_len = int(embedding_word2vec_sentence_len)
+      cfg.embedding_word2vec_window = int(embedding_word2vec_window)
+      cfg.embedding_word2vec_sg = int(embedding_word2vec_sg)
+      cfg.embedding_word2vec_update_every = int(embedding_word2vec_update_every)
+      cfg.embedding_word2vec_epochs = int(embedding_word2vec_epochs)
+      cfg.embedding_word2vec_post_warmup_lr_scale = float(embedding_word2vec_post_warmup_lr_scale)
+      cfg.grimmer_mlp_hidden_size = int(grimmer_mlp_hidden_size)
+      cfg.grimmer_mlp_hidden_layers = int(grimmer_mlp_hidden_layers)
+      cfg.grimmer_mlp_lr = float(grimmer_mlp_lr)
+      cfg.warmup_events = int(warmup_events)
+      cfg.model_device = str(model_device)
+      cfg.model_seed = int(seed)
+      self.impl = GrimmerPipeline(cfg)  # type: ignore[arg-type]
     else:
       raise ValueError(
-        "Unknown algorithm: %s. Choose from: halfspacetrees, loda_ema, kitnet, memstream, zscore, knn, freq1d, copulatree, latentcluster"
+        "Unknown algorithm: %s. Choose from: halfspacetrees, loda_ema, kitnet, memstream, zscore, knn, "
+        "freq1d, copulatree, latentcluster, grimmer_mlp"
         % algorithm
       )
     self.algorithm = self.impl.algorithm
+
+  def score_and_learn_event(
+    self,
+    evt: "events_pb2.EventEnvelope",
+    *,
+    feature_fn: Callable[["events_pb2.EventEnvelope"], Dict[str, float]],
+  ) -> tuple[float, float]:
+    """Unified server entrypoint: some models consume `evt`, others consume `features`.
+
+    - For most algorithms, `feature_fn(evt)` is computed and passed to `score_and_learn(features)`.
+    - For `grimmer_mlp`, the model is stateful and consumes the full event.
+    """
+    if self.algorithm == "grimmer_mlp":
+      return self.impl.score_and_learn_event(evt)  # type: ignore[attr-defined]
+    features = feature_fn(evt)
+    return self.score_and_learn(features)
 
   def score_only(self, features: Dict[str, float]) -> tuple[float, float]:
     """Return (raw, scaled) without updating model state (read-only)."""

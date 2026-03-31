@@ -9,12 +9,14 @@ pypcapkit>=1.3.5.post36
 
 [detector]
 fenwick>=0.2.0
+gensim>=4.3.0
 numpy<2.0.0,>=1.24.0
 river>=0.21.0
 scikit-learn>=1.3.0
 torch>=2.2.0
 
 [detector-cuda]
+gensim>=4.3.0
 numpy<2.0.0,>=1.24.0
 river>=0.21.0
 scikit-learn>=1.3.0

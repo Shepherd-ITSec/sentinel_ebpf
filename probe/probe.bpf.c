@@ -936,7 +936,8 @@ TRACEPOINT_PROBE(syscalls, sys_enter_poll) {
     if (!pend) return 0;
     pend_from_common(pend, 7);
     pend->arg0 = args->nfds;
-    pend->arg1 = args->timeout;
+    /* field name is kernel-dependent; on modern kernels this is timeout_msecs */
+    pend->arg1 = args->timeout_msecs;
     syscall_pending.update(&pid_tgid, pend);
     return 0;
 }
