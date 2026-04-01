@@ -62,6 +62,10 @@ _SYSCALL_NR_ARG0_IS_FD = frozenset(
   {0, 1, 3, 5, 16, 42, 43, 44, 45, 51, 52, 54, 72, 91, 93, 307}
 )
 
+# Syscalls that should always carry an explicit fd_path string, even when unresolved,
+# so rules can distinguish "known empty" from "field missing".
+_SYSCALL_NR_EMPTY_PATH_SENTINEL = frozenset({0, 1})
+
 
 def _bpf_fd_sock_attrs(bpf: BPF, pid: int, fd: int) -> dict[str, str]:
   if fd < 0 or fd >= 0x100000:
@@ -92,6 +96,8 @@ def _envelope_fd_attributes(bpf: BPF, pid: int, syscall_nr: int, arg0: int, file
   if fn:
     out["fd_path"] = fn
     out["fd_resource_kind"] = "file"
+  elif syscall_nr in _SYSCALL_NR_EMPTY_PATH_SENTINEL:
+    out["fd_path"] = ""
   sock: dict[str, str] = {}
   if syscall_nr in _SYSCALL_NR_ARG0_IS_FD:
     sock = _bpf_fd_sock_attrs(bpf, pid, int(arg0))

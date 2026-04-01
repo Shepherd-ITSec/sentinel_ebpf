@@ -10,6 +10,39 @@ from probe.rules import RuleEngine
 class TestRuleEngineFiltered:
   """Test RuleEngine with rules that don't have catch-all."""
 
+  def test_explicit_empty_write_path_is_filterable(self, temp_dir):
+    """Write events with an explicit empty fd_path should be rejected by filterable_path."""
+    rules_file = temp_dir / "rules.yaml"
+    rules_file.write_text("""lists:
+  file_syscalls: [read, write]
+groups:
+  file:
+    syscalls: file_syscalls
+macros:
+  filterable_path: "not (syscall_name in (read, write) and attributes.fd_path = \\"\\" )"
+rules:
+  - name: capture-file-events
+    enabled: true
+    group: file
+    condition: "syscall_name in (file_syscalls) and filterable_path"
+""")
+    engine = RuleEngine(str(rules_file))
+    assert not engine.allow_event({
+      "syscall_name": "write",
+      "syscall_nr": 1,
+      "attributes": {"fd_path": ""},
+      "comm": "node",
+      "pid": 1,
+      "tid": 1,
+      "uid": 1000,
+      "flags": "",
+      "arg0": 1,
+      "arg1": 1,
+      "return_value": 0,
+      "hostname": "node-a",
+      "namespace": "default",
+    })
+
   def test_path_prefix_filtering_without_catchall(self, temp_dir):
     """Test that path prefix filtering works when there's no catch-all rule."""
     rules_file = temp_dir / "rules.yaml"

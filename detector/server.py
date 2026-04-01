@@ -529,7 +529,7 @@ async def serve():
             if not query:
               return True
             comm = (obj.get("comm") or "") or obj.get("attributes", {}).get("comm", "")
-            path = obj.get("attributes", {}).get("fd_path", "") or obj.get("attributes", {}).get("filename", "")
+            path = obj.get("attributes", {}).get("fd_path", "")
             event_name = (obj.get("syscall_name") or "").lower()
             path_s = (path or "").lower()
             comm_s = (comm or "").lower()

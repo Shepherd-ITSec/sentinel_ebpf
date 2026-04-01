@@ -72,8 +72,9 @@ def main() -> None:
         + "\n"
       )
       n += 1
-      if (n % 10000) == 0:
-        log.info("Scored %d events...", n)
+      if tqdm is None:
+        if (n % 10000) == 0:
+          log.info("Scored %d events...", n)
 
   log.info("Wrote %d scored events to %s", n, out_path)
 

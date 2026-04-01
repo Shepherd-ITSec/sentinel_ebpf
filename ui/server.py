@@ -30,6 +30,7 @@ _poll_history_lock = threading.Lock()
 MAGIC = b"EVT1"
 _capacity_lock = threading.Lock()
 _capacity_prev_events_total = None
+_capacity_prev_probe_events_total = None
 _capacity_prev_ts = None
 _capacity_prev_drops_total = None
 
@@ -165,6 +166,29 @@ def _parse_prometheus_metrics(text: str) -> dict:
   return metrics
 
 
+def _sum_prometheus_metric(text: str, metric_name: str) -> float | None:
+  total = 0.0
+  seen = False
+  if not text or text.startswith("error:"):
+    return None
+  pattern = re.compile(
+    rf"^{re.escape(metric_name)}(?:\{{[^}}]*\}})?\s+([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)$"
+  )
+  for raw_line in text.splitlines():
+    line = raw_line.strip()
+    if not line or line.startswith("#"):
+      continue
+    match = pattern.match(line)
+    if not match:
+      continue
+    try:
+      total += float(match.group(1))
+      seen = True
+    except ValueError:
+      continue
+  return total if seen else None
+
+
 def _to_int(value, default=0) -> int:
   try:
     return int(float(value))
@@ -172,8 +196,8 @@ def _to_int(value, default=0) -> int:
     return default
 
 
-def _compute_capacity_summary(probe_metrics: dict, detector_metrics: dict) -> dict:
-  global _capacity_prev_events_total, _capacity_prev_ts, _capacity_prev_drops_total
+def _compute_capacity_summary(probe_metrics: dict, detector_metrics: dict, probe_events_total: float | None = None) -> dict:
+  global _capacity_prev_events_total, _capacity_prev_probe_events_total, _capacity_prev_ts, _capacity_prev_drops_total
 
   has_host_metrics = "sentinel_ebpf_probe_host_cpu_usage_percent" in probe_metrics
   cpu_pct = float(probe_metrics.get("sentinel_ebpf_probe_host_cpu_usage_percent", 0.0))
@@ -189,6 +213,7 @@ def _compute_capacity_summary(probe_metrics: dict, detector_metrics: dict) -> di
   now = time.time()
   events_total = detector_metrics.get("sentinel_ebpf_detector_events_total")
   detector_eps = 0.0
+  probe_eps = 0.0
   drops_delta = 0
   with _capacity_lock:
     if events_total is not None and _capacity_prev_events_total is not None and _capacity_prev_ts is not None:
@@ -196,9 +221,15 @@ def _compute_capacity_summary(probe_metrics: dict, detector_metrics: dict) -> di
       de = float(events_total) - float(_capacity_prev_events_total)
       if dt > 0 and de >= 0:
         detector_eps = de / dt
+    if probe_events_total is not None and _capacity_prev_probe_events_total is not None and _capacity_prev_ts is not None:
+      dt = now - _capacity_prev_ts
+      de = float(probe_events_total) - float(_capacity_prev_probe_events_total)
+      if dt > 0 and de >= 0:
+        probe_eps = de / dt
     if _capacity_prev_drops_total is not None:
       drops_delta = max(0, drops_total - int(_capacity_prev_drops_total))
     _capacity_prev_events_total = events_total
+    _capacity_prev_probe_events_total = probe_events_total
     _capacity_prev_ts = now
     _capacity_prev_drops_total = drops_total
 
@@ -241,6 +272,7 @@ def _compute_capacity_summary(probe_metrics: dict, detector_metrics: dict) -> di
       "drops_total": drops_total,
       "drops_delta": drops_delta,
       "detector_events_per_sec": round(detector_eps, 2),
+      "probe_events_per_sec": round(probe_eps, 2),
     },
   }
 
@@ -368,7 +400,7 @@ class Handler(BaseHTTPRequestHandler):
         attrs = entry.get("attributes", {})
         if not isinstance(attrs, dict):
           attrs = {}
-        path = str(attrs.get("fd_path", "") or attrs.get("filename", ""))
+        path = str(attrs.get("fd_path", ""))
         comm = str(entry.get("comm", ""))
         pid = str(entry.get("pid", ""))
         tid = str(entry.get("tid", ""))
@@ -404,7 +436,8 @@ class Handler(BaseHTTPRequestHandler):
       detector_text = _http_get(detector_metrics_url) if detector_metrics_url else ""
       probe_metrics = _parse_prometheus_metrics(probe_text)
       detector_metrics = _parse_prometheus_metrics(detector_text)
-      summary = _compute_capacity_summary(probe_metrics, detector_metrics)
+      probe_events_total = _sum_prometheus_metric(probe_text, "sentinel_ebpf_probe_events_sent_total")
+      summary = _compute_capacity_summary(probe_metrics, detector_metrics, probe_events_total=probe_events_total)
       summary["ts"] = int(time.time())
       self._json(summary)
       return

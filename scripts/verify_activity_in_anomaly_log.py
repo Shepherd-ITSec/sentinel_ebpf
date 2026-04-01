@@ -68,7 +68,7 @@ def _filter_by_sequence(events: List[dict], normal_ops: int = 10) -> List[dict]:
     """Keep only events that match expected (comm,) sequence per path, in timestamp order."""
     by_path: Dict[str, List[dict]] = defaultdict(list)
     for e in events:
-        by_path[_extract_path(e)].append(e)
+        by_path[str(e.get("fd_path") or "")].append(e)
 
     out: List[dict] = []
     for path, path_events in by_path.items():
@@ -93,7 +93,7 @@ def _filter_by_sequence(events: List[dict], normal_ops: int = 10) -> List[dict]:
                     break
                 out.append(evt)
                 taken += 1
-    return sorted(out, key=lambda x: (x.get("ts_unix_nano", 0), _extract_path(x)))
+    return sorted(out, key=lambda x: (x.get("ts_unix_nano", 0), str(x.get("fd_path") or "")))
 
 
 def _extract_path(entry: dict) -> str:
@@ -101,7 +101,7 @@ def _extract_path(entry: dict) -> str:
     attrs = entry.get("attributes") or {}
     if not isinstance(attrs, dict):
         attrs = {}
-    return str(attrs.get("fd_path") or attrs.get("filename") or entry.get("fd_path") or "").strip()
+    return str(attrs.get("fd_path") or "").strip()
 
 
 def _extract_comm(entry: dict) -> str:

@@ -20,7 +20,65 @@ usage() {
   echo "Usage: $0 -f <command-file> [logfile]"
   echo "   or: $0 [logfile] \"command 1\" \"command 2\" ..."
   echo "  Commands from file: one per line; empty lines and # lines ignored."
+  echo "  File-backed runs re-check the file between commands."
+  echo "  Completed commands stay fixed; pending commands can be edited."
   exit 1
+}
+
+load_commands_from_file() {
+  local file_path="$1"
+  local -n out_ref="$2"
+  local buf=""
+  out_ref=()
+  # Read commands from file, supporting '\' line continuation.
+  # Empty lines and lines starting with '#' (when not in a continuation)
+  # are ignored.
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ -z "$buf" ]]; then
+      [[ -z "$line" ]] && continue
+      [[ "${line:0:1}" == "#" ]] && continue
+    fi
+    if [[ "$line" == *\\ ]]; then
+      buf+="${line%\\} "
+      continue
+    else
+      buf+="$line"
+      cmd="$buf"
+      # Trim leading/trailing whitespace
+      cmd="${cmd#"${cmd%%[![:space:]]*}"}"
+      cmd="${cmd%"${cmd##*[![:space:]]}"}"
+      [[ -z "$cmd" ]] && { buf=""; continue; }
+      out_ref+=("$cmd")
+      buf=""
+    fi
+  done < "$file_path"
+}
+
+refresh_commands_from_file() {
+  local file_path="$1"
+  local frozen_count="$2"
+  local latest=()
+  load_commands_from_file "$file_path" latest
+
+  if [[ ${#latest[@]} -lt $frozen_count ]]; then
+    echo "==== Refresh ignored at $(date -Iseconds): file now has fewer commands (${#latest[@]}) than already completed commands ($frozen_count). ===="
+    return
+  fi
+
+  local i
+  for ((i = 0; i < frozen_count; i++)); do
+    if [[ "${latest[$i]}" != "${COMMANDS[$i]}" ]]; then
+      echo "==== Refresh ignored at $(date -Iseconds): completed command $((i + 1)) changed in the file. ===="
+      return
+    fi
+  done
+
+  local old_total="${#COMMANDS[@]}"
+  local old_pending=$(( old_total - frozen_count ))
+  COMMANDS=("${latest[@]}")
+  local new_total="${#COMMANDS[@]}"
+  local new_pending=$(( new_total - frozen_count ))
+  echo "==== Refreshed at $(date -Iseconds): pending commands updated from $old_pending to $new_pending; total is now $new_total. ===="
 }
 
 # Parse LOG and COMMANDS (same for inner nohup invocation)
@@ -33,30 +91,7 @@ elif [[ "$1" == "--nohup-inner" ]]; then
   if [[ "$1" == "--file" ]]; then
     shift
     CMDFILE="$1"
-    COMMANDS=()
-    buf=""
-    # Read commands from file, supporting '\' line continuation.
-    # Empty lines and lines starting with '#' (when not in a continuation)
-    # are ignored.
-    while IFS= read -r line || [[ -n "$line" ]]; do
-      if [[ -z "$buf" ]]; then
-        [[ -z "$line" ]] && continue
-        [[ "${line:0:1}" == "#" ]] && continue
-      fi
-      if [[ "$line" == *\\ ]]; then
-        buf+="${line%\\} "
-        continue
-      else
-        buf+="$line"
-        cmd="$buf"
-        # Trim leading/trailing whitespace
-        cmd="${cmd#"${cmd%%[![:space:]]*}"}"
-        cmd="${cmd%"${cmd##*[![:space:]]}"}"
-        [[ -z "$cmd" ]] && { buf=""; continue; }
-        COMMANDS+=("$cmd")
-        buf=""
-      fi
-    done < "$CMDFILE"
+    load_commands_from_file "$CMDFILE" COMMANDS
   else
     COMMANDS=("$@")
   fi
@@ -120,8 +155,14 @@ echo $$ > "$LOG.pid"
 exec >> "$LOG" 2>&1
 echo "==== Started at $(date -Iseconds) ===="
 FAILED=()
+refresh_commands() {
+  local frozen_count="$1"
+  [[ -z "${CMDFILE:-}" ]] && return
+  refresh_commands_from_file "$CMDFILE" "$frozen_count"
+}
 
-for i in "${!COMMANDS[@]}"; do
+for ((i = 0; i < ${#COMMANDS[@]}; i++)); do
+  refresh_commands "$i"
   cmd="${COMMANDS[$i]}"
   n=$((i + 1))
   echo ""

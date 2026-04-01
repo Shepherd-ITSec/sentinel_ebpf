@@ -1,6 +1,6 @@
 """Tests for UI capacity and score-map helpers."""
 
-from ui.server import _compute_capacity_summary, _parse_prometheus_metrics
+from ui.server import _compute_capacity_summary, _parse_prometheus_metrics, _sum_prometheus_metric
 
 
 def test_parse_prometheus_metrics_handles_labels():
@@ -12,6 +12,16 @@ demo_with_label{foo="bar"} 3.5
   metrics = _parse_prometheus_metrics(raw)
   assert metrics["demo_metric_total"] == 12.0
   assert metrics["demo_with_label"] == 3.5
+
+
+def test_sum_prometheus_metric_sums_labeled_series():
+  raw = """
+# HELP sentinel_ebpf_probe_events_sent_total Demo metric
+sentinel_ebpf_probe_events_sent_total{pod="probe-a"} 12
+sentinel_ebpf_probe_events_sent_total{pod="probe-b"} 8
+sentinel_ebpf_probe_queue_size{pod="probe-a"} 3
+"""
+  assert _sum_prometheus_metric(raw, "sentinel_ebpf_probe_events_sent_total") == 20.0
 
 
 def test_compute_capacity_summary_ok_status():
@@ -64,3 +74,20 @@ def test_compute_capacity_summary_handles_missing_queue_capacity():
   summary = _compute_capacity_summary(probe, detector)
   assert summary["pipeline"]["queue_capacity"] == 0
   assert summary["pipeline"]["queue_fill_ratio"] is None
+
+
+def test_compute_capacity_summary_reports_probe_eps():
+  probe = {
+    "sentinel_ebpf_probe_host_cpu_usage_percent": 25.0,
+    "sentinel_ebpf_probe_host_memory_usage_percent": 35.0,
+    "sentinel_ebpf_probe_host_load1": 0.4,
+    "sentinel_ebpf_probe_host_cpu_count": 2,
+    "sentinel_ebpf_probe_queue_size": 20,
+    "sentinel_ebpf_probe_queue_capacity": 5000,
+    "sentinel_ebpf_probe_events_dropped_total": 0,
+  }
+  detector = {"sentinel_ebpf_detector_events_total": 2000}
+  _compute_capacity_summary(probe, detector, probe_events_total=100.0)
+  summary = _compute_capacity_summary(probe, detector, probe_events_total=160.0)
+  assert "probe_events_per_sec" in summary["pipeline"]
+  assert summary["pipeline"]["probe_events_per_sec"] >= 0.0

@@ -712,9 +712,34 @@
       
       // Track previous metrics for throughput calculation
       let previousMetrics = {
-        events_total: null,
+        detector_events_total: null,
+        probe_events_total: null,
         timestamp: null
       };
+
+      function sumPrometheusMetric(text, metricName) {
+        if (!text || typeof text !== "string") return null;
+        const escapedName = metricName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const pattern = new RegExp(`^${escapedName}(?:\\{[^}]*\\})?\\s+([+-]?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?)$`);
+        let total = 0;
+        let seen = false;
+        for (const rawLine of text.split("\n")) {
+          const line = rawLine.trim();
+          if (!line || line.startsWith("#")) continue;
+          const match = line.match(pattern);
+          if (!match) continue;
+          const value = Number(match[1]);
+          if (!Number.isFinite(value)) continue;
+          total += value;
+          seen = true;
+        }
+        return seen ? total : null;
+      }
+
+      function formatEventsPerSecond(value) {
+        if (value == null || !Number.isFinite(value) || value < 0) return null;
+        return value >= 1000 ? `${(value / 1000).toFixed(2)}k events/s` : `${value.toFixed(2)} events/s`;
+      }
       
       function parsePrometheusMetrics(text) {
         if (!text || typeof text !== "string") return [];
@@ -762,23 +787,29 @@
         const probeMetrics = parsePrometheusMetrics(probeText);
         const detectorMetrics = parsePrometheusMetrics(detectorText);
         
-        // Calculate throughput for detector
-        let throughput = null;
-        const eventsTotalMetric = detectorMetrics.find(m => m.name === "sentinel_ebpf_detector_events_total");
+        // Calculate detector and probe throughput from cumulative counters.
+        let detectorThroughput = null;
+        let probeThroughput = null;
+        const detectorEventsTotal = sumPrometheusMetric(detectorText, "sentinel_ebpf_detector_events_total");
+        const probeEventsTotal = sumPrometheusMetric(probeText, "sentinel_ebpf_probe_events_sent_total");
         const currentTimestamp = data.ts || Date.now() / 1000;
-        
-        if (eventsTotalMetric && typeof eventsTotalMetric.value === "number") {
-          const currentEvents = eventsTotalMetric.value;
-          if (previousMetrics.events_total !== null && previousMetrics.timestamp !== null) {
-            const timeDelta = currentTimestamp - previousMetrics.timestamp;
-            const eventsDelta = currentEvents - previousMetrics.events_total;
-            if (timeDelta > 0) {
-              throughput = eventsDelta / timeDelta;
+
+        if (previousMetrics.timestamp !== null) {
+          const timeDelta = currentTimestamp - previousMetrics.timestamp;
+          if (timeDelta > 0) {
+            if (detectorEventsTotal !== null && previousMetrics.detector_events_total !== null) {
+              const eventsDelta = detectorEventsTotal - previousMetrics.detector_events_total;
+              if (eventsDelta >= 0) detectorThroughput = eventsDelta / timeDelta;
+            }
+            if (probeEventsTotal !== null && previousMetrics.probe_events_total !== null) {
+              const eventsDelta = probeEventsTotal - previousMetrics.probe_events_total;
+              if (eventsDelta >= 0) probeThroughput = eventsDelta / timeDelta;
             }
           }
-          previousMetrics.events_total = currentEvents;
-          previousMetrics.timestamp = currentTimestamp;
         }
+        previousMetrics.detector_events_total = detectorEventsTotal;
+        previousMetrics.probe_events_total = probeEventsTotal;
+        previousMetrics.timestamp = currentTimestamp;
         
         function renderMetricsTable(metrics, extraRows = []) {
           if (metrics.length === 0 && extraRows.length === 0) {
@@ -793,18 +824,24 @@
           return `<table class="metrics-table"><tbody>${allRows.join("")}</tbody></table>`;
         }
         
+        const probeExtraRows = [];
+        const probeThroughputFormatted = formatEventsPerSecond(probeThroughput);
+        if (probeThroughputFormatted !== null) {
+          probeExtraRows.push(
+            `<tr><td class="metric-name">Output Rate</td><td class="metric-value">${escapeHtml(probeThroughputFormatted)}</td></tr>`
+          );
+        }
+
         const detectorExtraRows = [];
-        if (throughput !== null && !isNaN(throughput) && throughput >= 0) {
-          const throughputFormatted = throughput >= 1000 
-            ? `${(throughput / 1000).toFixed(2)}k events/s`
-            : `${throughput.toFixed(2)} events/s`;
+        const detectorThroughputFormatted = formatEventsPerSecond(detectorThroughput);
+        if (detectorThroughputFormatted !== null) {
           detectorExtraRows.push(
-            `<tr><td class="metric-name">Throughput</td><td class="metric-value">${escapeHtml(throughputFormatted)}</td></tr>`
+            `<tr><td class="metric-name">Throughput</td><td class="metric-value">${escapeHtml(detectorThroughputFormatted)}</td></tr>`
           );
         }
         
-        const probeHtml = probeMetrics.length > 0 
-          ? renderMetricsTable(probeMetrics)
+        const probeHtml = probeMetrics.length > 0 || probeExtraRows.length > 0
+          ? renderMetricsTable(probeMetrics, probeExtraRows)
           : `<div class="metrics-empty">No data</div>`;
         
         const detectorHtml = detectorMetrics.length > 0 || detectorExtraRows.length > 0
@@ -833,7 +870,8 @@
           queue_capacity: pipe.queue_capacity,
           drops_total: pipe.drops_total,
           drops_delta: pipe.drops_delta,
-          eps: pipe.detector_events_per_sec,
+          detector_eps: pipe.detector_events_per_sec,
+          probe_eps: pipe.probe_events_per_sec,
           has_host_metrics: host.has_host_metrics,
           replica_hint: data.replica_hint,
         });
@@ -856,7 +894,8 @@
             "<dt>Queue</dt><dd data-role=\"capacity-queue\"></dd>" +
             "<dt>Drops</dt><dd data-role=\"capacity-drops\"></dd>" +
             "<dt>New Drops</dt><dd data-role=\"capacity-drops-delta\"></dd>" +
-            "<dt>Detector EPS</dt><dd data-role=\"capacity-eps\"></dd>" +
+            "<dt>Detector EPS</dt><dd data-role=\"capacity-detector-eps\"></dd>" +
+            "<dt>Probe EPS</dt><dd data-role=\"capacity-probe-eps\"></dd>" +
             "</dl>" +
             "<div class=\"map-note\" style=\"margin-top:10px;\" data-role=\"capacity-replica-hint\"></div>" +
             "<div class=\"map-note\" style=\"margin-top:10px;\">CPU usage over time (per poll)</div>" +
@@ -880,7 +919,8 @@
         set("capacity-queue", (pipe.queue_size ?? 0) + "/" + (pipe.queue_capacity ?? 0) + " (" + queueRatio + ")");
         set("capacity-drops", String(pipe.drops_total ?? 0));
         set("capacity-drops-delta", String(pipe.drops_delta ?? 0));
-        set("capacity-eps", String(pipe.detector_events_per_sec ?? 0));
+        set("capacity-detector-eps", String(pipe.detector_events_per_sec ?? 0));
+        set("capacity-probe-eps", String(pipe.probe_events_per_sec ?? 0));
         set("capacity-replica-hint", String(data.replica_hint || ""));
         set("capacity-host-note", host.has_host_metrics ? "" : "Host metrics not available yet. Restart probe pod to expose new host CPU/memory/load metrics.");
 
@@ -997,7 +1037,7 @@
           pid: entry?.pid != null ? String(entry.pid) : "",
           tid: entry?.tid != null ? String(entry.tid) : "",
           uid: entry?.uid != null ? String(entry.uid) : "",
-          path: (attrs.fd_path != null ? String(attrs.fd_path) : "") || (attrs.filename != null ? String(attrs.filename) : ""),
+          path: attrs.fd_path != null ? String(attrs.fd_path) : "",
         };
       }
       function renderLogs(data) {

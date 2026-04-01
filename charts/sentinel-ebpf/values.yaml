@@ -71,14 +71,14 @@ detector:
       suppress_anomalies: true
     percentile:
       window_size: 16384   # number of past scores kept per event_type
-      warmup: 512         # events before percentile thresholding becomes active
+      warmup: 3000         # events before percentile thresholding becomes active (Count starts after general warmup)
     embeddings:
       word2vec:
         dim: 5
         sentence_len: 7
         window: 5
         sg: 1
-        update_every: 25
+        update_every: 1000
         epochs: 1
         post_warmup_lr_scale: 0.1
 

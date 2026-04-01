@@ -9,7 +9,7 @@ import pytest
 import events_pb2
 
 pytest.importorskip("bcc", reason="bcc not installed; eBPF-related tests are allowed to fail for now.")
-from probe.probe_runner import FileSink, _mtime_or_zero
+from probe.probe_runner import FileSink, _envelope_fd_attributes, _mtime_or_zero
 
 
 @pytest.fixture
@@ -228,3 +228,9 @@ def test_mtime_or_zero_existing_file(temp_dir):
   path.write_text("x")
   t = _mtime_or_zero(str(path))
   assert t > 0.0
+
+
+def test_read_without_resolved_path_emits_empty_fd_path():
+  """Read/write events without a resolved path still expose fd_path for filtering."""
+  attrs = _envelope_fd_attributes(bpf=None, pid=1234, syscall_nr=1, arg0=7, filename="")
+  assert attrs["fd_path"] == ""
