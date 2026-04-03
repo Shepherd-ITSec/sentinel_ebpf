@@ -226,6 +226,36 @@ class TestDetector:
     assert resp.event_id == f"{model_algorithm}-view-test"
     assert captured["feature_view"] == "frequency"
 
+  def test_zscore_uses_zscore_feature_view(self, monkeypatch):
+    captured = {}
+
+    class FakeExtractor:
+      def extract_feature_dict(self, evt, feature_view="default"):
+        captured["feature_view"] = feature_view
+        return {"f0": 0.0, "f1": 1.0}
+
+    monkeypatch.setattr(server_mod, "build_feature_extractor", lambda cfg: FakeExtractor())
+    cfg = DetectorConfig(model_algorithm="zscore", score_mode="scaled")
+    detector = RuleBasedDetector(cfg)
+    evt = events_pb2.EventEnvelope(
+      event_id="zscore-view-test",
+      syscall_name="execve",
+      event_group="process",
+      ts_unix_nano=1234567890000000000,
+      syscall_nr=59,
+      comm="bash",
+      pid="1",
+      tid="2",
+      uid="1000",
+      arg0="0",
+      arg1="0",
+      attributes={"fd_path": "/bin/bash"},
+    )
+
+    resp = detector._score_event(evt)
+    assert resp.event_id == "zscore-view-test"
+    assert captured["feature_view"] == "zscore"
+
   @pytest.mark.asyncio
   async def test_score_event_zscore(self):
     """Test ZScore scoring path."""

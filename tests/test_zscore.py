@@ -93,3 +93,33 @@ def test_zscore_near_constant_features_stable():
   score_raw = detector.score_only(_make_features(base))[0]
   assert np.isfinite(score_raw)
   assert score_raw >= 0.0
+
+
+def test_zscore_uses_topk_mean_over_per_feature_zscores():
+  det_top1 = OnlineAnomalyDetector(
+    algorithm="zscore",
+    zscore_min_count=2,
+    zscore_std_floor=1.0,
+    zscore_topk=1,
+    seed=13,
+  )
+  det_top4 = OnlineAnomalyDetector(
+    algorithm="zscore",
+    zscore_min_count=2,
+    zscore_std_floor=1.0,
+    zscore_topk=4,
+    seed=13,
+  )
+
+  baseline = _make_features([0.0, 0.0, 0.0, 0.0])
+  for _ in range(5):
+    det_top1.score_and_learn(baseline)
+    det_top4.score_and_learn(baseline)
+
+  anomaly = _make_features([10.0, 0.0, 0.0, 0.0])
+  score_top1 = det_top1.score_only(anomaly)[0]
+  score_top4 = det_top4.score_only(anomaly)[0]
+
+  assert abs(score_top1 - 10.0) < 1e-12
+  assert abs(score_top4 - 2.5) < 1e-12
+  assert score_top1 > score_top4

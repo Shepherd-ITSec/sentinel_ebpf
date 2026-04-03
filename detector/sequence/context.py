@@ -68,10 +68,15 @@ class SequenceContextFeatureExtractor:
     self._context_feature_names = tuple(
       f"{self._feature_prefix}_{idx:03d}" for idx in range(self._n_context * self._emb_dim)
     )
+    self._embedding_feature_names = tuple(f"syscall_w2v_{idx:03d}" for idx in range(self._emb_dim))
 
   @property
   def context_feature_names(self) -> tuple[str, ...]:
     return self._context_feature_names
+
+  @property
+  def embedding_feature_names(self) -> tuple[str, ...]:
+    return self._embedding_feature_names
 
   def _zero_values(self) -> dict[str, float]:
     return {name: 0.0 for name in self._context_feature_names}
@@ -113,3 +118,21 @@ class SequenceContextFeatureExtractor:
         num_classes=self._classes.num_classes,
       ),
     )
+
+  def observe_embedding(self, *, stream_id: int, token: str) -> dict[str, float]:
+    self._event_index += 1
+    self._classes.register(token)
+    self._w2v.observe(int(stream_id), token)
+
+    in_warmup = self._event_index <= self._warmup_events
+    if self._event_index % self._update_every == 0:
+      pending = self._w2v.drain_pending_sentences()
+      if pending:
+        alpha_scale = 1.0 if in_warmup else self._lr_scale_post
+        self._w2v.train_on_sentences(pending, epochs=self._epochs, alpha_scale=alpha_scale)
+
+    emb = self._w2v.vector_for(token)
+    return {
+      name: float(value)
+      for name, value in zip(self._embedding_feature_names, emb, strict=True)
+    }

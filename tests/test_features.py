@@ -70,7 +70,7 @@ def test_extract_feature_dict_returns_expected_shape():
   assert _count_prefix(values, "comm_bucket_") == 64
   assert _count_prefix(values, "hostname_bucket_") == 32
   assert _count_path_depth_banks(values) == 256
-  assert len(values) == 15 + 64 + 32 + 256 + 5 * 4
+  assert len(values) == 11 + 64 + 32 + 256 + 5 * 4
   vec = np.array(list(values.values()), dtype=np.float32)
   assert vec.shape == (len(values),)
   assert np.isfinite(vec).all()
@@ -112,12 +112,8 @@ def test_extract_feature_dict_has_stable_features():
     "uid_norm",
     "arg0_norm",
     "arg1_norm",
-    "hour_sin",
-    "hour_cos",
-    "minute_sin",
-    "minute_cos",
-    "weekday_sin",
-    "weekday_cos",
+    "day_cycle_sin",
+    "day_cycle_cos",
     "week_of_month_norm",
     "path_depth_norm",
     "return_success",
@@ -141,19 +137,21 @@ def test_extract_feature_dict_has_stable_features():
   assert _count_path_depth_banks(values) == 256
 
 
-def test_extract_feature_dict_weekday_and_week_of_month():
+def test_extract_feature_dict_day_cycle_and_week_of_month():
   evt = _evt(
     event_id="feat-time",
     path="/tmp/x",
   )
   values = extract_feature_dict(evt)
-  assert "weekday_sin" in values
-  assert "weekday_cos" in values
+  assert "day_cycle_sin" in values
+  assert "day_cycle_cos" in values
   assert "week_of_month_norm" in values
   assert 0.0 <= values["week_of_month_norm"] <= 1.0
-  expect_angle = 2.0 * np.pi * (1.0 / 7.0)
-  assert abs(values["weekday_sin"] - float(np.sin(expect_angle))) < 0.01
-  assert abs(values["weekday_cos"] - float(np.cos(expect_angle))) < 0.01
+  ts_ns = 1_700_000_000_000_000_000
+  expect_fraction = float(ts_ns % 86_400_000_000_000) / 86_400_000_000_000.0
+  expect_angle = 2.0 * np.pi * expect_fraction
+  assert abs(values["day_cycle_sin"] - float(np.sin(expect_angle))) < 0.01
+  assert abs(values["day_cycle_cos"] - float(np.cos(expect_angle))) < 0.01
   assert abs(values["week_of_month_norm"] - 1.0 / 3.0) < 0.01
 
 
@@ -256,7 +254,7 @@ def test_extract_file_features_flags_are_schema_stable():
   )
   values_chmod = extract_feature_dict(evt_chmod)
   assert any(name.startswith("group_flags_bucket_") for name in values_chmod)
-  assert values_chmod["group_syscall_chmod"] == 1.0
+  assert "group_syscall_chmod" not in values_chmod
   assert values_unlink["group_syscall_unlink"] == 1.0
 
 
@@ -379,9 +377,25 @@ def test_extract_feature_dict_frequency_view_returns_expected_schema():
   assert "comm_bucket_000" not in values
   assert "path_tok_d0_bucket_000" not in values
   assert "proc_rate_1" not in values
-  assert "hour_sin" not in values
-  assert "hour_norm" in values
-  assert len(values) == 17
+  assert "day_cycle_sin" not in values
+  assert "day_fraction_norm" in values
+  assert len(values) == 15
+
+
+def test_extract_feature_dict_zscore_view_uses_syscall_embedding_and_day_cycle():
+  evt = _evt(
+    event_id="feat-zscore",
+    syscall_name="execve",
+    tid="7",
+    ts_unix_nano=1_700_000_000_000_000_000,
+  )
+  values = extract_feature_dict(evt, feature_view="zscore")
+  assert "day_cycle_sin" in values
+  assert "day_cycle_cos" in values
+  assert "week_of_month_norm" not in values
+  assert "pid_norm" not in values
+  assert "sequence_ctx_000" not in values
+  assert len([name for name in values if name.startswith("syscall_w2v_")]) == 5
 
 
 def test_extract_feature_dict_frequency_view_keeps_type_specific_hashes():

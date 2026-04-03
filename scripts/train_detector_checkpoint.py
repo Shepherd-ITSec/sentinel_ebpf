@@ -60,6 +60,7 @@ def _make_detector(algo: str) -> tuple[OnlineAnomalyDetector, Callable[[events_p
     mem_warmup_accept=cfg.mem_warmup_accept,
     zscore_min_count=cfg.zscore_min_count,
     zscore_std_floor=cfg.zscore_std_floor,
+    zscore_topk=cfg.zscore_topk,
     knn_k=cfg.knn_k,
     knn_memory_size=cfg.knn_memory_size,
     knn_metric=cfg.knn_metric,
@@ -152,8 +153,9 @@ def main() -> None:
           )
         )
       n += 1
-      if (n % 10000) == 0:
-        log.info("Trained on %d events...", n)
+      if not tqdm:
+        if (n % 10000) == 0:
+          log.info("Trained on %d events...", n)
   finally:
     if dump_file is not None:
       dump_file.close()

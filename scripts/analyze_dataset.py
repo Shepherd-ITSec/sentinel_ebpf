@@ -6,6 +6,7 @@ import gzip
 import hashlib
 import itertools
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -157,6 +158,19 @@ def load_records(path: Path, max_events: int | None = None) -> tuple[list[dict],
   return records, scores
 
 
+def _downsample_pairs(xs: list[int], ys: list[float], max_points: int) -> tuple[list[int], list[float]]:
+  """Keep plotting cost bounded while preserving order and endpoints."""
+  if max_points <= 0 or len(xs) <= max_points:
+    return xs, ys
+  step = max(1, math.ceil(len(xs) / max_points))
+  sampled_xs = xs[::step]
+  sampled_ys = ys[::step]
+  if sampled_xs[-1] != xs[-1]:
+    sampled_xs.append(xs[-1])
+    sampled_ys.append(ys[-1])
+  return sampled_xs, sampled_ys
+
+
 def main():
   ap = argparse.ArgumentParser(
     description="Plot loss (anomaly score) over samples from detector log. Accepts JSONL with score, score_scaled, or score_raw.",
@@ -210,6 +224,24 @@ def main():
     action="store_true",
     help="Use log-scale on Y axis (helps when a few scores are much larger than the rest).",
   )
+  ap.add_argument(
+    "--max-plot-points",
+    type=int,
+    default=100_000,
+    help=(
+      "Downsample the plotted line to at most this many points while keeping full-data stats. "
+      "Use 0 to disable downsampling. Default: 100000."
+    ),
+  )
+  ap.add_argument(
+    "--agg-path-chunksize",
+    type=int,
+    default=10_000,
+    help=(
+      "Matplotlib Agg path chunk size used to avoid backend overflow on very long lines. "
+      "Use 0 to leave matplotlib default unchanged. Default: 10000."
+    ),
+  )
   args = ap.parse_args()
 
   path = Path(args.logfile)
@@ -242,12 +274,21 @@ def main():
     print("matplotlib not installed; run: uv sync --extra dev", file=sys.stderr)
     sys.exit(1)
 
+  if args.agg_path_chunksize > 0:
+    plt.rcParams["agg.path.chunksize"] = int(args.agg_path_chunksize)
+
   args.out.parent.mkdir(parents=True, exist_ok=True)
   fig, ax = plt.subplots(figsize=(24, 10))
-  ax.plot(range(len(scores)), scores, linewidth=0.3, alpha=0.9, color="gray", label="score")
+  plot_xs = list(range(len(scores)))
+  plot_ys = scores
+  plotted_points = len(scores)
+  if args.max_plot_points > 0:
+    plot_xs, plot_ys = _downsample_pairs(plot_xs, plot_ys, int(args.max_plot_points))
+    plotted_points = len(plot_xs)
+  ax.plot(plot_xs, plot_ys, linewidth=0.3, alpha=0.9, color="gray", label="score")
   ax.set_xlabel("Sample index")
   ax.set_ylabel("Loss (anomaly score)")
-  ax.set_title(f"Loss over samples ({n_events} events)")
+  ax.set_title(f"Loss over samples ({n_events} events, plotted {plotted_points:,})")
   ax.grid(True, alpha=0.3, which="major")
   ax.minorticks_on()
   ax.grid(True, alpha=0.15, which="minor", linestyle=":")
@@ -298,6 +339,7 @@ def main():
 
   stats_lines = [
     f"Events: {n_events:,}",
+    f"Plotted points: {plotted_points:,}",
     f"Anomalies: {n_anomalies:,}",
     f"Mean score: {sum(scores)/len(scores):.4f}",
   ]

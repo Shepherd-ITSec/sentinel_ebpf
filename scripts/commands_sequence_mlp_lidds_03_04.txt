@@ -1,0 +1,39 @@
+# Train LODA on the train split and save a checkpoint.
+uv run python -m scripts.train_detector_checkpoint \
+  "/home/felix/sentinel_ebpf/test_data/lidds/cve-2012-2122.train.jsonl" \
+  --algorithm loda \
+  --score-dump "/home/felix/sentinel_ebpf/test_data/lidds/loda_train_scores.jsonl" \
+  --out "/home/felix/sentinel_ebpf/test_data/lidds/loda_training.pkl"
+
+# Test loda on the test split and write per-event scores.
+uv run python -m scripts.score_from_checkpoint \
+  "/home/felix/sentinel_ebpf/test_data/lidds/cve-2012-2122.test.jsonl" \
+  --algorithm loda \
+  --checkpoint "/home/felix/sentinel_ebpf/test_data/lidds/loda_training.pkl" \
+  --out "/home/felix/sentinel_ebpf/test_data/lidds/loda_test_scores_13r.jsonl" \
+  --max-recordings 13
+
+
+# Train z-score on the train split and save a checkpoint.
+uv run python -m scripts.train_detector_checkpoint \
+  "/home/felix/sentinel_ebpf/test_data/lidds/cve-2012-2122.train.jsonl" \
+  --algorithm zscore \
+  --score-dump "/home/felix/sentinel_ebpf/test_data/lidds/zscore_train_scores.jsonl" \
+  --out "/home/felix/sentinel_ebpf/test_data/lidds/zscore_training.pkl"
+
+# Test zscore on the test split and write per-event scores.
+uv run python -m scripts.score_from_checkpoint \
+  "/home/felix/sentinel_ebpf/test_data/lidds/cve-2012-2122.test.jsonl" \
+  --algorithm zscore \
+  --checkpoint "/home/felix/sentinel_ebpf/test_data/lidds/zscore_training.pkl" \
+  --out "/home/felix/sentinel_ebpf/test_data/lidds/zscore_test_scores_13r.jsonl" \
+  --max-recordings 13
+
+
+# Test sequence_mlp on the test split and write per-event scores again.
+uv run python -m scripts.score_from_checkpoint \
+  "/home/felix/sentinel_ebpf/test_data/lidds/cve-2012-2122.test.jsonl" \
+  --algorithm sequence_mlp \
+  --checkpoint "/home/felix/sentinel_ebpf/test_data/lidds/sequence_mlp_training.pkl" \
+  --out "/home/felix/sentinel_ebpf/test_data/lidds/sequence_mlp_test_scores_13r-2.jsonl" \
+  --max-recordings 13

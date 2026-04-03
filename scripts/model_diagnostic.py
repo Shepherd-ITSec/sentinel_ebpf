@@ -236,6 +236,7 @@ def _build_detector(cfg: Any, algorithm: str) -> OnlineAnomalyDetector:
     mem_warmup_accept=cfg.mem_warmup_accept,
     zscore_min_count=cfg.zscore_min_count,
     zscore_std_floor=cfg.zscore_std_floor,
+    zscore_topk=cfg.zscore_topk,
     knn_k=cfg.knn_k,
     knn_memory_size=cfg.knn_memory_size,
     knn_metric=cfg.knn_metric,

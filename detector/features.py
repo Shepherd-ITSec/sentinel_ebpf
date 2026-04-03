@@ -49,8 +49,8 @@ class _FeatureViewSpec:
   include_network_af_onehot: bool = True
   include_network_online_stats: bool = True
   use_hash_for_categoricals: bool = False
-  # False for frequency: use hour_norm / minute_norm / weekday_norm instead of sin/cos pairs.
-  cyclic_time_features: bool = True
+  # `day_cycle` emits a full-day sin/cos pair. `day_fraction` emits a scalar in [0, 1].
+  time_feature_mode: str = "day_cycle"
 
 
 class _OnlineFeatureStats:
@@ -182,13 +182,14 @@ _MEMSTREAM_FEATURE_VIEW = _FeatureViewSpec(
 # no global flags_hash, no file sensitive/tmp binaries, no online rate/interarrival streams.
 _FREQUENCY_FEATURE_VIEW = _FeatureViewSpec(
   use_hash_for_categoricals=True,
-  cyclic_time_features=False,
+  time_feature_mode="day_fraction",
   include_file_sensitive_tmp=False,
   include_general_online_stats=False,
   include_file_online_stats=False,
   include_network_online_stats=False,
 )
 _SEQUENCE_CONTEXT_PREFIX = "sequence_ctx"
+_DAY_NS = 86_400_000_000_000
 
 
 class FeatureExtractor:
@@ -239,10 +240,21 @@ class FeatureExtractor:
     )
     return features
 
+  def _extract_zscore_features(self, evt: Any) -> Dict[str, float]:
+    token = self._syscall_token(evt)
+    features = self._sequence_context.observe_embedding(
+      stream_id=self._tid(evt),
+      token=token,
+    )
+    features.update(_extract_time_features(evt.ts_unix_nano, mode="day_cycle"))
+    return features
+
   def extract_feature_dict(self, evt: Any, feature_view: str = "default") -> Dict[str, float]:
     fv = (feature_view or "default").strip().lower()
     if fv == "sequence":
       return self._extract_sequence_features(evt)
+    if fv == "zscore":
+      return self._extract_zscore_features(evt)
     view = _feature_view_spec(feature_view or "default")
     out = _extract_generic_features(evt, view=view)
     if view.include_general_online_stats:
@@ -356,6 +368,8 @@ def feature_view_for_algorithm(algorithm: str | None) -> str:
   algo = (algorithm or "").strip().lower()
   if algo in ("sequence_mlp", "sequence_transformer"):
     return "sequence"
+  if algo == "zscore":
+    return "zscore"
   if algo in ("freq1d", "copulatree", "latentcluster"):
     return "frequency"
   if algo in ("loda", "loda_ema"):
@@ -367,6 +381,8 @@ def feature_view_for_algorithm(algorithm: str | None) -> str:
 
 def _feature_view_spec(feature_view: str | None) -> _FeatureViewSpec:
   normalized = (feature_view or "default").strip().lower()
+  if normalized == "zscore":
+    return _FULL_FEATURE_VIEW
   if normalized == "frequency":
     return _FREQUENCY_FEATURE_VIEW
   if normalized in ("default", "full", "encoded"):
@@ -375,7 +391,22 @@ def _feature_view_spec(feature_view: str | None) -> _FeatureViewSpec:
     return _LODA_FEATURE_VIEW
   if normalized == "memstream":
     return _MEMSTREAM_FEATURE_VIEW
-  raise ValueError(f"Unknown feature_view={feature_view!r}; expected one of: default, frequency, loda, memstream, sequence")
+  raise ValueError(
+    f"Unknown feature_view={feature_view!r}; expected one of: default, frequency, loda, memstream, sequence, zscore"
+  )
+
+
+def _extract_time_features(ts_ns: int, *, mode: str) -> Dict[str, float]:
+  day_fraction = (float(int(ts_ns) % _DAY_NS) / float(_DAY_NS)) if _DAY_NS > 0 else 0.0
+  if mode == "day_cycle":
+    day_angle = 2.0 * float(np.pi) * day_fraction
+    return {
+      "day_cycle_sin": float(np.sin(day_angle)),
+      "day_cycle_cos": float(np.cos(day_angle)),
+    }
+  if mode == "day_fraction":
+    return {"day_fraction_norm": day_fraction}
+  raise ValueError(f"Unknown time_feature_mode={mode!r}")
 
 
 @lru_cache(maxsize=16)
@@ -558,13 +589,7 @@ def _extract_generic_features(evt: Any, view: _FeatureViewSpec) -> Dict[str, flo
 
   ts_ns = evt.ts_unix_nano
   ts_s = ts_ns // 1_000_000_000
-  hour_of_day = (ts_s // 3600) % 24
-  minute_of_hour = (ts_s // 60) % 60
-  hour_angle = 2.0 * float(np.pi) * (float(hour_of_day) / 24.0)
-  minute_angle = 2.0 * float(np.pi) * (float(minute_of_hour) / 60.0)
   dt = datetime.fromtimestamp(ts_s, tz=timezone.utc)
-  weekday = dt.weekday()
-  weekday_angle = 2.0 * float(np.pi) * (float(weekday) / 7.0)
   day_of_month = dt.day
   week_of_month = min(4, (day_of_month - 1) // 7 + 1)
 
@@ -583,25 +608,7 @@ def _extract_generic_features(evt: Any, view: _FeatureViewSpec) -> Dict[str, flo
     "return_success": return_success,
     "return_errno_norm": return_errno_norm,
   }
-  if view.cyclic_time_features:
-    out.update(
-      {
-        "hour_sin": float(np.sin(hour_angle)),
-        "hour_cos": float(np.cos(hour_angle)),
-        "minute_sin": float(np.sin(minute_angle)),
-        "minute_cos": float(np.cos(minute_angle)),
-        "weekday_sin": float(np.sin(weekday_angle)),
-        "weekday_cos": float(np.cos(weekday_angle)),
-      }
-    )
-  else:
-    out.update(
-      {
-        "hour_norm": float(hour_of_day) / 23.0,
-        "minute_norm": float(minute_of_hour) / 59.0,
-        "weekday_norm": float(weekday) / 6.0,
-      }
-    )
+  out.update(_extract_time_features(ts_ns, mode=view.time_feature_mode))
   out["week_of_month_norm"] = (week_of_month - 1) / 3.0
 
   if view.use_hash_for_categoricals:

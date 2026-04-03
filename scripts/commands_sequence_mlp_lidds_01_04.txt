@@ -1,0 +1,26 @@
+# Test on the test split and write per-event scores.
+uv run python -m scripts.score_from_checkpoint \
+  "/home/felix/sentinel_ebpf/test_data/lidds/cve-2012-2122.test.jsonl" \
+  --algorithm sequence_mlp \
+  --checkpoint "/home/felix/sentinel_ebpf/test_data/lidds/sequence_mlp_training.pkl" \
+  --out "/home/felix/sentinel_ebpf/test_data/lidds/sequence_mlp_test_scores_13r.jsonl" \
+  --max-recordings 13
+
+
+
+# Train freq1d on the train split and save a checkpoint.
+uv run python -m scripts.train_detector_checkpoint \
+  "/home/felix/sentinel_ebpf/test_data/lidds/cve-2012-2122.train.jsonl" \
+  --algorithm freq1d \
+  --score-dump "/home/felix/sentinel_ebpf/test_data/lidds/freq1d_train_scores.jsonl" \
+  --out "/home/felix/sentinel_ebpf/test_data/lidds/freq1d_training.pkl"
+
+# Test freq1d on the test split and write per-event scores.
+uv run python -m scripts.score_from_checkpoint \
+  "/home/felix/sentinel_ebpf/test_data/lidds/cve-2012-2122.test.jsonl" \
+  --algorithm freq1d \
+  --checkpoint "/home/felix/sentinel_ebpf/test_data/lidds/freq1d_training.pkl" \
+  --out "/home/felix/sentinel_ebpf/test_data/lidds/freq1d_test_scores_13r.jsonl" \
+  --max-recordings 13
+
+# kill $(head -1 artifacts/logs/overnight_01-04_train_sequence_mlp.log.pid); for p in $(tail -n +2 artifacts/logs/overnight_01-03´4_train_sequence_mlp.log.pid); do kill -TERM -$p 2>/dev/null; done

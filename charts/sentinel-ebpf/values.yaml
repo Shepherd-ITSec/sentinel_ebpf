@@ -61,7 +61,7 @@ detector:
   eventDumpPath: "/var/log/sentinel-ebpf/events.jsonl"   # Path to dump all incoming events to file (empty to disable, e.g., /var/log/sentinel-ebpf/events.jsonl)
   # Model configurations
   model:
-    algorithm: "sequence_mlp"  # halfspacetrees | loda | loda_ema | memstream | kitnet | zscore | freq1d | copulatree | latentcluster | sequence_mlp
+    algorithm: "zscore"  # halfspacetrees | loda | loda_ema | memstream | kitnet | zscore | freq1d | copulatree | latentcluster | sequence_mlp
     threshold: 0.98  # Anomaly score threshold
     score_mode: "percentile"  # raw | scaled | percentile
     # General parameters
@@ -106,8 +106,9 @@ detector:
     mem_gamma: 0
     mem_warmup_accept: 512  # grace period: first N events always accepted
     # ZScore baseline parameters
-    zscore_min_count: 20
+    zscore_min_count: 200
     zscore_std_floor: 0.001
+    zscore_topk: 8
     # Freq1D baseline parameters (hybrid categorical+numeric)
     freq1d_bins: 65536 # is high to ensure no collisions
     freq1d_alpha: 1.0

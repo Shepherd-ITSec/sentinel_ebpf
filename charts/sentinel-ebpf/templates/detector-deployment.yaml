@@ -81,6 +81,8 @@ spec:
               value: {{ .Values.detector.model.zscore_min_count | quote }}
             - name: DETECTOR_ZSCORE_STD_FLOOR
               value: {{ .Values.detector.model.zscore_std_floor | quote }}
+            - name: DETECTOR_ZSCORE_TOPK
+              value: {{ .Values.detector.model.zscore_topk | quote }}
             - name: DETECTOR_FREQ1D_BINS
               value: {{ .Values.detector.model.freq1d_bins | quote }}
             - name: DETECTOR_FREQ1D_ALPHA

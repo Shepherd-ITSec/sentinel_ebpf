@@ -25,6 +25,7 @@ from detector.config import DetectorConfig, load_config
 from detector.features import build_feature_extractor, feature_view_for_algorithm
 from detector.model import OnlineAnomalyDetector
 from detector.model import OnlinePercentileCalibrator
+from detector.scoring import anomaly_from_primary, compute_primary_score, event_group_key
 
 # Ring buffer of recent events for UI log tail in gRPC mode (GET /recent_events).
 # Size is set during initialization from config
@@ -193,8 +194,7 @@ class DeterministicScorer:
     self._lock = threading.Lock()
 
   def _key_for_type(self, event_group: str) -> str:
-    t = (event_group or "").strip().lower()
-    return t or "__default__"
+    return event_group_key(event_group)
 
   def _model_kwargs(self) -> dict:
     return {
@@ -221,6 +221,7 @@ class DeterministicScorer:
       "mem_warmup_accept": self.cfg.mem_warmup_accept,
       "zscore_min_count": self.cfg.zscore_min_count,
       "zscore_std_floor": self.cfg.zscore_std_floor,
+      "zscore_topk": self.cfg.zscore_topk,
       "knn_k": self.cfg.knn_k,
       "knn_memory_size": self.cfg.knn_memory_size,
       "knn_metric": self.cfg.knn_metric,
@@ -322,16 +323,21 @@ class DeterministicScorer:
         )
         alg_name = model.algorithm
         score_mode = getattr(self.cfg, "score_mode", "raw")
-        if suppress_primary:
-          score_primary = 0.0
-        elif score_mode == "scaled":
-          score_primary = float(score_scaled)
-        elif score_mode == "percentile":
-          cal = self._get_percentile(evt.event_group or "")
-          score_primary = float(cal.percentile_prequential(float(score_raw)))
-        else:
-          score_primary = float(score_raw)
-        anomaly = (not suppress_primary) and score_primary >= float(self.cfg.threshold)
+        percentile_cal = None
+        if (not suppress_primary) and score_mode == "percentile":
+          percentile_cal = self._get_percentile(evt.event_group or "")
+        score_primary = compute_primary_score(
+          score_raw,
+          score_scaled,
+          score_mode=str(score_mode),
+          suppress_primary=suppress_primary,
+          percentile_cal=percentile_cal,
+        )
+        anomaly = anomaly_from_primary(
+          score_primary,
+          float(self.cfg.threshold),
+          suppress_primary=suppress_primary,
+        )
 
       if anomaly:
         reason = f"{alg_name} anomaly score {score_primary:.3f} exceeds threshold {self.cfg.threshold}"

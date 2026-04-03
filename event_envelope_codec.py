@@ -29,6 +29,7 @@ def envelope_to_dict(evt: events_pb2.EventEnvelope) -> dict[str, Any]:
 
 def envelope_from_dict(obj: dict) -> events_pb2.EventEnvelope:
   pod_name = obj.get("pod_name", obj.get("pod", ""))
+  syscall_name = obj.get("syscall_name", obj.get("event_name", ""))
   raw_nr = obj.get("syscall_nr", 0)
   try:
     syscall_nr = int(raw_nr)
@@ -45,7 +46,7 @@ def envelope_from_dict(obj: dict) -> events_pb2.EventEnvelope:
     namespace=str(obj.get("namespace", "")),
     container_id=str(obj.get("container_id", "")),
     ts_unix_nano=int(obj.get("ts_unix_nano", 0)),
-    syscall_name=str(obj.get("syscall_name", "")),
+    syscall_name=str(syscall_name),
     event_group=str(obj.get("event_group", "")),
     syscall_nr=syscall_nr,
     comm=str(obj.get("comm", "")),

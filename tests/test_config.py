@@ -141,6 +141,7 @@ class TestDetectorConfig:
     os.environ["DETECTOR_MEMSTREAM_INPUT_MODE"] = "freq1d_z"
     os.environ["DETECTOR_ZSCORE_MIN_COUNT"] = "15"
     os.environ["DETECTOR_ZSCORE_STD_FLOOR"] = "0.002"
+    os.environ["DETECTOR_ZSCORE_TOPK"] = "3"
     os.environ["DETECTOR_KNN_K"] = "7"
     os.environ["DETECTOR_KNN_MEMORY_SIZE"] = "2048"
     os.environ["DETECTOR_KNN_METRIC"] = "manhattan"
@@ -187,6 +188,7 @@ class TestDetectorConfig:
       assert cfg.mem_input_mode == "freq1d_z"
       assert cfg.zscore_min_count == 15
       assert cfg.zscore_std_floor == 0.002
+      assert cfg.zscore_topk == 3
       assert cfg.knn_k == 7
       assert cfg.knn_memory_size == 2048
       assert cfg.knn_metric == "manhattan"
@@ -233,6 +235,7 @@ class TestDetectorConfig:
         "DETECTOR_MEMSTREAM_INPUT_MODE",
         "DETECTOR_ZSCORE_MIN_COUNT",
         "DETECTOR_ZSCORE_STD_FLOOR",
+        "DETECTOR_ZSCORE_TOPK",
         "DETECTOR_KNN_K",
         "DETECTOR_KNN_MEMORY_SIZE",
         "DETECTOR_KNN_METRIC",

@@ -9,7 +9,7 @@ class DetectorConfig:
   recent_events_buffer_size: int = 10000  # Size of recent events ring buffer for UI (default: 10000)
   # River model configuration
   model_algorithm: str = "freq1d"  # halfspacetrees | loda_ema | kitnet | memstream | zscore | knn | freq1d | copulatree | latentcluster | sequence_mlp
-  threshold: float = 0.7  # Anomaly score threshold (0-1). Lower (e.g. 0.3) to flag more events when scores are mostly low.
+  threshold: float = 0.9  # Anomaly score threshold (0-1). Lower (e.g. 0.3) to flag more events when scores are mostly low.
   hst_n_trees: int = 25
   hst_height: int = 15
   hst_window_size: int = 250
@@ -33,6 +33,7 @@ class DetectorConfig:
   mem_warmup_path: str = ""  # optional path to JSONL/EVT1 for normal-only warmup (empty = online only)
   zscore_min_count: int = 20
   zscore_std_floor: float = 1e-3
+  zscore_topk: int = 8  # mean of the largest K per-feature |z| scores
   knn_k: int = 5
   knn_memory_size: int = 1024
   knn_metric: str = "euclidean"
@@ -64,7 +65,7 @@ class DetectorConfig:
   # - raw: threshold on raw model score (unbounded, model-dependent)
   # - scaled: threshold on bounded [0,1] score (most models: 1-exp(-raw))
   # - percentile: threshold on online percentile of (log1p(raw)) per event_group
-  score_mode: str = "raw"  # raw | scaled | percentile
+  score_mode: str = "percentile"  # raw | scaled | percentile
   # percentile calibration window (per event_group): number of past scores kept for percentile estimate
   percentile_window_size: int = 2048
   # warmup samples before percentile thresholding becomes active (before that percentile score is 0)
@@ -134,6 +135,9 @@ def load_config() -> DetectorConfig:
     )
   zscore_min_count = int(os.environ.get("DETECTOR_ZSCORE_MIN_COUNT", str(defaults.zscore_min_count)))
   zscore_std_floor = float(os.environ.get("DETECTOR_ZSCORE_STD_FLOOR", str(defaults.zscore_std_floor)))
+  zscore_topk = int(os.environ.get("DETECTOR_ZSCORE_TOPK", str(defaults.zscore_topk)))
+  if zscore_topk <= 0:
+    raise ValueError(f"Invalid DETECTOR_ZSCORE_TOPK={zscore_topk!r}; must be > 0")
   knn_k = int(os.environ.get("DETECTOR_KNN_K", str(defaults.knn_k)))
   knn_memory_size = int(os.environ.get("DETECTOR_KNN_MEMORY_SIZE", str(defaults.knn_memory_size)))
   knn_metric = os.environ.get("DETECTOR_KNN_METRIC", defaults.knn_metric)
@@ -328,6 +332,7 @@ def load_config() -> DetectorConfig:
     mem_warmup_path=mem_warmup_path,
     zscore_min_count=zscore_min_count,
     zscore_std_floor=zscore_std_floor,
+    zscore_topk=zscore_topk,
     knn_k=knn_k,
     knn_memory_size=knn_memory_size,
     knn_metric=knn_metric,

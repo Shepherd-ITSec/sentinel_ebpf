@@ -946,7 +946,7 @@ class OnlineMemStream(_BothScoresMixin):
 class OnlineZScore(_BothScoresMixin):
   """Simple online per-feature Z-score baseline. (Self-implementation)"""
 
-  def __init__(self, min_count: int, std_floor: float, model_device: str, seed: int):
+  def __init__(self, min_count: int, std_floor: float, topk: int, model_device: str, seed: int):
     del seed  # deterministic, no RNG state required
     self.algorithm = "zscore"
     requested_device = _resolve_torch_device(model_device)
@@ -958,15 +958,17 @@ class OnlineZScore(_BothScoresMixin):
       )
     self.min_count = int(max(1, min_count))
     self.std_floor = float(max(1e-12, std_floor))
+    self.topk = int(max(1, topk))
     self._feature_names: Optional[List[str]] = None
     self._count = 0
     self._mean: Optional[np.ndarray] = None
     self._m2: Optional[np.ndarray] = None
     logging.info(
-      "Initialized %s (min_count=%d, std_floor=%.6f)",
+      "Initialized %s (min_count=%d, std_floor=%.6f, topk=%d)",
       self.algorithm,
       self.min_count,
       self.std_floor,
+      self.topk,
     )
 
   def _init_from_features(self, features: Dict[str, float]) -> None:
@@ -995,7 +997,11 @@ class OnlineZScore(_BothScoresMixin):
     variance = np.maximum(m2 / denom, self.std_floor * self.std_floor)
     std = np.sqrt(variance)
     z_abs = np.abs((x - mean) / std)
-    return float(np.mean(z_abs))
+    k = min(len(z_abs), self.topk)
+    if k <= 0:
+      return 0.0
+    topk = np.partition(z_abs, -k)[-k:]
+    return float(np.mean(topk))
 
   def _learn_vector(self, x: np.ndarray) -> None:
     mean = self._mean
@@ -1027,6 +1033,7 @@ class OnlineZScore(_BothScoresMixin):
       "feature_names": list(self._feature_names),
       "min_count": self.min_count,
       "std_floor": self.std_floor,
+      "topk": self.topk,
       "count": self._count,
       "mean": self._mean,
       "m2": self._m2,
@@ -1037,6 +1044,7 @@ class OnlineZScore(_BothScoresMixin):
     self._feature_names = list(state["feature_names"])
     self.min_count = int(state.get("min_count", self.min_count))
     self.std_floor = float(state.get("std_floor", self.std_floor))
+    self.topk = int(state.get("topk", self.topk))
     self._count = int(state["count"])
     self._mean = np.asarray(state["mean"], dtype=np.float64)
     self._m2 = np.asarray(state["m2"], dtype=np.float64)
@@ -2169,6 +2177,7 @@ class OnlineAnomalyDetector:
     mem_warmup_accept: int = 512,
     zscore_min_count: int = 20,
     zscore_std_floor: float = 1e-3,
+    zscore_topk: int = 8,
     knn_k: int = 5,
     knn_memory_size: int = 1024,
     knn_metric: str = "euclidean",
@@ -2261,6 +2270,7 @@ class OnlineAnomalyDetector:
       self.impl = OnlineZScore(
         min_count=zscore_min_count,
         std_floor=zscore_std_floor,
+        topk=zscore_topk,
         model_device=model_device,
         seed=seed,
       )

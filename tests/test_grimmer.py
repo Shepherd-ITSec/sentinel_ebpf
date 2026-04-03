@@ -17,6 +17,7 @@ from detector.sequence.ngram_buffer import StreamNgramBuffer
 def test_feature_view_maps_sequence_algorithms() -> None:
   assert feature_view_for_algorithm("sequence_mlp") == "sequence"
   assert feature_view_for_algorithm("sequence_transformer") == "sequence"
+  assert feature_view_for_algorithm("zscore") == "zscore"
 
 
 def test_extract_feature_dict_emits_sequence_context_with_metadata() -> None:
@@ -212,6 +213,35 @@ def test_generic_model_can_consume_sequence_features() -> None:
   for i, syscall_name in enumerate(("open", "read", "write", "close", "open", "read", "write", "close")):
     evt = events_pb2.EventEnvelope(event_id=str(i), syscall_name=syscall_name, tid="11")
     features = extractor.extract_feature_dict(evt, feature_view="sequence")
+    raw, scaled = detector.score_and_learn(features)
+    assert np.isfinite(raw)
+    assert 0.0 <= scaled <= 1.0
+
+
+def test_generic_model_can_consume_zscore_view_features() -> None:
+  cfg = DetectorConfig(
+    model_algorithm="zscore",
+    embedding_word2vec_dim=4,
+    embedding_word2vec_sentence_len=3,
+    embedding_word2vec_update_every=1,
+    warmup_events=0,
+    zscore_min_count=1,
+    model_seed=0,
+  )
+  extractor = build_feature_extractor(cfg)
+  detector = OnlineAnomalyDetector(
+    algorithm="zscore",
+    zscore_min_count=cfg.zscore_min_count,
+    zscore_std_floor=cfg.zscore_std_floor,
+  )
+  for i, syscall_name in enumerate(("open", "read", "write", "close", "open", "read", "write", "close")):
+    evt = events_pb2.EventEnvelope(
+      event_id=str(i),
+      syscall_name=syscall_name,
+      tid="11",
+      ts_unix_nano=1_700_000_000_000_000_000 + (i * 60 * 1_000_000_000),
+    )
+    features = extractor.extract_feature_dict(evt, feature_view="zscore")
     raw, scaled = detector.score_and_learn(features)
     assert np.isfinite(raw)
     assert 0.0 <= scaled <= 1.0
