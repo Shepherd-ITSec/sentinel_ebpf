@@ -85,7 +85,7 @@ def test_copulatree_checkpoint_save_load_preserves_scores():
       copulatree_tree_update_interval=5,
       seed=7,
     )
-    idx = loaded.load_checkpoint(ckpt)
+    idx, _ = loaded.load_checkpoint(ckpt)
     assert idx == 40
     for i in range(40, 80):
       loaded.score_and_learn(events[i])

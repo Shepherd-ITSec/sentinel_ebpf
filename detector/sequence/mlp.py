@@ -224,6 +224,8 @@ class OnlineSequenceMLP:
       "num_classes": self._num_classes,
       "model": self._model.state_dict() if self._model is not None else None,
       "optim": self._optimizer.state_dict() if self._optimizer is not None else None,
+      "torch_rng_state": torch.get_rng_state(),
+      "torch_cuda_rng_state_all": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
     }
 
   def set_state(self, state: dict[str, Any]) -> None:
@@ -244,3 +246,16 @@ class OnlineSequenceMLP:
         self._optimizer.load_state_dict(state["optim"])
       except Exception:
         logger.warning("SequenceMLP: could not load optimizer state; using fresh Adam moments")
+
+    rng = state.get("torch_rng_state", None)
+    if rng is not None:
+      try:
+        torch.set_rng_state(rng)
+      except Exception:
+        logger.warning("SequenceMLP: could not restore torch RNG state")
+    cuda_rng = state.get("torch_cuda_rng_state_all", None)
+    if cuda_rng is not None and torch.cuda.is_available():
+      try:
+        torch.cuda.set_rng_state_all(cuda_rng)
+      except Exception:
+        logger.warning("SequenceMLP: could not restore CUDA RNG state")

@@ -694,6 +694,7 @@ def main() -> None:
       processed = i + 1
       if args.checkpoint_interval > 0 and processed % args.checkpoint_interval == 0:
         checkpoint_path = checkpoints_dir / f"checkpoint_{processed:08d}.pkl"
+        # model_diagnostic is primarily for score debugging; feature state is optional here.
         detector.save_checkpoint(checkpoint_path, processed)
         log.info("Saved checkpoint %s", checkpoint_path.name)
 

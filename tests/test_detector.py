@@ -254,7 +254,7 @@ class TestDetector:
 
     resp = detector._score_event(evt)
     assert resp.event_id == "zscore-view-test"
-    assert captured["feature_view"] == "zscore"
+    assert captured["feature_view"] == "frequency"
 
   @pytest.mark.asyncio
   async def test_score_event_zscore(self):

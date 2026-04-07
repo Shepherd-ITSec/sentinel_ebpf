@@ -125,6 +125,53 @@ class _OnlineFeatureStats:
     dt_norm = min(float(np.log1p(dt) / np.log1p(max(dt_scale_s, 1.0))), 1.0)
     return self.update_value(group, metric, stream_key, ts_s, dt_norm)
 
+  def get_state(self) -> dict:
+    states_dump: list[dict] = []
+    for (group, metric, window_name, stream_key), s in self._states.items():
+      states_dump.append(
+        {
+          "group": group,
+          "metric": metric,
+          "window": window_name,
+          "stream_key": stream_key,
+          "last_ts": float(s.last_ts),
+          "has_last": bool(s.has_last),
+          "weight": float(s.weight),
+          "sum_v": float(s.sum_v),
+          "sum_sq": float(s.sum_sq),
+        }
+      )
+    last_seen_dump: list[dict] = []
+    for (group, stream_key), ts in self._last_seen.items():
+      last_seen_dump.append({"group": group, "stream_key": stream_key, "ts": float(ts)})
+    return {
+      "windows": list(self._windows),
+      "max_states": int(self._max_states),
+      "states": states_dump,
+      "last_seen": last_seen_dump,
+    }
+
+  def set_state(self, state: dict) -> None:
+    self._max_states = int(state.get("max_states", self._max_states))
+    # windows are config-derived; keep current if missing
+    windows = state.get("windows", None)
+    if windows is not None:
+      self._windows = tuple((str(n), float(t)) for n, t in windows)
+    self._states = OrderedDict()
+    for row in state.get("states", []) or []:
+      key = (str(row.get("group", "")), str(row.get("metric", "")), str(row.get("window", "")), str(row.get("stream_key", "")))
+      self._states[key] = _DecayedMoments(
+        last_ts=float(row.get("last_ts", 0.0)),
+        has_last=bool(row.get("has_last", False)),
+        weight=float(row.get("weight", 0.0)),
+        sum_v=float(row.get("sum_v", 0.0)),
+        sum_sq=float(row.get("sum_sq", 0.0)),
+      )
+    self._last_seen = OrderedDict()
+    for row in state.get("last_seen", []) or []:
+      key = (str(row.get("group", "")), str(row.get("stream_key", "")))
+      self._last_seen[key] = float(row.get("ts", 0.0))
+
 
 # Five decay windows to align with Kitsune-style time scales (short to long).
 _ONLINE_WINDOWS = (("01", 0.1), ("1", 1.0), ("5", 5.0), ("30", 30.0), ("120", 120.0))
@@ -240,14 +287,7 @@ class FeatureExtractor:
     )
     return features
 
-  def _extract_zscore_features(self, evt: Any) -> Dict[str, float]:
-    token = self._syscall_token(evt)
-    features = self._sequence_context.observe_embedding(
-      stream_id=self._tid(evt),
-      token=token,
-    )
-    features.update(_extract_time_features(evt.ts_unix_nano, mode="day_cycle"))
-    return features
+ 
 
   def extract_feature_dict(self, evt: Any, feature_view: str = "default") -> Dict[str, float]:
     fv = (feature_view or "default").strip().lower()
@@ -264,6 +304,20 @@ class FeatureExtractor:
     if cfg is not None and event_group and event_group in cfg.groups:
       out.update(_extract_group_features(evt, view, event_group, self._online_stats))
     return out
+
+  def get_state(self) -> dict:
+    return {
+      "online_stats": self._online_stats.get_state(),
+      "sequence_context": self._sequence_context.get_state(),
+    }
+
+  def set_state(self, state: dict) -> None:
+    online_state = state.get("online_stats", None)
+    if isinstance(online_state, dict):
+      self._online_stats.set_state(online_state)
+    seq_state = state.get("sequence_context", None)
+    if isinstance(seq_state, dict):
+      self._sequence_context.set_state(seq_state)
 
 
 def _safe_int(raw: str, default: int = 0) -> int:
@@ -368,9 +422,7 @@ def feature_view_for_algorithm(algorithm: str | None) -> str:
   algo = (algorithm or "").strip().lower()
   if algo in ("sequence_mlp", "sequence_transformer"):
     return "sequence"
-  if algo == "zscore":
-    return "zscore"
-  if algo in ("freq1d", "copulatree", "latentcluster"):
+  if algo in ("freq1d", "copulatree", "latentcluster", "zscore"):
     return "frequency"
   if algo in ("loda", "loda_ema"):
     return "loda"
@@ -381,8 +433,6 @@ def feature_view_for_algorithm(algorithm: str | None) -> str:
 
 def _feature_view_spec(feature_view: str | None) -> _FeatureViewSpec:
   normalized = (feature_view or "default").strip().lower()
-  if normalized == "zscore":
-    return _FULL_FEATURE_VIEW
   if normalized == "frequency":
     return _FREQUENCY_FEATURE_VIEW
   if normalized in ("default", "full", "encoded"):
@@ -599,7 +649,6 @@ def _extract_generic_features(evt: Any, view: _FeatureViewSpec) -> Dict[str, flo
   return_success, return_errno_norm = _norm_return_errno(return_val)
 
   out: Dict[str, float] = {
-    "pid_norm": _norm_pid(pid_val),
     "tid_norm": _norm_pid(tid_val),
     "uid_norm": _norm_uid(uid_val),
     "arg0_norm": _norm_arg(arg0_val),
@@ -608,6 +657,8 @@ def _extract_generic_features(evt: Any, view: _FeatureViewSpec) -> Dict[str, flo
     "return_success": return_success,
     "return_errno_norm": return_errno_norm,
   }
+  if not view.use_hash_for_categoricals:
+    out["pid_norm"] = _norm_pid(pid_val)
   out.update(_extract_time_features(ts_ns, mode=view.time_feature_mode))
   out["week_of_month_norm"] = (week_of_month - 1) / 3.0
 
@@ -616,6 +667,7 @@ def _extract_generic_features(evt: Any, view: _FeatureViewSpec) -> Dict[str, flo
     if view.include_general_context_buckets:
       out["comm_hash"] = _hash01(comm)
       out["hostname_hash"] = _hash01(evt.hostname or "")
+      out["pid_hash"] = _hash01(pid_str)
     if view.include_general_path_tokens:
       out["path_hash"] = _hash01(path)
       out["path_prefix_hash"] = _hash01(path_prefix)

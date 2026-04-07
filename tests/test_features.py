@@ -4,6 +4,7 @@ import numpy as np
 import events_pb2
 from detector.features import (
   extract_feature_dict,
+  feature_view_for_algorithm,
 )
 
 
@@ -382,20 +383,24 @@ def test_extract_feature_dict_frequency_view_returns_expected_schema():
   assert len(values) == 15
 
 
-def test_extract_feature_dict_zscore_view_uses_syscall_embedding_and_day_cycle():
+def test_extract_feature_dict_zscore_algorithm_uses_frequency_view_schema():
   evt = _evt(
     event_id="feat-zscore",
-    syscall_name="execve",
-    tid="7",
+    event_group="file",
+    syscall_nr=257,
+    syscall_name="openat",
+    hostname="node-1",
+    path="/etc/passwd",
+    attributes={"return_value": "0", "flags": "O_RDONLY"},
     ts_unix_nano=1_700_000_000_000_000_000,
   )
-  values = extract_feature_dict(evt, feature_view="zscore")
-  assert "day_cycle_sin" in values
-  assert "day_cycle_cos" in values
-  assert "week_of_month_norm" not in values
+  # zscore should use the frequency view (hashed categoricals, day_fraction_norm time feature).
+  values = extract_feature_dict(evt, feature_view=feature_view_for_algorithm("zscore"))
+  assert "day_fraction_norm" in values
+  assert "day_cycle_sin" not in values
   assert "pid_norm" not in values
-  assert "sequence_ctx_000" not in values
-  assert len([name for name in values if name.startswith("syscall_w2v_")]) == 5
+  assert "flags_hash" not in values
+  assert "path_hash" in values
 
 
 def test_extract_feature_dict_frequency_view_keeps_type_specific_hashes():

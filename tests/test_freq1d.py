@@ -96,7 +96,7 @@ def test_freq1d_checkpoint_save_load_preserves_scores():
         ckpt_det.save_checkpoint(ckpt, 50)
 
     loaded = OnlineAnomalyDetector(algorithm="freq1d", freq1d_bins=32, freq1d_max_categories=128, freq1d_aggregation="mean", seed=7)
-    idx = loaded.load_checkpoint(ckpt)
+    idx, _ = loaded.load_checkpoint(ckpt)
     assert idx == 50
     for i in range(50, 100):
       loaded.score_and_learn(events[i])

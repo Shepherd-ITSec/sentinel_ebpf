@@ -164,12 +164,17 @@ def test_main_writes_anomaly_and_reports_confusion(tmp_path, monkeypatch, caplog
 
     def load_checkpoint(self, path):
       assert path == checkpoint
+      return 0, None
 
     def score_and_learn_event(self, evt, feature_fn):
       feature_fn(evt)
       return next(self._scores)
 
-  monkeypatch.setattr(score_from_checkpoint, "_make_detector", lambda algorithm: (FakeDetector(), lambda evt: {}))
+  class FakeExtractor:
+    def set_state(self, state):
+      assert state is None or isinstance(state, dict)
+
+  monkeypatch.setattr(score_from_checkpoint, "_make_detector", lambda algorithm: (FakeDetector(), FakeExtractor(), lambda evt: {}))
   monkeypatch.setattr(
     score_from_checkpoint,
     "_dict_to_event_envelope",

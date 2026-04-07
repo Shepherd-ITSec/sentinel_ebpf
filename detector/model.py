@@ -2379,12 +2379,13 @@ class OnlineAnomalyDetector:
     debug = getter()
     return debug if isinstance(debug, dict) else {}
 
-  def save_checkpoint(self, path: Path, checkpoint_index: int) -> None:
+  def save_checkpoint(self, path: Path, checkpoint_index: int, *, feature_state: dict | None = None) -> None:
     """Save detector state after learning events 0..checkpoint_index-1."""
     state = {
       "algorithm": self.algorithm,
       "checkpoint_index": checkpoint_index,
       "impl_state": self.impl.get_state(),
+      "feature_state": feature_state,
     }
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -2392,8 +2393,8 @@ class OnlineAnomalyDetector:
       pickle.dump(state, f, protocol=pickle.HIGHEST_PROTOCOL)
     logging.info("Saved checkpoint at index %d to %s", checkpoint_index, path)
 
-  def load_checkpoint(self, path: Path) -> int:
-    """Load detector state. Returns checkpoint_index (events 0..index-1 were learned)."""
+  def load_checkpoint(self, path: Path) -> tuple[int, dict | None]:
+    """Load detector state. Returns (checkpoint_index, feature_state)."""
     path = Path(path)
     with path.open("rb") as f:
       state = pickle.load(f)
@@ -2405,7 +2406,8 @@ class OnlineAnomalyDetector:
     self.impl.set_state(state["impl_state"])
     idx = int(state["checkpoint_index"])
     logging.info("Loaded checkpoint from %s (index %d)", path, idx)
-    return idx
+    feature_state = state.get("feature_state", None)
+    return idx, (feature_state if isinstance(feature_state, dict) else None)
 
   def compute_feature_attribution(
     self,

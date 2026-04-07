@@ -144,7 +144,7 @@ def test_latentcluster_checkpoint_save_load_preserves_scores():
       latentcluster_max_clusters=6,
       seed=7,
     )
-    idx = loaded.load_checkpoint(ckpt)
+    idx, _ = loaded.load_checkpoint(ckpt)
     assert idx == 50
     for i in range(50, 100):
       loaded.score_and_learn(events[i])

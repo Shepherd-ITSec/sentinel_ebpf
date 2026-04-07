@@ -170,8 +170,10 @@ def main() -> None:
 
   cfg = load_config()
   threshold = float(args.threshold) if args.threshold is not None else float(cfg.threshold)
-  detector, feature_fn = _make_detector(args.algorithm)
-  detector.load_checkpoint(args.checkpoint)
+  detector, extractor, feature_fn = _make_detector(args.algorithm)
+  _, feature_state = detector.load_checkpoint(args.checkpoint)
+  if feature_state is not None:
+    extractor.set_state(feature_state)
 
   percentiles: dict[str, OnlinePercentileCalibrator] = {}
   warmup_counts: dict[str, int] = {}

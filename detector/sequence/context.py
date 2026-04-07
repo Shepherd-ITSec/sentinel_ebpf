@@ -82,6 +82,23 @@ class SequenceContextFeatureExtractor:
     return {name: 0.0 for name in self._context_feature_names}
 
   def observe_token(self, *, stream_id: int, token: str) -> SequenceFeatureDict:
+    """Observe one token and return a flattened n-gram context feature vector.
+
+    This is used by sequence models (e.g. `sequence_mlp`) that predict the *next*
+    token from the previous (n-1) token embeddings.
+
+    Behavior:
+    - Updates the online Word2Vec model with the new token for this stream.
+    - Maintains an n-gram ring buffer per stream (thread-aware when configured).
+    - Returns a fixed-size feature dict representing the context (previous (n-1)
+      embeddings concatenated) once the buffer is full.
+
+    Output:
+    - Always returns a `SequenceFeatureDict` with the same keys (`context_feature_names`).
+    - `sequence_meta.ready` is False until the n-gram buffer has enough history.
+    - `sequence_meta.target_id` is the registered class id for `token`, which is
+      typically used as the supervised target for next-token prediction.
+    """
     self._event_index += 1
     target_id = self._classes.register(token)
     self._w2v.observe(int(stream_id), token)
@@ -120,6 +137,16 @@ class SequenceContextFeatureExtractor:
     )
 
   def observe_embedding(self, *, stream_id: int, token: str) -> dict[str, float]:
+    """Observe one token and return its embedding features only (no n-gram context).
+
+    This is used by models like `zscore` that operate on a per-event numeric vector
+    and do not require next-token targets or n-gram buffering.
+
+    Behavior:
+    - Updates the online Word2Vec model with the new token for this stream.
+    - Optionally trains on pending sentences every `update_every` events.
+    - Returns the current token's embedding as `syscall_w2v_###` feature keys.
+    """
     self._event_index += 1
     self._classes.register(token)
     self._w2v.observe(int(stream_id), token)
@@ -136,3 +163,39 @@ class SequenceContextFeatureExtractor:
       name: float(value)
       for name, value in zip(self._embedding_feature_names, emb, strict=True)
     }
+
+  def export_word2vec_matrix(self, *, limit: int | None = None) -> tuple[list[str], "list[list[float]]"]:
+    """
+    Export the current Word2Vec vocabulary and embedding matrix.
+
+    This is intentionally a simple interchange format (tokens + nested lists) so callers
+    can serialize it without depending on gensim internals.
+    """
+    tokens, mat = self._w2v.export_matrix(limit=limit)
+    return tokens, mat.tolist()
+
+  def get_state(self) -> dict:
+    return {
+      "feature_prefix": str(self._feature_prefix),
+      "n_full": int(self._n_full),
+      "emb_dim": int(self._emb_dim),
+      "update_every": int(self._update_every),
+      "epochs": int(self._epochs),
+      "lr_scale_post": float(self._lr_scale_post),
+      "warmup_events": int(self._warmup_events),
+      "event_index": int(self._event_index),
+      "classes": self._classes.to_serializable(),
+      "w2v": self._w2v.get_state(),
+      "ngram": self._ngram.get_state(),
+    }
+
+  def set_state(self, state: dict) -> None:
+    # Keep constructor-derived shapes; only restore running state.
+    self._event_index = int(state.get("event_index", self._event_index))
+    self._classes.load_from_pairs(list(state.get("classes", []) or []))
+    w2v_state = state.get("w2v", None)
+    if isinstance(w2v_state, dict):
+      self._w2v.set_state(w2v_state)
+    ngram_state = state.get("ngram", None)
+    if isinstance(ngram_state, dict):
+      self._ngram.set_state(ngram_state)

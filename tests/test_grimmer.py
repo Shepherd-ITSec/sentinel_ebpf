@@ -17,8 +17,6 @@ from detector.sequence.ngram_buffer import StreamNgramBuffer
 def test_feature_view_maps_sequence_algorithms() -> None:
   assert feature_view_for_algorithm("sequence_mlp") == "sequence"
   assert feature_view_for_algorithm("sequence_transformer") == "sequence"
-  assert feature_view_for_algorithm("zscore") == "zscore"
-
 
 def test_extract_feature_dict_emits_sequence_context_with_metadata() -> None:
   cfg = DetectorConfig(

@@ -479,7 +479,7 @@ def main():
 
   if checkpoint_path is not None and checkpoint_path.exists():
     try:
-      start_from = detector.load_checkpoint(checkpoint_path)
+      start_from, _ = detector.load_checkpoint(checkpoint_path)
       log.info("Resuming from checkpoint: replay events %d..%d", start_from, event_index - 1)
     except ValueError as e:
       log.error("%s", e)

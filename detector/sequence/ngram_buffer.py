@@ -38,3 +38,29 @@ class StreamNgramBuffer:
     if width * (n_context + 1) != len(full_ngram):
       raise ValueError("Invalid n-gram width")
     return full_ngram[: n_context * width]
+
+  def get_state(self) -> dict:
+    def _dump_deque(dq: deque[list[float]]) -> list[list[float]]:
+      return [list(row) for row in list(dq)]
+
+    return {
+      "thread_aware": bool(self._thread_aware),
+      "ngram_length": int(self._ngram_length),
+      "element_width": int(self._element_width),
+      "global": _dump_deque(self._global),
+      "per_stream": {int(k): _dump_deque(v) for k, v in self._per_stream.items()},
+    }
+
+  def set_state(self, state: dict) -> None:
+    self._thread_aware = bool(state.get("thread_aware", self._thread_aware))
+    self._ngram_length = int(state.get("ngram_length", self._ngram_length))
+    self._element_width = int(state.get("element_width", self._element_width))
+    self._global = deque(maxlen=self._ngram_length)
+    for row in state.get("global", []) or []:
+      self._global.append([float(x) for x in row])
+    self._per_stream = defaultdict(lambda: deque(maxlen=self._ngram_length))
+    per = state.get("per_stream", {}) or {}
+    for k, rows in per.items():
+      dq = self._per_stream[int(k)]
+      for row in rows or []:
+        dq.append([float(x) for x in row])

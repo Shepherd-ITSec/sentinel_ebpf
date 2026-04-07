@@ -12,7 +12,7 @@ import argparse
 import logging
 import sys
 from pathlib import Path
-from typing import Callable, Dict
+from typing import Any, Callable, Dict
 
 import events_pb2
 try:
@@ -33,7 +33,9 @@ def _dict_to_event_envelope(obj: dict) -> events_pb2.EventEnvelope:
   return envelope_from_dict(obj)
 
 
-def _make_detector(algo: str) -> tuple[OnlineAnomalyDetector, Callable[[events_pb2.EventEnvelope], Dict[str, float]]]:
+def _make_detector(
+  algo: str,
+) -> tuple[OnlineAnomalyDetector, Any, Callable[[events_pb2.EventEnvelope], Dict[str, float]]]:
   cfg = load_config()
   extractor = build_feature_extractor(cfg)
   detector = OnlineAnomalyDetector(
@@ -102,7 +104,7 @@ def _make_detector(algo: str) -> tuple[OnlineAnomalyDetector, Callable[[events_p
   def feature_fn(evt: events_pb2.EventEnvelope) -> Dict[str, float]:
     return extractor.extract_feature_dict(evt, feature_view=feature_view)
 
-  return detector, feature_fn
+  return detector, extractor, feature_fn
 
 
 def main() -> None:
@@ -121,7 +123,7 @@ def main() -> None:
     log.error("File not found: %s", path)
     raise SystemExit(1)
 
-  detector, feature_fn = _make_detector(args.algorithm)
+  detector, extractor, feature_fn = _make_detector(args.algorithm)
   fmt = _detect_format(path)
   event_iter = iter_events_jsonl(path, max_events=args.max_events, skip=args.skip) if fmt == "jsonl" else iter_events(path, max_events=args.max_events, skip=args.skip)
 
@@ -164,7 +166,7 @@ def main() -> None:
     log.error("No events processed; nothing to save.")
     raise SystemExit(2)
 
-  detector.save_checkpoint(args.out, n)
+  detector.save_checkpoint(args.out, n, feature_state=extractor.get_state())
   log.info("Saved checkpoint: %s (events learned: %d)", args.out, n)
 
 

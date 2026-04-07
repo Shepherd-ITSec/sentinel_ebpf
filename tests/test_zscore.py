@@ -67,7 +67,7 @@ def test_zscore_checkpoint_save_load_preserves_scores():
         ckpt_det.save_checkpoint(ckpt, 50)
 
     loaded = OnlineAnomalyDetector(algorithm="zscore", zscore_min_count=5, seed=7)
-    idx = loaded.load_checkpoint(ckpt)
+    idx, _ = loaded.load_checkpoint(ckpt)
     assert idx == 50
     for i in range(50, 100):
       loaded.score_and_learn(events[i])

@@ -65,7 +65,7 @@ class DetectorConfig:
   # - raw: threshold on raw model score (unbounded, model-dependent)
   # - scaled: threshold on bounded [0,1] score (most models: 1-exp(-raw))
   # - percentile: threshold on online percentile of (log1p(raw)) per event_group
-  score_mode: str = "percentile"  # raw | scaled | percentile
+  score_mode: str = "raw"  # raw | scaled | percentile
   # percentile calibration window (per event_group): number of past scores kept for percentile estimate
   percentile_window_size: int = 2048
   # warmup samples before percentile thresholding becomes active (before that percentile score is 0)
