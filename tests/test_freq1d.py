@@ -132,7 +132,7 @@ def test_freq1d_categorical_cap_does_not_explode():
     assert len(d) <= impl.max_categories
 
 
-def test_freq1d_treats_bucket_and_event_onehot_features_as_categorical():
+def test_freq1d_treats_hash_and_event_onehot_features_as_categorical():
   det = OnlineAnomalyDetector(
     algorithm="freq1d",
     freq1d_bins=16,
@@ -145,10 +145,9 @@ def test_freq1d_treats_bucket_and_event_onehot_features_as_categorical():
   features = {
     "group_syscall_openat": 1.0,
     "group_syscall_connect": 0.0,
-    "comm_bucket_000": 1.0,
-    "comm_bucket_001": 0.0,
-    "hostname_bucket_000": 1.0,
-    "path_tok_d0_bucket_000": 1.0,
+    "comm_hash": 0.1234,
+    "hostname_hash": 0.5678,
+    "path_hash": 0.9012,
     "return_success": 1.0,
     "x_norm": 0.25,
   }
@@ -164,13 +163,13 @@ def test_freq1d_treats_bucket_and_event_onehot_features_as_categorical():
   }
   assert "group_syscall_openat" in categorical_names
   assert "group_syscall_connect" in categorical_names
-  assert "comm_bucket_000" in categorical_names
-  assert "hostname_bucket_000" in categorical_names
-  assert "path_tok_d0_bucket_000" in categorical_names
+  assert "comm_hash" in categorical_names
+  assert "hostname_hash" in categorical_names
+  assert "path_hash" in categorical_names
   assert "x_norm" not in categorical_names
 
 
-def test_freq1d_treats_type_specific_encoded_banks_as_categorical():
+def test_freq1d_treats_type_specific_encoded_hashes_as_categorical():
   det = OnlineAnomalyDetector(
     algorithm="freq1d",
     freq1d_bins=16,
@@ -182,12 +181,12 @@ def test_freq1d_treats_type_specific_encoded_banks_as_categorical():
   )
   features = {
     "group_syscall_openat": 1.0,
-    "group_ext_bucket_000": 1.0,
-    "group_flags_bucket_000": 1.0,
-    "net_socket_type_bucket_000": 1.0,
-    "net_daddr_bucket_000": 1.0,
-    "net_af_af_inet": 1.0,
-    "net_fd_norm": 0.25,
+    "file_ext_hash": 0.11,
+    "file_flags_hash": 0.22,
+    "net_socket_type_hash": 0.33,
+    "net_daddr_hash": 0.44,
+    "net_af_hash": 0.55,
+    "net_addrlen_norm": 0.25,
   }
   det.score_and_learn(features)
 
@@ -200,12 +199,12 @@ def test_freq1d_treats_type_specific_encoded_banks_as_categorical():
     if kind == "cat"
   }
   assert "group_syscall_openat" in categorical_names
-  assert "group_ext_bucket_000" in categorical_names
-  assert "group_flags_bucket_000" in categorical_names
-  assert "net_socket_type_bucket_000" in categorical_names
-  assert "net_daddr_bucket_000" in categorical_names
-  assert "net_af_af_inet" in categorical_names
-  assert "net_fd_norm" not in categorical_names
+  assert "file_ext_hash" in categorical_names
+  assert "file_flags_hash" in categorical_names
+  assert "net_socket_type_hash" in categorical_names
+  assert "net_daddr_hash" in categorical_names
+  assert "net_af_hash" in categorical_names
+  assert "net_addrlen_norm" not in categorical_names
 
 
 def test_freq1d_aggregation_modes_ordering():

@@ -64,7 +64,8 @@ def test_sequence_mlp_checkpoint_restores_word2vec_and_scores_match() -> None:
   full_det, full_ex, full_fn = make_pair()
   for evt in events[:-1]:
     full_det.score_and_learn_event(evt, feature_fn=full_fn)
-  full_raw, full_scaled = full_det.score_only(full_fn(events[-1]))
+  last_feats, last_meta = full_fn(events[-1])
+  full_raw, full_scaled = full_det.score_only(last_feats, meta=last_meta)
 
   # Checkpoint at mid-point; load and continue should match exactly.
   ckpt_det, ckpt_ex, ckpt_fn = make_pair()
@@ -83,7 +84,8 @@ def test_sequence_mlp_checkpoint_restores_word2vec_and_scores_match() -> None:
 
     for evt in events[4:-1]:
       loaded_det.score_and_learn_event(evt, feature_fn=loaded_fn)
-    loaded_raw, loaded_scaled = loaded_det.score_only(loaded_fn(events[-1]))
+    ld_feats, ld_meta = loaded_fn(events[-1])
+    loaded_raw, loaded_scaled = loaded_det.score_only(ld_feats, meta=ld_meta)
 
     assert np.isfinite(full_raw) and np.isfinite(loaded_raw)
     assert np.isfinite(full_scaled) and np.isfinite(loaded_scaled)

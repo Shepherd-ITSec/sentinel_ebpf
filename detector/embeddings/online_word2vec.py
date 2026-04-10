@@ -26,9 +26,9 @@ logging.getLogger("gensim").setLevel(logging.WARNING)
 
 class OnlineTokenWord2Vec:
   """
-  Per-thread sentence streams → periodic gensim Word2Vec updates.
+  Per-actor sentence streams → periodic gensim Word2Vec updates.
 
-  Each time a thread's token deque reaches ``sentence_len``, we enqueue that
+  Each time a actor's token deque reaches ``sentence_len``, we enqueue that
   sentence (list of syscall name strings) for training.
   """
 
@@ -40,6 +40,10 @@ class OnlineTokenWord2Vec:
     seed: int,
     w2v_window: int,
     w2v_sg: int = 1,
+    update_every: int = 1,
+    epochs: int = 1,
+    warmup_events: int = 0,
+    post_warmup_lr_scale: float = 0.25,
     alpha: float = 0.025,
     min_alpha: float = 1e-4,
   ) -> None:
@@ -48,32 +52,58 @@ class OnlineTokenWord2Vec:
     self._seed = int(seed)
     self._w2v_window = int(w2v_window)
     self._w2v_sg = int(w2v_sg)
+    self._update_every = max(1, int(update_every))
+    self._epochs = max(1, int(epochs))
+    self._warmup_events = int(warmup_events)
+    self._post_warmup_lr_scale = float(post_warmup_lr_scale)
+    self._event_index = 0
     self._alpha = float(alpha)
     self._min_alpha = float(min_alpha)
     self._model: Word2Vec | None = None
-    self._token_streams: dict[int, deque[str]] = {}
-    self._pending_sentences: list[list[str]] = []
+    self._sentences: dict[int, deque[str]] = {}
+    self._pending_finished_sentences: list[list[str]] = []
 
-  def observe(self, tid: int, token: str) -> None:
-    """Append one token to the per-thread stream; maybe enqueue a training sentence."""
-    t = int(tid)
-    tok = (token or "").strip().lower() or "__empty__"
-    if t not in self._token_streams:
-      self._token_streams[t] = deque(maxlen=self.sentence_len)
-    d = self._token_streams[t]
-    d.append(tok)
+  def append_word_to_sentence(self, sentence_id: int, word: str) -> None:
+    """Append one word to the sentence; If sentence is full, enqueue it for training."""
+    sentence_idx = int(sentence_id)
+    token = (word or "").strip().lower() or "__empty__"
+    if sentence_idx not in self._sentences:
+      self._sentences[sentence_idx] = deque(maxlen=self.sentence_len)
+    d = self._sentences[sentence_idx]
+    d.append(token)
     if len(d) == self.sentence_len:
-      self._pending_sentences.append(list(d))
+      self._pending_finished_sentences.append(list(d))
+
+  def observe_and_vector(self, sentence_id: int, word: str) -> np.ndarray:
+    """
+    Observe one word and return its current embedding vector.
+
+    This method encapsulates the "background learning" cadence:
+    - collects per-actor fixed-length sentences
+    - every `update_every` events, trains on all pending sentences (if any)
+    - uses a warmup phase where LR is not scaled down, then applies `post_warmup_lr_scale`
+    """
+    self._event_index += 1
+    self.append_word_to_sentence(sentence_id, word)
+
+    in_warmup = self._event_index <= self._warmup_events
+    if self._event_index % self._update_every == 0:
+      pending = self.drain_pending_finished_sentences()
+      if pending:
+        alpha_scale = 1.0 if in_warmup else self._post_warmup_lr_scale
+        self.train_on_finished_sentences(pending, epochs=self._epochs, alpha_scale=alpha_scale)
+
+    return self.vector_for(word)
 
   def pending_count(self) -> int:
-    return len(self._pending_sentences)
+    return len(self._pending_finished_sentences)
 
-  def drain_pending_sentences(self) -> list[list[str]]:
-    out = self._pending_sentences
-    self._pending_sentences = []
+  def drain_pending_finished_sentences(self) -> list[list[str]]:
+    out = self._pending_finished_sentences
+    self._pending_finished_sentences = []
     return out
 
-  def train_on_sentences(
+  def train_on_finished_sentences(
     self,
     sentences: list[list[str]],
     *,
@@ -156,11 +186,16 @@ class OnlineTokenWord2Vec:
       "seed": int(self._seed),
       "w2v_window": int(self._w2v_window),
       "w2v_sg": int(self._w2v_sg),
+      "update_every": int(self._update_every),
+      "epochs": int(self._epochs),
+      "warmup_events": int(self._warmup_events),
+      "post_warmup_lr_scale": float(self._post_warmup_lr_scale),
+      "event_index": int(self._event_index),
       "alpha": float(self._alpha),
       "min_alpha": float(self._min_alpha),
       "model": self._model,
-      "token_streams": {int(t): list(d) for t, d in self._token_streams.items()},
-      "pending_sentences": [list(s) for s in self._pending_sentences],
+      "sentences": {int(t): list(d) for t, d in self._sentences.items()},
+      "pending_finished_sentences": [list(s) for s in self._pending_finished_sentences],
     }
 
   def set_state(self, state: dict) -> None:
@@ -169,13 +204,18 @@ class OnlineTokenWord2Vec:
     self._seed = int(state.get("seed", self._seed))
     self._w2v_window = int(state.get("w2v_window", self._w2v_window))
     self._w2v_sg = int(state.get("w2v_sg", self._w2v_sg))
+    self._update_every = max(1, int(state.get("update_every", self._update_every)))
+    self._epochs = max(1, int(state.get("epochs", self._epochs)))
+    self._warmup_events = int(state.get("warmup_events", self._warmup_events))
+    self._post_warmup_lr_scale = float(state.get("post_warmup_lr_scale", self._post_warmup_lr_scale))
+    self._event_index = int(state.get("event_index", self._event_index))
     self._alpha = float(state.get("alpha", self._alpha))
     self._min_alpha = float(state.get("min_alpha", self._min_alpha))
     self._model = state.get("model", None)
-    self._token_streams = {}
-    for t, toks in (state.get("token_streams", {}) or {}).items():
+    self._sentences = {}
+    for sentence_id, words in (state.get("sentences", {}) or {}).items():  
       dq = deque(maxlen=self.sentence_len)
-      for tok in toks or []:
-        dq.append((str(tok) or "").strip().lower() or "__empty__")
-      self._token_streams[int(t)] = dq
-    self._pending_sentences = [list(map(str, s)) for s in (state.get("pending_sentences", []) or [])]
+      for word in words or []:
+        dq.append((str(word) or "").strip().lower() or "__empty__")
+      self._sentences[int(sentence_id)] = dq
+    self._pending_finished_sentences = [list(map(str, s)) for s in (state.get("pending_finished_sentences", []) or [])]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
 import numpy as np
@@ -8,7 +9,8 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from detector.sequence.context import SequenceFeatureDict
+from detector.meta import Meta
+from detector.sequence.context import SequenceFeatureMeta
 
 logger = logging.getLogger(__name__)
 
@@ -150,14 +152,12 @@ class OnlineSequenceMLP:
     self._optimizer = optim.Adam(self._model.parameters(), lr=self._lr)
 
   @staticmethod
-  def _meta_from_features(features: dict[str, float]) -> Any | None:
-    meta = getattr(features, "sequence_meta", None)
-    if meta is None and isinstance(features, SequenceFeatureDict):
-      meta = features.sequence_meta
-    return meta
+  def _meta_from_features(_features: dict[str, float], meta: Meta | None = None) -> SequenceFeatureMeta | None:
+    return meta if isinstance(meta, SequenceFeatureMeta) else None
 
-  def score_only_raw(self, features: dict[str, float]) -> float:
-    meta = self._meta_from_features(features)
+
+  def score_only_raw(self, features: dict[str, float], *, meta: Meta | None = None) -> float:
+    meta = self._meta_from_features(features, meta)
     if meta is None or not bool(meta.ready):
       return 0.0
     x = self._vectorize(features)
@@ -174,13 +174,13 @@ class OnlineSequenceMLP:
       py = float(probs[target_id].clamp(1e-8, 1.0).item())
     return float(1.0 - py)
 
-  def score_only(self, features: dict[str, float]) -> tuple[float, float]:
-    raw = self.score_only_raw(features)
-    scaled = 1.0 - float(np.exp(-max(0.0, raw)))
+  def score_only(self, features: dict[str, float], *, meta: Meta | None = None) -> tuple[float, float]:
+    raw = self.score_only_raw(features, meta=meta)
+    scaled = 1.0 - float(math.exp(-max(0.0, raw)))
     return float(raw), float(scaled)
 
-  def score_and_learn_raw(self, features: dict[str, float]) -> float:
-    meta = self._meta_from_features(features)
+  def score_and_learn_raw(self, features: dict[str, float], *, meta: Meta | None = None) -> float:
+    meta = self._meta_from_features(features, meta)
     if meta is None or not bool(meta.ready):
       return 0.0
     x = self._vectorize(features)
@@ -209,9 +209,9 @@ class OnlineSequenceMLP:
       py_eval = float(p_eval[target_id].clamp(1e-8, 1.0).item())
     return float(1.0 - py_eval)
 
-  def score_and_learn(self, features: dict[str, float]) -> tuple[float, float]:
-    raw = self.score_and_learn_raw(features)
-    scaled = 1.0 - float(np.exp(-max(0.0, raw)))
+  def score_and_learn(self, features: dict[str, float], *, meta: Meta | None = None) -> tuple[float, float]:
+    raw = self.score_and_learn_raw(features, meta=meta)
+    scaled = 1.0 - float(math.exp(-max(0.0, raw)))
     return float(raw), float(scaled)
 
   def get_state(self) -> dict[str, Any]:

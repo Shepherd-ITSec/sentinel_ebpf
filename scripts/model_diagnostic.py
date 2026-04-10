@@ -612,11 +612,11 @@ def main() -> None:
       log.info("tqdm not installed; running diagnostic without progress bar")
     for i, obj in enumerate(event_iter):
       evt = _dict_to_event_envelope(obj)
-      features = extract_feature_dict(
+      features, meta = extract_feature_dict(
         evt,
         feature_view=feature_view_for_algorithm(args.algorithm),
       )
-      raw, scaled = detector.score_and_learn(features)
+      raw, scaled = detector.score_and_learn(features, meta=meta)
       debug = detector.get_last_debug()
       impl = detector.impl
       if args.algorithm == "memstream":

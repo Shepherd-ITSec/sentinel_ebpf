@@ -101,7 +101,7 @@ def _make_detector(
   )
   feature_view = feature_view_for_algorithm(algo)
 
-  def feature_fn(evt: events_pb2.EventEnvelope) -> Dict[str, float]:
+  def feature_fn(evt: events_pb2.EventEnvelope):
     return extractor.extract_feature_dict(evt, feature_view=feature_view)
 
   return detector, extractor, feature_fn

@@ -7,7 +7,7 @@ import math
 import pickle
 from collections import deque
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 import numpy as np
 from fenwick import FenwickTree
@@ -29,7 +29,9 @@ except ImportError:
   NearestNeighbors = None
 
 import events_pb2
+from detector.meta import Meta
 from detector.sequence.mlp import OnlineSequenceMLP
+from detector.sequence.context import SequenceFeatureMeta
 
 
 def _auto_loda_projections(input_dim: int) -> int:
@@ -50,13 +52,13 @@ def _fenwick_prefix_sum(tree: Any, i: int) -> float:
 class _BothScoresMixin:
   """Mixin for impls that use 1-exp(-max(0,raw)) squash. Used when impl is instantiated directly (e.g. tests)."""
 
-  def score_only(self, features: Dict[str, float]) -> tuple[float, float]:
-    raw = self.score_only_raw(features)
+  def score_only(self, features: Dict[str, float], *, meta: Meta | None = None) -> tuple[float, float]:
+    raw = self.score_only_raw(features, meta=meta)
     scaled = 1.0 - float(np.exp(-max(0.0, raw)))
     return (float(raw), scaled)
 
-  def score_and_learn(self, features: Dict[str, float]) -> tuple[float, float]:
-    raw = self.score_and_learn_raw(features)
+  def score_and_learn(self, features: Dict[str, float], *, meta: Meta | None = None) -> tuple[float, float]:
+    raw = self.score_and_learn_raw(features, meta=meta)
     scaled = 1.0 - float(np.exp(-max(0.0, raw)))
     return (float(raw), scaled)
 
@@ -107,7 +109,7 @@ class OnlineHalfSpaceTrees:
       window_size,
     )
 
-  def score_only_raw(self, features: Dict[str, float]) -> float:
+  def score_only_raw(self, features: Dict[str, float], *, meta: Meta | None = None) -> float:
     """Return the underlying (unsquashed) score."""
     return float(self.model.score_one(features))
 
@@ -115,7 +117,7 @@ class OnlineHalfSpaceTrees:
     raw = self.score_only_raw(features)
     return (float(raw), float(raw))
 
-  def score_and_learn_raw(self, features: Dict[str, float]) -> float:
+  def score_and_learn_raw(self, features: Dict[str, float], *, meta: Meta | None = None) -> float:
     """Return the underlying (unsquashed) score, learning from this instance."""
     score = self.model.score_one(features)
     self.model.learn_one(features)  # in-place; learn_one returns None
@@ -207,7 +209,7 @@ class OnlineLODAEMA(_BothScoresMixin):
     vec = np.array([float(features[k]) for k in self._feature_names], dtype=np.float32)
     return torch.from_numpy(vec).to(self._device)
 
-  def score_only_raw(self, features: Dict[str, float]) -> float:
+  def score_only_raw(self, features: Dict[str, float], *, meta: Any | None = None) -> float:
     """Return the underlying (unsquashed) score."""
     if self._weights is None:
       self._init_from_features(features)
@@ -244,7 +246,7 @@ class OnlineLODAEMA(_BothScoresMixin):
     }
     return score
 
-  def score_and_learn_raw(self, features: Dict[str, float]) -> float:
+  def score_and_learn_raw(self, features: Dict[str, float], *, meta: Any | None = None) -> float:
     """Return the underlying (unsquashed) score, learning from this instance."""
     if self._weights is None:
       self._init_from_features(features)
@@ -354,7 +356,7 @@ class OnlinePysadLODA(_BothScoresMixin):
       raise RuntimeError("PySAD LODA feature names not initialized")
     return np.array([float(features[k]) for k in self._feature_names], dtype=np.float64)
 
-  def score_only_raw(self, features: Dict[str, float]) -> float:
+  def score_only_raw(self, features: Dict[str, float], *, meta: Any | None = None) -> float:
     """Return the underlying (unsquashed) score."""
     x = self._vectorize(features)
     if self._model is None:
@@ -374,7 +376,7 @@ class OnlinePysadLODA(_BothScoresMixin):
       raw = 0.0
     return max(0.0, float(raw))
 
-  def score_and_learn_raw(self, features: Dict[str, float]) -> float:
+  def score_and_learn_raw(self, features: Dict[str, float], *, meta: Any | None = None) -> float:
     """Return the underlying (unsquashed) score, learning from this instance."""
     x = self._vectorize(features)
     if self._model is None:
@@ -483,7 +485,7 @@ class OnlineKitNet(_BothScoresMixin):
       raise RuntimeError("KitNet feature names not initialized")
     return np.array([float(features[k]) for k in self._feature_names], dtype=np.float64)
 
-  def score_only_raw(self, features: Dict[str, float]) -> float:
+  def score_only_raw(self, features: Dict[str, float], *, meta: Any | None = None) -> float:
     """Return the underlying (unsquashed) score."""
     x = self._vectorize(features)
     if self._model is None:
@@ -501,7 +503,7 @@ class OnlineKitNet(_BothScoresMixin):
       raw = 0.0
     return max(0.0, float(raw))
 
-  def score_and_learn_raw(self, features: Dict[str, float]) -> float:
+  def score_and_learn_raw(self, features: Dict[str, float], *, meta: Any | None = None) -> float:
     """Return the underlying (unsquashed) score, learning from this instance."""
     x = self._vectorize(features)
     if self._model is None:
@@ -781,7 +783,7 @@ class OnlineMemStream(_BothScoresMixin):
   def get_last_debug(self) -> Dict[str, Any]:
     return dict(self._last_debug)
 
-  def score_only_raw(self, features: Dict[str, float]) -> float:
+  def score_only_raw(self, features: Dict[str, float], *, meta: Any | None = None) -> float:
     """Return the underlying (unsquashed) score. Paper: K-NN discounted L1 to memory."""
     if self._model is None or self._optimizer is None:
       self._init_from_features(features)
@@ -815,7 +817,7 @@ class OnlineMemStream(_BothScoresMixin):
     }
     return score_raw
 
-  def score_and_learn_raw(self, features: Dict[str, float]) -> float:
+  def score_and_learn_raw(self, features: Dict[str, float], *, meta: Any | None = None) -> float:
     """Return the underlying (unsquashed) score, learning from this instance."""
     if self._model is None or self._optimizer is None:
       self._init_from_features(features)
@@ -1014,11 +1016,11 @@ class OnlineZScore(_BothScoresMixin):
     delta2 = x - mean
     m2 += delta * delta2
 
-  def score_only_raw(self, features: Dict[str, float]) -> float:
+  def score_only_raw(self, features: Dict[str, float], *, meta: Any | None = None) -> float:
     x = self._vectorize(features)
     return max(0.0, self._raw_from_vector(x))
 
-  def score_and_learn_raw(self, features: Dict[str, float]) -> float:
+  def score_and_learn_raw(self, features: Dict[str, float], *, meta: Any | None = None) -> float:
     """Return the underlying (unsquashed) score, learning from this instance."""
     x = self._vectorize(features)
     raw = self._raw_from_vector(x)
@@ -1124,11 +1126,11 @@ class OnlineKNN(_BothScoresMixin):
       self._mem_index = (self._mem_index + 1) % self.memory_size
     self._memory[idx] = x
 
-  def score_only_raw(self, features: Dict[str, float]) -> float:
+  def score_only_raw(self, features: Dict[str, float], *, meta: Any | None = None) -> float:
     x = self._vectorize(features)
     return self._raw_from_vector(x)
 
-  def score_and_learn_raw(self, features: Dict[str, float]) -> float:
+  def score_and_learn_raw(self, features: Dict[str, float], *, meta: Any | None = None) -> float:
     """Return the underlying (unsquashed) score, learning from this instance."""
     x = self._vectorize(features)
     raw = self._raw_from_vector(x)
@@ -1172,7 +1174,13 @@ class OnlineFreq1D(_BothScoresMixin):
   so cold-start produces score ~0 (uniform baseline).
   """
 
-  _BINARY_FEATURES = frozenset({"return_success", "group_sensitive_path", "group_tmp_path"})
+  _BINARY_FEATURES = frozenset({
+    "return_success",
+    "file_sensitive_path",
+    "file_tmp_path",
+    "proc_sensitive_path",
+    "proc_tmp_path",
+  })
   _HASH_KEY_SPACE = 10000  # hash mode keys are 0..9999
 
   def __init__(
@@ -1273,15 +1281,7 @@ class OnlineFreq1D(_BothScoresMixin):
     return float(np.sum(w * topk) / denom)
 
   _BINARY_PREFIXES = (
-    "comm_bucket_",
-    "hostname_bucket_",
-    "path_tok_d",
     "group_syscall_",
-    "group_ext_bucket_",
-    "group_flags_bucket_",
-    "net_socket_type_bucket_",
-    "net_daddr_bucket_",
-    "net_af_",
   )
 
   def _is_categorical(self, name: str) -> tuple[bool, Optional[str]]:
@@ -1512,7 +1512,7 @@ class OnlineFreq1D(_BothScoresMixin):
     if self._feature_names is None:
       self._init_from_features(features)
 
-  def score_only_raw(self, features: Dict[str, float]) -> float:
+  def score_only_raw(self, features: Dict[str, float], *, meta: Any | None = None) -> float:
     self._ensure_init(features)
     if self._feature_names is None or self._kind is None or self._num_slot is None or self._cat_slot is None or self._cat_mode is None:
       raise RuntimeError("Freq1D not initialized")
@@ -1547,7 +1547,7 @@ class OnlineFreq1D(_BothScoresMixin):
         if slot >= 0:
           self._learn_cat_slot(slot, mode, x)
 
-  def score_and_learn_raw(self, features: Dict[str, float]) -> float:
+  def score_and_learn_raw(self, features: Dict[str, float], *, meta: Any | None = None) -> float:
     self._ensure_init(features)
     raw = self.score_only_raw(features)
     self.learn_only(features)
@@ -1855,12 +1855,12 @@ class OnlineCopulaTree(_BothScoresMixin):
 
     return z
 
-  def score_only_raw(self, features: Dict[str, float]) -> float:
+  def score_only_raw(self, features: Dict[str, float], *, meta: Any | None = None) -> float:
     z = self._to_z(features)
     z_tree = self._maybe_select_and_get_z(z, do_learn=False)
     return self._score_selected_z(z_tree)
 
-  def score_and_learn_raw(self, features: Dict[str, float]) -> float:
+  def score_and_learn_raw(self, features: Dict[str, float], *, meta: Any | None = None) -> float:
     z = self._to_z(features)
     z_tree = self._maybe_select_and_get_z(z, do_learn=True)
     self._ensure_pair_dim(len(z_tree))
@@ -2084,13 +2084,13 @@ class OnlineLatentCluster(_BothScoresMixin):
     self._vars[idx] = np.maximum(self.reg, var_new)
     self._weights[idx] = weight + 1.0
 
-  def score_only_raw(self, features: Dict[str, float]) -> float:
+  def score_only_raw(self, features: Dict[str, float], *, meta: Any | None = None) -> float:
     z = self._to_z(features)
     self._ensure_cluster_arrays(len(z))
     _, best = self._best_cluster(z)
     return max(0.0, float(best))
 
-  def score_and_learn_raw(self, features: Dict[str, float]) -> float:
+  def score_and_learn_raw(self, features: Dict[str, float], *, meta: Any | None = None) -> float:
     z = self._to_z(features)
     self._ensure_cluster_arrays(len(z))
     best_idx, best = self._best_cluster(z)
@@ -2344,15 +2344,29 @@ class OnlineAnomalyDetector:
     self,
     evt: "events_pb2.EventEnvelope",
     *,
-    feature_fn: Callable[["events_pb2.EventEnvelope"], Dict[str, float]],
+    feature_fn: Callable[["events_pb2.EventEnvelope"], Any],
   ) -> tuple[float, float]:
     """Unified server entrypoint: extract features, then pass the feature dict to the model."""
-    features = feature_fn(evt)
-    return self.score_and_learn(features)
+    res = feature_fn(evt)
+    meta: Meta | None = None
+    features: Dict[str, float]
+    if (
+      isinstance(res, tuple)
+      and len(res) == 2
+      and isinstance(res[0], dict)
+      and (res[1] is None or isinstance(res[1], Meta))
+    ):
+      features = cast(Dict[str, float], res[0])
+      meta = cast(Meta | None, res[1])
+    elif isinstance(res, dict):
+      features = cast(Dict[str, float], res)
+    else:
+      raise TypeError("feature_fn must return Dict[str,float] or (Dict[str,float], Meta|None)")
+    return self.score_and_learn(features, meta=meta)
 
-  def score_only(self, features: Dict[str, float]) -> tuple[float, float]:
+  def score_only(self, features: Dict[str, float], *, meta: Meta | None = None) -> tuple[float, float]:
     """Return (raw, scaled) without updating model state (read-only)."""
-    raw = self.impl.score_only_raw(features)
+    raw = self.impl.score_only_raw(features, meta=meta)
     if self.algorithm == "halfspacetrees":
       scaled = float(raw)
     elif self.algorithm in ("copulatree", "latentcluster"):
@@ -2361,9 +2375,11 @@ class OnlineAnomalyDetector:
       scaled = 1.0 - float(np.exp(-max(0.0, raw)))
     return (float(raw), scaled)
 
-  def score_and_learn(self, features: Dict[str, float]) -> tuple[float, float]:
+  def score_and_learn(
+    self, features: Dict[str, float], *, meta: Meta | None = None
+  ) -> tuple[float, float]:
     """Learn once and return (raw, scaled). Scaled is 0-1 for most models; raw==scaled for HalfSpaceTrees."""
-    raw = self.impl.score_and_learn_raw(features)
+    raw = self.impl.score_and_learn_raw(features, meta=meta)
     if self.algorithm == "halfspacetrees":
       scaled = float(raw)
     elif self.algorithm in ("copulatree", "latentcluster"):
@@ -2415,16 +2431,17 @@ class OnlineAnomalyDetector:
     epsilon: float = 0.01,
     *,
     score_mode: str = "raw",
+    meta: Meta | None = None,
   ) -> Tuple[float, Dict[str, float]]:
     """Model-agnostic perturbation-based attribution. Returns (score, {name: attribution})."""
     if score_mode not in ("raw", "lograw", "scaled"):
       raise ValueError("score_mode must be 'raw', 'lograw', or 'scaled'")
     if score_mode == "raw":
-      score_fn = lambda f: self.score_only(f)[0]
+      score_fn = lambda f: self.score_only(f, meta=meta)[0]
     elif score_mode == "scaled":
-      score_fn = lambda f: self.score_only(f)[1]
+      score_fn = lambda f: self.score_only(f, meta=meta)[1]
     else:
-      score_fn = lambda f: math.log1p(max(0.0, float(self.score_only(f)[0])))
+      score_fn = lambda f: math.log1p(max(0.0, float(self.score_only(f, meta=meta)[0])))
     return compute_feature_attribution(self, features, epsilon, score_fn=score_fn)
 
 

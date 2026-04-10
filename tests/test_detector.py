@@ -171,7 +171,7 @@ class TestDetector:
     class FakeExtractor:
       def extract_feature_dict(self, evt, feature_view="default"):
         captured["feature_view"] = feature_view
-        return {"f0": 0.0, "f1": 1.0}
+        return ({"f0": 0.0, "f1": 1.0}, None)
 
     monkeypatch.setattr(server_mod, "build_feature_extractor", lambda cfg: FakeExtractor())
     cfg = DetectorConfig(model_algorithm="memstream", score_mode="scaled")
@@ -193,7 +193,8 @@ class TestDetector:
 
     resp = detector._score_event(evt)
     assert resp.event_id == "view-test"
-    assert captured["feature_view"] == "memstream"
+    # memstream uses the default (sparse) feature view.
+    assert captured["feature_view"] == "default"
 
   @pytest.mark.parametrize("model_algorithm", ("freq1d",))
   def test_freq_models_use_frequency_feature_view(self, monkeypatch, model_algorithm):
@@ -202,7 +203,7 @@ class TestDetector:
     class FakeExtractor:
       def extract_feature_dict(self, evt, feature_view="default"):
         captured["feature_view"] = feature_view
-        return {"f0": 0.0, "f1": 1.0}
+        return ({"f0": 0.0, "f1": 1.0}, None)
 
     monkeypatch.setattr(server_mod, "build_feature_extractor", lambda cfg: FakeExtractor())
     cfg = DetectorConfig(model_algorithm=model_algorithm, score_mode="scaled")
@@ -232,7 +233,7 @@ class TestDetector:
     class FakeExtractor:
       def extract_feature_dict(self, evt, feature_view="default"):
         captured["feature_view"] = feature_view
-        return {"f0": 0.0, "f1": 1.0}
+        return ({"f0": 0.0, "f1": 1.0}, None)
 
     monkeypatch.setattr(server_mod, "build_feature_extractor", lambda cfg: FakeExtractor())
     cfg = DetectorConfig(model_algorithm="zscore", score_mode="scaled")

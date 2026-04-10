@@ -50,6 +50,7 @@ if __package__ is None or __package__ == "":
 import events_pb2
 from detector.config import load_config
 from detector.features import extract_feature_dict, feature_view_for_algorithm
+from detector.meta import Meta
 from detector.model import OnlineAnomalyDetector
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
@@ -162,11 +163,12 @@ def _replay_and_get_target_features(
   checkpoint_at: int | None = None,
   checkpoint_path: Path | None = None,
 ):
-  """Replay events start_from..event_index-1 through score_and_learn, return (features, event_id) for event_index.
+  """Replay events start_from..event_index-1 through score_and_learn, return (features, meta, event_id) for event_index.
   If start_from > 0, detector is assumed pre-loaded from checkpoint (events 0..start_from-1 already learned)."""
   fmt = _detect_format(path)
   event_iter = iter_events_jsonl(path, max_events=event_index + 1) if fmt == "jsonl" else iter_events(path, max_events=event_index + 1)
   target_features = None
+  target_meta: Meta | None = None
   event_id = ""
   start_i = 0
   view = feature_view_for_algorithm(detector.algorithm)
@@ -176,8 +178,8 @@ def _replay_and_get_target_features(
     first = next(event_iter, None)
     if first is not None:
       evt = _dict_to_event_envelope(first)
-      features = extract_feature_dict(evt, feature_view=view)
-      detector.score_and_learn(features)
+      features, meta = extract_feature_dict(evt, feature_view=view)
+      detector.score_and_learn(features, meta=meta)
       start_i = 1
       if checkpoint_at == 1 and checkpoint_path is not None:
         detector.save_checkpoint(checkpoint_path, 1)
@@ -189,17 +191,18 @@ def _replay_and_get_target_features(
   for j, obj in enumerate(it):
     i = start_i + j
     evt = _dict_to_event_envelope(obj)
-    features = extract_feature_dict(evt, feature_view=view)
+    features, meta = extract_feature_dict(evt, feature_view=view)
     if i < event_index:
       if i >= start_from:
-        detector.score_and_learn(features)
+        detector.score_and_learn(features, meta=meta)
       if checkpoint_at is not None and checkpoint_path is not None and i == checkpoint_at - 1:
         detector.save_checkpoint(checkpoint_path, checkpoint_at)
         log.info("Saved checkpoint at index %d", checkpoint_at)
     else:
       target_features = features
+      target_meta = meta
       event_id = str(obj.get("event_id", ""))
-  return target_features, event_id
+  return target_features, target_meta, event_id
 
 
 def _compute_sanity_report(
@@ -211,6 +214,7 @@ def _compute_sanity_report(
   *,
   attribution_space: str,
   binary_threshold: float = 0.01,
+  meta: Meta | None = None,
 ) -> Dict[str, object]:
   report: Dict[str, object] = {
     "binary_threshold": binary_threshold,
@@ -235,8 +239,8 @@ def _compute_sanity_report(
       f1 = dict(features)
       f0[name] = 0.0
       f1[name] = 1.0
-      s0_raw, s0 = detector.score_only(f0)
-      s1_raw, s1 = detector.score_only(f1)
+      s0_raw, s0 = detector.score_only(f0, meta=meta)
+      s1_raw, s1 = detector.score_only(f1, meta=meta)
       s0_lograw = math.log1p(max(0.0, float(s0_raw)))
       s1_lograw = math.log1p(max(0.0, float(s1_raw)))
       item["flip"] = {
@@ -255,8 +259,8 @@ def _compute_sanity_report(
       f_minus = dict(features)
       f_plus[name] = max(0.0, min(1.0, val + eps))
       f_minus[name] = max(0.0, min(1.0, val - eps))
-      s_plus_raw, s_plus = detector.score_only(f_plus)
-      s_minus_raw, s_minus = detector.score_only(f_minus)
+      s_plus_raw, s_plus = detector.score_only(f_plus, meta=meta)
+      s_minus_raw, s_minus = detector.score_only(f_minus, meta=meta)
       s_plus_lograw = math.log1p(max(0.0, float(s_plus_raw)))
       s_minus_lograw = math.log1p(max(0.0, float(s_minus_raw)))
       item["eps_diagnostics"][str(eps)] = {
@@ -489,7 +493,7 @@ def main():
 
   # Single-event mode: keep original behavior (replay up to event_index once).
   if args.num_events == 1:
-    features, event_id = _replay_and_get_target_features(
+    features, feat_meta, event_id = _replay_and_get_target_features(
       path,
       event_index,
       detector,
@@ -519,11 +523,12 @@ def main():
         json_path = args.json
 
     log.info("Computing attribution for event index %d", event_index)
-    score_raw, score_scaled = detector.score_only(features)
+    score_raw, score_scaled = detector.score_only(features, meta=feat_meta)
     score_attr, attribution = detector.compute_feature_attribution(
       features,
       epsilon=args.epsilon,
       score_mode=args.attribution_space,
+      meta=feat_meta,
     )
 
     max_attr = max(abs(v) for v in attribution.values()) if attribution else 0.0
@@ -551,6 +556,7 @@ def main():
         epsilons=[0.001, 0.005, 0.01],
         sanity_top_k=10,
         attribution_space=args.attribution_space,
+        meta=feat_meta,
       )
       payload = {
         "score": score_scaled,
@@ -646,7 +652,7 @@ def main():
       continue
 
     evt = _dict_to_event_envelope(obj)
-    features = extract_feature_dict(
+    features, feat_meta = extract_feature_dict(
       evt,
       feature_view=feature_view_for_algorithm(cfg.model_algorithm),
     )
@@ -677,11 +683,12 @@ def main():
             json_path = args.json
 
       log.info("Computing attribution for event index %d", i)
-      score_raw, score_scaled = detector.score_only(features)
+      score_raw, score_scaled = detector.score_only(features, meta=feat_meta)
       score_attr, attribution = detector.compute_feature_attribution(
         features,
         epsilon=args.epsilon,
         score_mode=args.attribution_space,
+        meta=feat_meta,
       )
 
       max_attr = max(abs(v) for v in attribution.values()) if attribution else 0.0
@@ -709,6 +716,7 @@ def main():
           epsilons=[0.001, 0.005, 0.01],
           sanity_top_k=10,
           attribution_space=args.attribution_space,
+          meta=feat_meta,
         )
         payload = {
           "score": score_scaled,
@@ -777,10 +785,10 @@ def main():
       )
 
       # After attributing, learn from this event so later targets see the same state as the live detector.
-      detector.score_and_learn(features)
+      detector.score_and_learn(features, meta=feat_meta)
       did_learn = True
     else:
-      detector.score_and_learn(features)
+      detector.score_and_learn(features, meta=feat_meta)
       did_learn = True
 
     if (

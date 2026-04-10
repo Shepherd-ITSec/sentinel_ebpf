@@ -9,3 +9,6 @@
 - https://link.springer.com/chapter/10.1007/978-3-032-14782-0_19 very recent overview showing how bad everyone else is
 - https://arxiv.org/pdf/1904.07118 shows embedding doesn't really make a difference
 - https://www.mdpi.com/1999-5903/17/5/218 grahl?
+- https://dl.acm.org/doi/pdf/10.1145/3560810.3564266 frequency or rareness of arguments or syscalls isn't a good indicator (Table 2)
+- https://dl.acm.org/doi/pdf/10.1145/3677892.3677893 The results demonstrate that system call parameter features can
+effectively reduce the false alarm rate of intrusion detection models

@@ -27,15 +27,15 @@ except ImportError:  # pragma: no cover
   tqdm = None
 
 from detector.config import load_config
-from detector.sequence.context import SequenceContextFeatureExtractor
+from detector.embeddings.online_word2vec import OnlineTokenWord2Vec
 from scripts.replay_logs import _detect_format, iter_events, iter_events_jsonl
 
 log = logging.getLogger(Path(__file__).stem)
 
 
-def _make_extractor() -> SequenceContextFeatureExtractor:
+def _make_extractor() -> OnlineTokenWord2Vec:
   cfg = load_config()
-  return SequenceContextFeatureExtractor(
+  return OnlineTokenWord2Vec(
     vector_size=int(getattr(cfg, "embedding_word2vec_dim", 5)),
     sentence_len=int(getattr(cfg, "embedding_word2vec_sentence_len", 7)),
     seed=int(getattr(cfg, "model_seed", 42)),
@@ -45,9 +45,6 @@ def _make_extractor() -> SequenceContextFeatureExtractor:
     epochs=int(getattr(cfg, "embedding_word2vec_epochs", 1)),
     post_warmup_lr_scale=float(getattr(cfg, "embedding_word2vec_post_warmup_lr_scale", 0.1)),
     warmup_events=int(getattr(cfg, "warmup_events", 0)),
-    ngram_length=int(getattr(cfg, "sequence_ngram_length", 8)),
-    thread_aware=bool(getattr(cfg, "sequence_thread_aware", True)),
-    feature_prefix="sequence_ctx",
   )
 
 def _load_word2vec_from_checkpoint(path: Path, *, limit_tokens: int | None) -> tuple[list[str], np.ndarray, int]:
@@ -152,7 +149,7 @@ def main() -> None:
     if x.shape[0] == 0:
       raise SystemExit("Checkpoint Word2Vec has empty vocabulary.")
   else:
-    extractor = _make_extractor()
+    w2v = _make_extractor()
     fmt = _detect_format(path)
     event_iter = (
       iter_events_jsonl(path, max_events=args.max_events, skip=args.skip)
@@ -174,13 +171,13 @@ def main() -> None:
         tid = int(str(tid_raw).strip() or "0")
       except ValueError:
         tid = 0
-      extractor.observe_embedding(stream_id=tid, token=syscall)
+      w2v.observe_and_vector(int(tid), syscall)
       n += 1
       if tqdm is None and (n % 200000) == 0:
         log.info("Replayed %d events...", n)
 
-    tokens, mat_list = extractor.export_word2vec_matrix(limit=args.limit_tokens)
-    x = np.asarray(mat_list, dtype=np.float32)
+    tokens, mat = w2v.export_matrix(limit=args.limit_tokens)
+    x = np.asarray(mat, dtype=np.float32)
     if x.shape[0] == 0:
       raise SystemExit("Word2Vec has empty vocabulary. Try increasing --max-events or check the input log.")
 

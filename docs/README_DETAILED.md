@@ -225,7 +225,7 @@ Available algorithms:
 
 ### Feature extraction summary
 
-Events are converted to numeric feature vectors. The **feature view** (chosen per algorithm: default, frequency, loda, memstream) controls which encodings are used. Common elements across most views: pid/tid/uid, path depth, hour/minute time features, sensitive-path indicator (file group), online rate/interarrival stats. The **frequency** view (freq1d, copulatree, latentcluster) uses scalar hashes (`*_hash`, `event_id_norm`) instead of sparse buckets for many categoricals, and **drops** global `flags_hash`, file sensitive/tmp flags, and **all** online streams. **`default`** uses one-hot and bucket banks.
+Events are converted to numeric feature vectors. The **feature view** (chosen per algorithm: default, frequency, loda, memstream) controls which optional blocks are included. All string identity uses scalar hashes (`*_hash`, `event_id_norm`); there are no sparse bucket banks. **`default`** keeps **`group_syscall_*`** one-hots and file/process path flags (`file_*`, `proc_*`); **`frequency`** drops those in favor of **`day_fraction_norm`** time encoding. **LODA** / **memstream** drop general comm/hostname/path hashes; **memstream** also drops some **`net_*`** hashes compared to **LODA** (see `detector/README.md`).
 
 ## Extending detector
 

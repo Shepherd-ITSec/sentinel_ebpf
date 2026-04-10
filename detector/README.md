@@ -12,18 +12,26 @@ The detector is an anomaly detection service that consumes kernel-level events (
 
 ## features.py
 
-**Role:** Turn each `EventEnvelope` into numeric features (a dict of floats) for the anomaly models. **General features** are always added; **group-scoped features** are added when `evt.event_group` is non-empty and that name exists under `groups` in `rules.yaml`. The server uses one model per `event_group`; each model sees a stable key set for its group (vocabulary size follows that group’s declared `syscalls` list).
+**Role:** Turn each `EventEnvelope` into numeric features (a dict of floats) for the anomaly models. Extraction is layered:
+
+1. **General** — shared numeric context (optionally enabled by the selected feature view): ids/args, calendar time, (optionally) path depth/prefix hash, and (optionally) return code normalization. Some views also enable scalar hashes (`*_hash`).
+2. **Group-specific** — only when `evt.event_group` is non-empty and that name exists under `groups` in `rules.yaml`:
+  - **File group** (`event_group == "file"`): `file_*` flags and path-prefix checks.
+  - **Network group** (`event_group == "network"`): `net_*` features derived from socket attributes/args.
+  - **Process group** (`event_group == "process"`): currently no extra features are emitted.
+
+**Group-scoped features** are added when `evt.event_group` is non-empty and that name exists under `groups` in `rules.yaml`. The server uses one model per `event_group`; each model sees a stable key set for its group.
 
 **Event format (protobuf / JSON):**
 
 - `event_id` (string): correlation id for the message (not the Linux syscall number).
 - `syscall_name`: Linux syscall name string (e.g. `openat`, `connect`); used for flag-slot routing, network/socket parsing, and group-local one-hot labels.
-- `syscall_nr` (uint32): Linux syscall number (e.g. `257` for `openat`); used for **`event_id_norm`** in the **frequency** feature view (`min(syscall_nr / 500, 1)` in code).
-- `hostname` (string): host identity for bucket/hash features and online stats keys.
+- `syscall_nr` (uint32): Linux syscall number (e.g. `257` for `openat`); currently not used by the feature extractor.
+- `hostname` (string): host identity for `**hostname_hash`** in the `**frequency**` view.
 - `comm`, `pid`, `tid`, `uid` (strings): process context; `pid`/`tid`/`uid` use decimal string encoding as emitted by the probe.
-- `arg0`, `arg1` (strings): syscall arguments; also used as raw flag numeric strings for `open` → `arg0`, `openat`/`openat2`/`socket` → `arg1` when deriving `group_flags_*` / `group_flags_hash`. `arg1` may hold a stringified `dict` (synthetic replay) for sockaddr fallback in **`net_*`** parsing.
-- `path`: path for path-based syscalls; empty otherwise.
-- `ts_unix_nano` (uint64): event time (UTC) for calendar and online-stat decay.
+- `arg0`, `arg1` (strings): syscall arguments; also used as raw flag numeric strings for `open` → `arg0`, `openat`/`openat2`/`socket` → `arg1` when deriving `file_flags_*` / `file_flags_hash` (file groups) or `proc_flags_*` / `proc_flags_hash` (process group). `**net_***` numeric norms use these args; endpoint IP/port/family for `**net_***` hashes come from `**fd_sock_***` attributes (`_parse_sockaddr_from_evt`), not from parsing `arg1`.
+- Path strings for feature extraction: `**attributes["fd_path"]**` (the legacy `path` field is reserved in `events.proto`).
+- `ts_unix_nano` (uint64): event time (UTC) for calendar time features.
 
 `evt.event_group` stores the rule-defined **event_group** (e.g. `file`, `network`, `process`, or empty) for routing to the per-group model and for type-specific features.
 
@@ -32,81 +40,57 @@ JSON/EVT1 records use the same names; see `event_envelope_codec.envelope_to_dict
 Optional `attributes` (map, producer-filled when available):
 
 - `return_value`: syscall return (non-negative = success, negative = errno-style); drives `return_success` / `return_errno_norm` (missing → treated as `0`).
-- `flags`: decoded flags string for open family / socket; preferred over raw flag slot for **`group_flags_*`** / **`group_flags_hash`** when present.
+- `flags`: decoded flags string for open family / socket; preferred over raw flag slot for `**file_flags_*`** / `**file_flags_hash**` (or `proc_flags_*` / `proc_flags_hash`) when present.
 - `cluster`, `node`: optional deployment tags (probe env); not consumed by `features.py` today.
-- Network enrichment: `sin_port` or `dest_port`, `sin_addr` or `dest_ip`, `sa_family` — merged with sockaddr parsed from `arg1` in `_parse_sockaddr_from_evt` for **`net_*`** address/port/family features.
+- Network enrichment (preferred for `**net_***`): `fd_sock_remote_port`, `fd_sock_remote_addr`, `fd_sock_family` — read in `_parse_sockaddr_from_evt` (legacy aliases `sin_port` / `dest_port`, etc. are not used by the current extractor).
 
-**Rules file (`rules.yaml`):** Loaded from `DETECTOR_RULES_PATH`, else `/etc/sentinel-ebpf/rules.yaml` if present, else repo `charts/sentinel-ebpf/rules.yaml`. Supplies (1) **`groups.<name>.syscalls`** for **`group_syscall_*`** one-hot vocabularies (names may include placeholders not yet in `probe/events.py`; those get a column with value 0 until the name appears on events), and (2) optional **`groups.<name>.features`** (e.g. **`sensitive_paths`** / **`tmp_paths`**) for **`group_sensitive_path`** / **`group_tmp_path`**. Which events are captured is decided by probe **rules** (`condition`), not by the group list alone—see `docs/RULES_GUIDE.md`.
-
-**Online features:** `proc_rate_*`, `host_rate_*`, `proc_interarrival_*`, plus per-`event_group` **`group_path_*`** / **`net_*`** rate and moment streams from **`_OnlineFeatureStats`**. Emitted only in **default**, **loda**, and **memstream** (not **frequency**). Stream keys use `comm`, `hostname`, `path`, `(comm, path)`, `(comm, daddr, dport)`, etc., and `evt.ts_unix_nano`.
+**Rules file (`rules.yaml`):** Loaded from `DETECTOR_RULES_PATH`, else `/etc/sentinel-ebpf/rules.yaml` if present, else repo `charts/sentinel-ebpf/rules.yaml`. Supplies optional `**groups.<name>.features`** (e.g. `**sensitive_paths**` / `**tmp_paths**`) used by the file layer (`file_sensitive_path` / `file_tmp_path`). Which events are captured is decided by probe **rules** (`condition`), not by the group list alone—see `docs/RULES_GUIDE.md`.
 
 **Feature design:** Based on work on syscall-argument anomaly detection (e.g. Krügel/Mutz, “On the Detection of Anomalous System Call Arguments”, ESORICS 2003): identity and numeric/semantic features for call type, process, path, arguments, return value, and context (host, time).
 
 **Public API:**
 
-- `extract_feature_dict(evt, feature_view="default") -> Dict[str, float]`: general features always; if **`evt.event_group`** matches a **`groups`** entry in rules, appends group-scoped features (same key template for every event in that group). Key set can differ per **event_group** and per **feature view**.
-- `feature_view_for_algorithm(algorithm) -> str`: maps algorithm to feature view. `freq1d`, `copulatree`, `latentcluster` → **`frequency`**; `loda` / `loda_ema` → `loda`; `memstream` → `memstream`; **`sequence_mlp`** / **`sequence_transformer`** → **`sequence`**; else → `default`.
+- `extract_feature_dict(evt, feature_view="default") -> Dict[str, float]`: extracts features for a single event, and appends group-specific features only when `evt.event_group` is present in the loaded rules config. Key set can differ per **event_group** and per **feature view**.
+- `feature_view_for_algorithm(algorithm) -> str`: maps algorithm to feature view. `freq1d`, `copulatree`, `latentcluster`, `zscore` → `frequency`; `sequence_mlp` / `sequence_transformer` → `sequence`; else → `default`.
 
-**Feature views:** One extractor; the view toggles encodings (`_FeatureViewSpec` in `features.py`). **`default`**: sparse buckets + **`group_syscall_*`** one-hots (from rules) and the tables below. **`frequency`**: MD5-derived scalars for comm/hostname/path + **`event_id_norm`**, plus **`group_ext_hash`**, **`group_flags_hash`**, **`net_*_hash`** as applicable. Omits **`flags_hash`**, **`group_sensitive_path`** / **`group_tmp_path`**, and **all** online streams. **`loda`** / **`loda_ema`**: drops general `comm`/`hostname`/`path` banks; drops **`group_syscall_*`**, **`group_ext_bucket_*`**, **`group_flags_bucket_*`**, **`net_daddr_bucket_*`**. **`memstream`**: same as loda and also drops **`net_socket_type_bucket_*`**.
+**Feature views:** One extractor; the view toggles which optional blocks are included (`_FeatureViewSpec` in `features.py`).
 
-**General features:** No global syscall one-hot. Per-group syscall identity uses **`group_syscall_*`** (**default** only) or **`event_id_norm`** (**frequency** only). Empty **`event_group`**: no group block. Online stats (**`proc_rate_*`**, **`host_rate_*`**, **`proc_interarrival_*`**) use five decay windows (`01` = 0.1s, `1`, `5`, `30`, `120` s) and appear only in **default**, **loda**, **memstream**.
+- `**default`**: minimal generic context + time features. Does **not** include process id/uid norms, path depth/prefix features, return code features, string hashes, network port norms, or file flag hashes.
+- `**frequency`**: hash-heavy view for frequency-style models. Emits `*_hash` general hashes plus network hashes, and uses `day_fraction_norm` instead of the sin/cos pair. Omits most other generic context.
+- `**full**`: emits all optional generic blocks (process norms, time bucket, path depth/prefix hash, return code features) and includes file/network norms where applicable.
+- `**sequence**`: separate path: produces only sequence-context features under the `sequence_ctx_*` prefix (no generic/group blocks).
 
-**Views** column: only the listed feature views include that row (four views exist: **default**, **frequency**, **loda**, **memstream**).
+Empty `**event_group**`: no group-specific block.
 
-| Feature / pattern | Views | Encoded as | Range | Source |
-|---|---|---|---|---|
-| `pid_norm` | default, frequency, loda, memstream | normalized integer | [0, 1] | `evt.pid` → int, scaled by `_PID_MAX` |
-| `tid_norm` | default, frequency, loda, memstream | normalized integer | [0, 1] | `evt.tid` → int, scaled by `_PID_MAX` |
-| `uid_norm` | default, frequency, loda, memstream | normalized integer | [0, 1] | `evt.uid` → int, scaled by `_UID_MAX` |
-| `arg0_norm`, `arg1_norm` | default, frequency, loda, memstream | log1p-magnitude | [0, 1] | `evt.arg0` / `evt.arg1` → int, `_norm_arg` |
-| `hour_sin`, `hour_cos` | default, loda, memstream | cyclic sin/cos | [-1, 1] | `evt.ts_unix_nano` → UTC hour |
-| `minute_sin`, `minute_cos` | default, loda, memstream | cyclic sin/cos | [-1, 1] | `evt.ts_unix_nano` → minute-of-hour |
-| `weekday_sin`, `weekday_cos` | default, loda, memstream | cyclic sin/cos | [-1, 1] | `evt.ts_unix_nano` → weekday |
-| `hour_norm`, `minute_norm`, `weekday_norm` | frequency | normalized integer | [0, 1] | UTC hour / 23, minute / 59, Python `weekday()` / 6 |
-| `week_of_month_norm` | default, frequency, loda, memstream | normalized integer | [0, 1] | `evt.ts_unix_nano` → week-of-month bucket |
-| `path_depth_norm` | default, frequency, loda, memstream | normalized integer | [0, 1] | Slash-split `evt.path` → component count |
-| `return_success` | default, frequency, loda, memstream | binary | {0, 1} | `int(attributes["return_value"], default 0) >= 0` |
-| `return_errno_norm` | default, frequency, loda, memstream | log1p-magnitude | [0, 1] | `log1p(abs(int(attributes["return_value"], default 0)))` scaled by `_RETURN_ERRNO_SCALE` (same formula success or fail) |
-| `comm_bucket_*` | default | hashed sparse bank | {0, 1} | MD5 bucket of `evt.comm` (`_COMM_BUCKETS`) |
-| `hostname_bucket_*` | default | hashed sparse bank | {0, 1} | MD5 bucket of `evt.hostname` (`_HOSTNAME_BUCKETS`) |
-| `path_tok_d{0..3}_bucket_*` | default | depth multi-hot banks | {0, 1} | Tokenized `evt.path` per depth (`_path_components` + `_tokenize_path_by_depth`) |
-| `comm_hash` | frequency | scalar hash | [0, 1) | `_hash01(evt.comm)` |
-| `path_hash` | frequency | scalar hash | [0, 1) | `_hash01(evt.path)` |
-| `path_prefix_hash` | frequency | scalar hash | [0, 1) | First path component after split, `_hash01` |
-| `hostname_hash` | frequency | scalar hash | [0, 1) | `_hash01(evt.hostname)` |
-| `event_id_norm` | frequency | normalized integer | [0, 1] | `evt.syscall_nr` → int, `min(nr / _EVENT_ID_MAX, 1)` (500 in code) |
-| `proc_rate_{wn}` | default, loda, memstream | decayed log-scaled rate | [0, 1] | `_ONLINE_STATS`, stream key `comm`, group `general` |
-| `host_rate_{wn}` | default, loda, memstream | decayed log-scaled rate | [0, 1] | `_ONLINE_STATS`, stream key `hostname`, group `general` |
-| `proc_interarrival_{wn}` | default, loda, memstream | decayed mean | [0, 1] | `_ONLINE_STATS` interarrival on `comm` |
-| `proc_interarrival_std_{wn}` | default, loda, memstream | decayed std | [0, 1] | Same stream as `proc_interarrival_*` |
+**Views** column: only the listed feature views include that row (primary named views: **default**, **frequency**, **full**).
 
-**Group-scoped block** (same template for every non-empty `event_group` defined in rules; syscall vocabulary is **`groups.<name>.syscalls`**, not a hardcoded taxonomy):
 
-Prefix lists for **`group_sensitive_path`** / **`group_tmp_path`** come from **`groups.<name>.features`** (fallbacks: `_DEFAULT_SENSITIVE_PATH_PREFIXES`, `_DEFAULT_TMP_PATH_PREFIXES`).
+| Feature / pattern                                                         | Views         | Encoded as         | Range   | Source                                                                                   |
+| ------------------------------------------------------------------------- | ------------- | ------------------ | ------- | ---------------------------------------------------------------------------------------- |
+| `day_cycle_sin`, `day_cycle_cos`                                          | default, full | cyclic sin/cos     | [-1, 1] | UTC time → sin/cos of 2π × (nanoseconds mod day) / day length                            |
+| `day_fraction_norm`                                                       | frequency     | scalar             | [0, 1]  | Same clock as day-cycle, but one scalar position in the UTC day                          |
+| `week_of_month_norm`                                                      | full          | normalized integer | [0, 1]  | `evt.ts_unix_nano` → week-of-month bucket                                                |
+| `pid_norm`, `tid_norm`                                                    | full          | normalized integer | [0, 1]  | `evt.pid` / `evt.tid` → int, scaled by `_PID_MAX`                                        |
+| `uid_norm`                                                                | full          | normalized integer | [0, 1]  | `evt.uid` → int, scaled by `_UID_MAX`                                                    |
+| `arg0_norm`, `arg1_norm`                                                  | full          | log1p-magnitude    | [0, 1]  | `evt.arg0` / `evt.arg1` → int, `_norm_arg`                                               |
+| `path_depth_norm`                                                         | full          | normalized integer | [0, 1]  | Slash-split `attributes["fd_path"]` → component count                                    |
+| `path_prefix_hash`                                                        | full          | scalar hash        | [0, 1)  | `_hash01(first path component)` from `fd_path`                                           |
+| `return_success`                                                          | full          | binary             | {0, 1}  | `int(attributes["return_value"], default 0) >= 0`                                        |
+| `return_errno_norm`                                                       | full          | log1p-magnitude    | [0, 1]  | `log1p(abs(int(attributes["return_value"], default 0)))` scaled by `_RETURN_ERRNO_SCALE` |
+| `comm_hash`, `hostname_hash`, `pid_hash`, `path_hash`, `path_prefix_hash` | frequency     | scalar hash        | [0, 1)  | `_hash01` of respective string fields                                                    |
 
-| Feature / pattern | Views | Encoded as | Range | Source |
-|---|---|---|---|---|
-| `group_sensitive_path` | default, loda, memstream | binary | {0, 1} | Lowercased `evt.path` starts with any configured sensitive prefix |
-| `group_tmp_path` | default, loda, memstream | binary | {0, 1} | Lowercased `evt.path` starts with any configured tmp prefix |
-| `group_syscall_*` | default | one-hot | {0, 1} | `evt.syscall_name` vs sorted `groups.<name>.syscalls` |
-| `group_ext_bucket_*` | default | hashed sparse bank | {0, 1} | Extension from last `path` component |
-| `group_flags_bucket_*` | default | hashed multi-hot | {0, 1} | `attributes["flags"]` or `_syscall_flags_numeric_string(evt)` |
-| `group_ext_hash` | frequency | scalar hash | [0, 1) | `_hash01` of extension string |
-| `group_flags_hash` | frequency | scalar hash | [0, 1) | `_hash01` of flags string |
-| `group_path_rate_{wn}` | default, loda, memstream | decayed rate | [0, 1] | `_ONLINE_STATS`, stream = `path` or `"unknown"`, group = `event_group` |
-| `group_pair_rate_{wn}` | default, loda, memstream | decayed rate | [0, 1] | Stream `comm|path` |
-| `group_pair_interarrival_*`, `group_proc_path_depth_*`, `group_host_path_depth_*`, `group_pair_path_depth_*` | default, loda, memstream | decayed stats | [0, 1] | Path-depth / interarrival on same keys |
 
-**`net_*` block** (always merged for group events; values are 0 / empty when sockaddr fields are missing). Sockaddr from `attributes` or **`ast.literal_eval(evt.arg1)`** when `arg1` is a dict string.
+**Group-scoped features** — appended when `evt.event_group` is non-empty and matches a `**groups.<name>`** entry in `rules.yaml`. Sensitive/tmp prefix lists come from `**groups.<name>.features**` (fallbacks: `_DEFAULT_SENSITIVE_PATH_PREFIXES`, `_DEFAULT_TMP_PATH_PREFIXES`). Exactly one of the **File** / **Process** / **Network** layers applies: **File** for `event_group=file`; **Process** for `event_group=process` (currently emits no extra features); **Network** for `event_group=network`. `**net_*`** use `attributes` via `_parse_sockaddr_from_evt` (`fd_sock_*` keys); values are 0 when fields are missing.
 
-| Feature / pattern | Views | Encoded as | Range | Source |
-|---|---|---|---|---|
-| `net_fd_norm`, `net_addrlen_norm`, `net_socket_family_norm`, `net_dport_norm` | default, frequency, loda, memstream | numeric | [0, 1] | Args + parsed sockaddr |
-| `net_socket_type_bucket_*`, `net_daddr_bucket_*`, `net_af_*` | default / loda / memstream | buckets / one-hot | {0, 1} | Socket type, daddr, AF label |
-| `net_*_hash` | frequency | scalar hash | [0, 1) | MD5 scalars for type/daddr/af |
-| `net_pair_rate_*`, `net_daddr_rate_*`, `net_*_mean/std_*` | default, loda, memstream | decayed stats | [0, 1] | `_ONLINE_STATS` metrics `net_rate`, `net_interarrival`, `net_dport`, `net_addrlen` under stream keys derived from `comm`, `hostname`, daddr |
 
-**Comparison to Kitsune (NDSS 2018):** (unchanged) five decay windows (0.1s–120s), rate + interarrival + value moments on typed streams; **frequency** omits online streams.
+| Layer   | Feature / pattern                                       | Views         | Encoded as  | Range  | Source                                                                  |
+| ------- | ------------------------------------------------------- | ------------- | ----------- | ------ | ----------------------------------------------------------------------- |
+| File    | `file_sensitive_path`, `file_tmp_path`                  | default, full | binary      | {0, 1} | Lowercased `attributes["fd_path"]` vs configured sensitive/tmp prefixes |
+| File    | `file_flags_hash`                                       | full          | scalar hash | [0, 1) | `_hash01(attributes["flags"])` (decoded flags string when present)      |
+| Network | `net_socket_family_norm`                                | full          | numeric     | [0, 1] | socket family from `socket()` args or `fd_sock_family` attribute        |
+| Network | `net_dport_norm`                                        | full          | numeric     | [0, 1] | remote port from `attributes["fd_sock_remote_port"]`                    |
+| Network | `net_socket_type_hash`, `net_daddr_hash`, `net_af_hash` | frequency     | scalar hash | [0, 1) | `_hash01` of socket type value, remote addr, AF string                  |
+
 
 Missing or invalid fields use safe defaults. Each per-event_group model sees a consistent feature set for its group, and the **feature view** (chosen per algorithm) is fixed for that model instance.
 
@@ -129,7 +113,7 @@ No config file is read; configuration is env-only so it works well in containers
 
 **Role:** Online anomaly detection models that consume the feature dict from `features.py`, update their internal state (learn), and return an anomaly score per event. All implement the same interface: `score_and_learn(features: Dict[str, float]) -> float`.
 
-**Public API:** `OnlineAnomalyDetector` is a factory. You pass `algorithm` (`"halfspacetrees"`, `"loda"`, `"loda_ema"`, `"kitnet"`, `"memstream"`, `"zscore"`, `"knn"`, `"freq1d"`, `"copulatree"`, `"latentcluster"`) plus optional hyperparameters; it instantiates the corresponding implementation and exposes `score_and_learn(features)`.
+**Public API:** `OnlineAnomalyDetector` is a factory. You pass `algorithm` (see `detector/model.py`) plus optional hyperparameters; it instantiates the corresponding implementation and exposes `score_and_learn(features)`.
 
 **Algorithms:**
 
@@ -144,7 +128,7 @@ No config file is read; configuration is env-only so it works well in containers
 9. **CopulaTree** – Streaming copula-tree detector on top of `freq1d`: marginals come from `freq1d`, pairwise dependence is tracked online in Gaussianized space, and a maximum-spanning tree is refreshed periodically. This keeps the sparse-tree idea from the paper without requiring offline family fitting or Monte Carlo calibration. CPU-only.
 10. **LatentCluster** – Online latent clustering on top of `freq1d` marginals: events are mapped to CDF/probit coordinates, scored against a small bank of latent clusters with diagonal variance, and only likely-normal points update clusters. CPU-only.
 
-**`sequence_mlp`** — thread-aware syscall n-gram + gensim Word2Vec + PyTorch MLP (score `1 − p(correct syscall)`), ported from LID-DS building blocks. Implemented as a normal `OnlineAnomalyDetector` algorithm that consumes the **`sequence`** feature view like any other feature-dict model. Word2Vec lives in `detector/embeddings/` so it can be reused by other models/views. Requires `gensim` (`uv sync --extra detector`). Logic is GPL-3.0-derived from vendored `third_party/LID-DS`.
+`**sequence_mlp`** — thread-aware syscall n-gram + gensim Word2Vec + PyTorch MLP (score `1 − p(correct syscall)`), ported from LID-DS building blocks. Implemented as a normal `OnlineAnomalyDetector` algorithm that consumes the `**sequence**` feature view like any other feature-dict model. Word2Vec lives in `detector/embeddings/` so it can be reused by other models/views. Requires `gensim` (`uv sync --extra detector`). Logic is GPL-3.0-derived from vendored `third_party/LID-DS`.
 
 Device selection is via config (`model_device`: `auto` / `cpu` / `cuda`). The server uses one model per event_group and calls `score_and_learn` under a lock so only one thread updates any model per event.
 

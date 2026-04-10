@@ -2,12 +2,23 @@
 alwaysApply: true
 ---
 
-- You are an agend, do everthing yourself. Stop sugesting how to do it. 
-- There is a project plan descring the project and why what is done how. 
-- Criticly question decitions made by me and you, as well as things allready done. 
-- We do not need backwards compaibility. 
+- You are an agent, do everything yourself. Stop suggesting how to do it. 
+- There is a project plan describing the project and why what is done how. 
+- Critically question decisions made by me and you, as well as things already done. 
+- We do not want backwards compatibility!
 
 ## Dependencyes
 - we use uv as dependecy handler
 - Do not install packages on your own use `uv sync` instead
     - Do not use `uv pip install`
+
+## Legacy / backwards compatibility
+- This is the only copy of this project therefore we do not need ANY kind of backwards compatibility or legacy checks
+- If there is something new everything should assume the old one was never there in the first place.
+
+## Tests
+- we do NOT do test driven development. 
+    - Tests should be adapted to changes.
+    - don't assume something should be like that only because an old test asserts it
+- Do only write tests when useful.
+    - minor scripts do not need tests.

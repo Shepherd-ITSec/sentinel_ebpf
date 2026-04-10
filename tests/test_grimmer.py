@@ -9,7 +9,7 @@ from detector.config import DetectorConfig
 from detector.embeddings.online_word2vec import OnlineTokenWord2Vec
 from detector.features import build_feature_extractor, feature_view_for_algorithm
 from detector.model import OnlineAnomalyDetector
-from detector.sequence.class_table import TokenClassTable
+from detector.sequence.context import SequenceFeatureMeta, TokenClassTable
 from detector.sequence.mlp import OnlineSequenceMLP
 from detector.sequence.ngram_buffer import StreamNgramBuffer
 
@@ -32,13 +32,12 @@ def test_extract_feature_dict_emits_sequence_context_with_metadata() -> None:
   ready_seen = False
   for i, syscall_name in enumerate(("open", "read", "write", "close", "open", "read")):
     evt = events_pb2.EventEnvelope(event_id=str(i), syscall_name=syscall_name, tid="7")
-    values = extractor.extract_feature_dict(evt, feature_view="sequence")
+    values, meta = extractor.extract_feature_dict(evt, feature_view="sequence")
     current_names = set(values)
     if names is None:
       names = current_names
     assert current_names == names
     assert "sequence_ctx_ready" not in values
-    meta = getattr(values, "sequence_meta", None)
     assert meta is not None
     if meta.ready:
       ready_seen = True
@@ -48,7 +47,7 @@ def test_extract_feature_dict_emits_sequence_context_with_metadata() -> None:
 
 
 def test_thread_ngram_buffers_are_per_tid() -> None:
-  buf = StreamNgramBuffer(thread_aware=True, ngram_length=3, element_width=2)
+  buf = StreamNgramBuffer(actor_aware=True, ngram_length=3, element_width=2)
   _, ok1 = buf.push(1, [1.0, 0.0])
   assert not ok1
   _, ok2 = buf.push(2, [0.0, 1.0])
@@ -64,20 +63,20 @@ def test_thread_ngram_buffers_are_per_tid() -> None:
 
 def test_token_class_table_grows() -> None:
   table = TokenClassTable()
-  assert table.register("read") == 0
-  assert table.register("write") == 1
-  assert table.register("read") == 0
+  assert table.get_label_idx("read") == 0
+  assert table.get_label_idx("write") == 1
+  assert table.get_label_idx("read") == 0
   assert table.num_classes == 2
 
 
 def test_online_word2vec_trains_and_looks_up() -> None:
   w2v = OnlineTokenWord2Vec(vector_size=4, sentence_len=3, seed=0, w2v_window=2)
   for _ in range(3):
-    w2v.observe(0, "a")
-    w2v.observe(0, "b")
-    w2v.observe(0, "c")
-  sentences = w2v.drain_pending_sentences()
-  w2v.train_on_sentences(sentences, epochs=5)
+    w2v.append_word_to_sentence(0, "a")
+    w2v.append_word_to_sentence(0, "b")
+    w2v.append_word_to_sentence(0, "c")
+  sentences = w2v.drain_pending_finished_sentences()
+  w2v.train_on_finished_sentences(sentences, epochs=5)
   vector = w2v.vector_for("a")
   assert vector.shape == (4,)
   assert np.linalg.norm(vector) > 1e-6
@@ -92,15 +91,17 @@ def test_sequence_mlp_grows_output_layer() -> None:
     seed=0,
   )
   features_a = {f"sequence_ctx_{i:03d}": 0.0 for i in range(6)}
-  features_a = type("FeatureDict", (dict,), {})(features_a)
-  features_a.sequence_meta = type("Meta", (), {"ready": True, "target_id": 0, "num_classes": 1})()
-  raw_a, _ = mlp.score_and_learn(features_a)
+  raw_a, _ = mlp.score_and_learn(
+    features_a,
+    meta=SequenceFeatureMeta(ready=True, target_id=0, num_classes=1),
+  )
   assert 0.0 <= raw_a <= 1.0
 
   features_b = {f"sequence_ctx_{i:03d}": 0.0 for i in range(6)}
-  features_b = type("FeatureDict", (dict,), {})(features_b)
-  features_b.sequence_meta = type("Meta", (), {"ready": True, "target_id": 1, "num_classes": 2})()
-  raw_b, _ = mlp.score_and_learn(features_b)
+  raw_b, _ = mlp.score_and_learn(
+    features_b,
+    meta=SequenceFeatureMeta(ready=True, target_id=1, num_classes=2),
+  )
   assert 0.0 <= raw_b <= 1.0
 
 
@@ -143,8 +144,8 @@ def test_sequence_mlp_learns_repeating_pattern() -> None:
   for i in range(200):
     syscall_name = pattern[i % len(pattern)]
     evt = events_pb2.EventEnvelope(event_id=str(i), syscall_name=syscall_name, tid="99")
-    features = extractor.extract_feature_dict(evt, feature_view="sequence")
-    raw, _ = detector.score_and_learn(features)
+    features, meta = extractor.extract_feature_dict(evt, feature_view="sequence")
+    raw, _ = detector.score_and_learn(features, meta=meta)
     assert np.isfinite(raw)
     if 20 <= i < 40:
       early.append(raw)
@@ -210,36 +211,7 @@ def test_generic_model_can_consume_sequence_features() -> None:
   )
   for i, syscall_name in enumerate(("open", "read", "write", "close", "open", "read", "write", "close")):
     evt = events_pb2.EventEnvelope(event_id=str(i), syscall_name=syscall_name, tid="11")
-    features = extractor.extract_feature_dict(evt, feature_view="sequence")
-    raw, scaled = detector.score_and_learn(features)
-    assert np.isfinite(raw)
-    assert 0.0 <= scaled <= 1.0
-
-
-def test_generic_model_can_consume_zscore_view_features() -> None:
-  cfg = DetectorConfig(
-    model_algorithm="zscore",
-    embedding_word2vec_dim=4,
-    embedding_word2vec_sentence_len=3,
-    embedding_word2vec_update_every=1,
-    warmup_events=0,
-    zscore_min_count=1,
-    model_seed=0,
-  )
-  extractor = build_feature_extractor(cfg)
-  detector = OnlineAnomalyDetector(
-    algorithm="zscore",
-    zscore_min_count=cfg.zscore_min_count,
-    zscore_std_floor=cfg.zscore_std_floor,
-  )
-  for i, syscall_name in enumerate(("open", "read", "write", "close", "open", "read", "write", "close")):
-    evt = events_pb2.EventEnvelope(
-      event_id=str(i),
-      syscall_name=syscall_name,
-      tid="11",
-      ts_unix_nano=1_700_000_000_000_000_000 + (i * 60 * 1_000_000_000),
-    )
-    features = extractor.extract_feature_dict(evt, feature_view="zscore")
-    raw, scaled = detector.score_and_learn(features)
+    features, meta = extractor.extract_feature_dict(evt, feature_view="sequence")
+    raw, scaled = detector.score_and_learn(features, meta=meta)
     assert np.isfinite(raw)
     assert 0.0 <= scaled <= 1.0
