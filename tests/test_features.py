@@ -1,8 +1,8 @@
-"""Tests for detector/features.py."""
+"""Tests for feature primitives."""
 import numpy as np
 
 import events_pb2
-from detector.features import (
+from detector.building_blocks.primitives.features import (
   extract_feature_dict,
   feature_view_for_algorithm,
 )
@@ -467,7 +467,7 @@ def test_frequency_feature_view_matches_expected_file_schema():
 
 def test_custom_event_group_uses_group_syscalls_from_rules(temp_dir, monkeypatch):
   """Arbitrary group name; syscall vocabulary comes from groups.<name>.syscalls in rules.yaml."""
-  from detector import features as feat_mod
+  from detector.building_blocks.primitives import features as feat_mod
 
   rules = temp_dir / "rules.yaml"
   rules.write_text(

@@ -1,5 +1,5 @@
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields
 
 
 @dataclass
@@ -7,7 +7,9 @@ class DetectorConfig:
   port: int = 50051
   events_http_port: int = 50052  # 0 to disable; serves GET /recent_events for UI log tail in gRPC mode
   recent_events_buffer_size: int = 10000  # Size of recent events ring buffer for UI (default: 10000)
-  # River model configuration
+  # Composed IDS runtime selector. Must be registered in detector.pipelines.registry.
+  pipeline_id: str = "single_model"
+  # Model hyperparameters consumed by stock model building blocks.
   model_algorithm: str = "freq1d"  # halfspacetrees | loda_ema | kitnet | memstream | zscore | knn | freq1d | copulatree | latentcluster | sequence_mlp
   threshold: float = 0.9  # Anomaly score threshold (0-1). Lower (e.g. 0.3) to flag more events when scores are mostly low.
   hst_n_trees: int = 25
@@ -94,6 +96,16 @@ class DetectorConfig:
   sequence_mlp_lr: float = 0.003
 
 
+def detector_config_to_dict(cfg: DetectorConfig) -> dict[str, object]:
+  return asdict(cfg)
+
+
+def detector_config_from_dict(data: dict[str, object]) -> DetectorConfig:
+  allowed = {field.name for field in fields(DetectorConfig)}
+  filtered = {key: value for key, value in data.items() if key in allowed}
+  return DetectorConfig(**filtered)
+
+
 def load_config() -> DetectorConfig:
   defaults = DetectorConfig()
   port = int(os.environ.get("DETECTOR_PORT", str(defaults.port)))
@@ -101,6 +113,11 @@ def load_config() -> DetectorConfig:
   recent_events_buffer_size = int(recent_events_buffer_size_str) if recent_events_buffer_size_str else defaults.recent_events_buffer_size
   events_http_port = int(os.environ.get("DETECTOR_EVENTS_PORT", str(defaults.events_http_port)))
 
+  pipeline_id = (os.environ.get("DETECTOR_PIPELINE_ID", defaults.pipeline_id) or defaults.pipeline_id).strip()
+  if not pipeline_id or pipeline_id.lower() == "legacy":
+    raise ValueError(
+      "DETECTOR_PIPELINE_ID must name a registered non-legacy pipeline (e.g. sequence_mlp, las_gas_fusion)"
+    )
   model_algorithm = os.environ.get("DETECTOR_MODEL_ALGORITHM", defaults.model_algorithm)
   threshold = float(os.environ.get("DETECTOR_THRESHOLD", str(defaults.threshold)))
   hst_n_trees = int(os.environ.get("DETECTOR_HST_N_TREES", str(defaults.hst_n_trees)))
@@ -307,6 +324,7 @@ def load_config() -> DetectorConfig:
     port=port,
     events_http_port=events_http_port,
     recent_events_buffer_size=recent_events_buffer_size,
+    pipeline_id=pipeline_id,
     model_algorithm=model_algorithm,
     threshold=threshold,
     hst_n_trees=hst_n_trees,

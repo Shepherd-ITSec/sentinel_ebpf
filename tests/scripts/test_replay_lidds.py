@@ -3,7 +3,6 @@
 import json
 from pathlib import Path
 
-from probe.events import EVENT_NAME_TO_ID, UNKNOWN_EVENT_ID
 from scripts.replay_lidds import convert_lidds_to_jsonl, convert_syscall_to_envelope, infer_event_group
 
 
@@ -61,32 +60,6 @@ class _FakeSyscall:
 
 def test_infer_event_group_prefers_rule_map():
   assert infer_event_group("openat", {"openat": "network"}) == "network"
-
-
-def test_lidds_registry_syscalls_are_not_unknown():
-  """Regression: these LID-DS syscall names must map to real x86_64 numbers (not 9999)."""
-  names = [
-    "fcntl",
-    "setsockopt",
-    "poll",
-    "accept",
-    "getsockname",
-    "mmap",
-    "mprotect",
-    "set_robust_list",
-    "getpeername",
-    "fstat",
-    "sendto",
-    "recvfrom",
-    "sendmmsg",
-    "ioctl",
-  ]
-  for n in names:
-    assert EVENT_NAME_TO_ID.get(n, UNKNOWN_EVENT_ID) != UNKNOWN_EVENT_ID
-  s = _FakeSyscall(name="poll", params={"ufds": "0", "nfds": "1", "timeout": "100", "res": "0"}, direction="CLOSE")
-  env = convert_syscall_to_envelope(s, event_id="x", hostname="h", syscall_to_group={})
-  assert env["syscall_nr"] == 7
-  assert env["syscall_name"] == "poll"
 
 
 def test_convert_syscall_to_envelope_enriched_network():

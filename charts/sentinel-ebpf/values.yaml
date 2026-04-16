@@ -61,7 +61,9 @@ detector:
   eventDumpPath: "/var/log/sentinel-ebpf/events.jsonl"   # Path to dump all incoming events to file (empty to disable, e.g., /var/log/sentinel-ebpf/events.jsonl)
   # Model configurations
   model:
-    algorithm: "sequence_mlp"  # halfspacetrees | loda | loda_ema | memstream | kitnet | zscore | freq1d | copulatree | latentcluster | sequence_mlp
+    # Registered runtime pipeline (e.g. single_model, sequence_mlp, las_gas_fusion)
+    pipelineId: "sequence_mlp"
+    algorithm: "sequence_mlp"  # used when single_model is selected (e.g. halfspacetrees | loda | loda_ema | memstream | kitnet | zscore | freq1d | copulatree | latentcluster )
     threshold: 0.98  # Anomaly score threshold
     score_mode: "percentile"  # raw | scaled | percentile
     # General parameters

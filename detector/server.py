@@ -21,11 +21,12 @@ from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 
 import events_pb2
 import events_pb2_grpc
+from detector.building_blocks import OnlineIDS
+from detector.building_blocks.core.base import DecisionOutput
+from detector.building_blocks.primitives.scoring.primary_score import event_group_key
+from detector.building_blocks.primitives.scoring.response import response_score_from_decision
 from detector.config import DetectorConfig, load_config
-from detector.features import build_feature_extractor, feature_view_for_algorithm
-from detector.model import OnlineAnomalyDetector
-from detector.model import OnlinePercentileCalibrator
-from detector.scoring import anomaly_from_primary, compute_primary_score, event_group_key
+from detector.pipelines import build_final_bb
 
 # Ring buffer of recent events for UI log tail in gRPC mode (GET /recent_events).
 # Size is set during initialization from config
@@ -181,119 +182,31 @@ def _now_timestamp() -> timestamp_pb2.Timestamp:
 class DeterministicScorer:
   """Per-event_group scorer that preserves deterministic learning semantics.
 
-  We maintain one OnlineAnomalyDetector instance per event_group (including the
-  empty/default type).
+  We maintain one OnlineIDS instance per event_group (including the
+  empty/default type), using detector.building_blocks as the only runtime.
   """
 
   def __init__(self, cfg: DetectorConfig):
     self.cfg = cfg
-    self._models: dict[str, OnlineAnomalyDetector] = {}
-    self._feature_extractors = {}
-    self._percentiles: dict[str, OnlinePercentileCalibrator] = {}
-    self._warmup_counts: dict[str, int] = {}
+    self._pipeline_ids: dict[str, OnlineIDS] = {}
     self._lock = threading.Lock()
+
+  def _get_pipeline_ids(self, event_group: str) -> OnlineIDS:
+    key = self._key_for_type(event_group)
+    ids = self._pipeline_ids.get(key)
+    if ids is None:
+      final_bb = build_final_bb(self.cfg)
+      ids = OnlineIDS(final_bb, pipeline_id=str(getattr(self.cfg, "pipeline_id", "")))
+      self._pipeline_ids[key] = ids
+      logging.info(
+        "Initialized composed IDS for event_group=%r pipeline_id=%s",
+        key,
+        getattr(self.cfg, "pipeline_id", ""),
+      )
+    return ids
 
   def _key_for_type(self, event_group: str) -> str:
     return event_group_key(event_group)
-
-  def _model_kwargs(self) -> dict:
-    return {
-      "algorithm": self.cfg.model_algorithm,
-      "hst_n_trees": self.cfg.hst_n_trees,
-      "hst_height": self.cfg.hst_height,
-      "hst_window_size": self.cfg.hst_window_size,
-      "loda_n_projections": self.cfg.loda_n_projections,
-      "loda_bins": self.cfg.loda_bins,
-      "loda_range": self.cfg.loda_range,
-      "loda_ema_alpha": self.cfg.loda_ema_alpha,
-      "loda_hist_decay": self.cfg.loda_hist_decay,
-      "kitnet_max_size_ae": self.cfg.kitnet_max_size_ae,
-      "kitnet_grace_feature_mapping": self.cfg.kitnet_grace_feature_mapping,
-      "kitnet_grace_anomaly_detector": self.cfg.kitnet_grace_anomaly_detector,
-      "kitnet_learning_rate": self.cfg.kitnet_learning_rate,
-      "kitnet_hidden_ratio": self.cfg.kitnet_hidden_ratio,
-      "mem_memory_size": self.cfg.mem_memory_size,
-      "mem_lr": self.cfg.mem_lr,
-      "mem_beta": self.cfg.mem_beta,
-      "mem_k": self.cfg.mem_k,
-      "mem_gamma": self.cfg.mem_gamma,
-      "mem_input_mode": self.cfg.mem_input_mode,
-      "mem_warmup_accept": self.cfg.mem_warmup_accept,
-      "zscore_min_count": self.cfg.zscore_min_count,
-      "zscore_std_floor": self.cfg.zscore_std_floor,
-      "zscore_topk": self.cfg.zscore_topk,
-      "knn_k": self.cfg.knn_k,
-      "knn_memory_size": self.cfg.knn_memory_size,
-      "knn_metric": self.cfg.knn_metric,
-      "freq1d_bins": self.cfg.freq1d_bins,
-      "freq1d_alpha": self.cfg.freq1d_alpha,
-      "freq1d_decay": self.cfg.freq1d_decay,
-      "freq1d_max_categories": self.cfg.freq1d_max_categories,
-      "freq1d_aggregation": self.cfg.freq1d_aggregation,
-      "freq1d_topk": self.cfg.freq1d_topk,
-      "freq1d_soft_topk_temperature": self.cfg.freq1d_soft_topk_temperature,
-      "copulatree_u_clamp": self.cfg.copulatree_u_clamp,
-      "copulatree_reg": self.cfg.copulatree_reg,
-      "copulatree_max_features": self.cfg.copulatree_max_features,
-      "copulatree_importance_window": self.cfg.copulatree_importance_window,
-      "copulatree_tree_update_interval": self.cfg.copulatree_tree_update_interval,
-      "copulatree_edge_score_aggregation": self.cfg.copulatree_edge_score_aggregation,
-      "copulatree_edge_score_topk": self.cfg.copulatree_edge_score_topk,
-      "latentcluster_max_clusters": self.cfg.latentcluster_max_clusters,
-      "latentcluster_u_clamp": self.cfg.latentcluster_u_clamp,
-      "latentcluster_reg": self.cfg.latentcluster_reg,
-      "latentcluster_update_alpha": self.cfg.latentcluster_update_alpha,
-      "latentcluster_spawn_threshold": self.cfg.latentcluster_spawn_threshold,
-      "model_device": self.cfg.model_device,
-      "seed": self.cfg.model_seed,
-      "warmup_events": getattr(self.cfg, "warmup_events", 0),
-      # Embedding config (Word2Vec)
-      "embedding_word2vec_dim": getattr(self.cfg, "embedding_word2vec_dim", 5),
-      "embedding_word2vec_sentence_len": getattr(self.cfg, "embedding_word2vec_sentence_len", 7),
-      "embedding_word2vec_window": getattr(self.cfg, "embedding_word2vec_window", 5),
-      "embedding_word2vec_sg": getattr(self.cfg, "embedding_word2vec_sg", 1),
-      "embedding_word2vec_update_every": getattr(self.cfg, "embedding_word2vec_update_every", 25),
-      "embedding_word2vec_epochs": getattr(self.cfg, "embedding_word2vec_epochs", 1),
-      "embedding_word2vec_post_warmup_lr_scale": getattr(self.cfg, "embedding_word2vec_post_warmup_lr_scale", 0.1),
-      # Sequence-MLP config passthrough (used only when algorithm=sequence_mlp)
-      "sequence_mlp_hidden_size": getattr(self.cfg, "sequence_mlp_hidden_size", 150),
-      "sequence_mlp_hidden_layers": getattr(self.cfg, "sequence_mlp_hidden_layers", 4),
-      "sequence_mlp_lr": getattr(self.cfg, "sequence_mlp_lr", 0.003),
-    }
-
-  def _get_model(self, event_group: str) -> OnlineAnomalyDetector:
-    key = self._key_for_type(event_group)
-    model = self._models.get(key)
-    if model is None:
-      model = OnlineAnomalyDetector(**self._model_kwargs())
-      self._models[key] = model
-      logging.info("Initialized model for event_group=%r (algorithm=%s)", key, model.algorithm)
-    return model
-
-  def _get_feature_extractor(self, event_group: str):
-    key = self._key_for_type(event_group)
-    extractor = self._feature_extractors.get(key)
-    if extractor is None:
-      extractor = build_feature_extractor(self.cfg)
-      self._feature_extractors[key] = extractor
-    return extractor
-
-  def _get_percentile(self, event_group: str) -> OnlinePercentileCalibrator:
-    key = self._key_for_type(event_group)
-    cal = self._percentiles.get(key)
-    if cal is None:
-      cal = OnlinePercentileCalibrator(
-        window_size=getattr(self.cfg, "percentile_window_size", 2048),
-        warmup=getattr(self.cfg, "percentile_warmup", 128),
-      )
-      self._percentiles[key] = cal
-      logging.info(
-        "Initialized percentile calibrator for event_group=%r (window=%d warmup=%d)",
-        key,
-        cal.window_size,
-        cal.warmup,
-      )
-    return cal
 
   def score_event(self, evt):  # type: ignore[valid-type]
     anomaly = False
@@ -301,43 +214,21 @@ class DeterministicScorer:
     score_raw = 0.0
     score_scaled = 0.0
     score_primary = 0.0
+    resp_score = 0.0
 
     alg_name = ""
-    suppress_primary = False
     try:
       with self._lock:
-        key = self._key_for_type(evt.event_group or "")
-        self._warmup_counts[key] = self._warmup_counts.get(key, 0) + 1
-        warmup_events = int(getattr(self.cfg, "warmup_events", 0))
-        warmup_suppress = bool(getattr(self.cfg, "suppress_anomalies_during_warmup", False))
-        suppress_primary = warmup_suppress and self._warmup_counts[key] <= warmup_events
-
-        model = self._get_model(evt.event_group or "")
-        extractor = self._get_feature_extractor(evt.event_group or "")
-        score_raw, score_scaled = model.score_and_learn_event(
-          evt,
-          feature_fn=lambda e: extractor.extract_feature_dict(
-            e,
-            feature_view=feature_view_for_algorithm(getattr(self.cfg, "model_algorithm", "")),
-          ),
-        )
-        alg_name = model.algorithm
-        score_mode = getattr(self.cfg, "score_mode", "raw")
-        percentile_cal = None
-        if (not suppress_primary) and score_mode == "percentile":
-          percentile_cal = self._get_percentile(evt.event_group or "")
-        score_primary = compute_primary_score(
-          score_raw,
-          score_scaled,
-          score_mode=str(score_mode),
-          suppress_primary=suppress_primary,
-          percentile_cal=percentile_cal,
-        )
-        anomaly = anomaly_from_primary(
-          score_primary,
-          float(self.cfg.threshold),
-          suppress_primary=suppress_primary,
-        )
+        ids = self._get_pipeline_ids(evt.event_group or "")
+        alg_name = ids.pipeline_id or "pipeline"
+        out = ids.run_event(evt)
+        if not isinstance(out, DecisionOutput):
+          raise TypeError("final_bb must write DecisionOutput, got %r" % type(out))
+        score_raw = float(out.raw)
+        score_scaled = float(out.scaled)
+        score_primary = float(out.primary)
+        anomaly = bool(out.anomaly)
+        resp_score = min(response_score_from_decision(out), 1.0)
 
       if anomaly:
         reason = f"{alg_name} anomaly score {score_primary:.3f} exceeds threshold {self.cfg.threshold}"
@@ -346,14 +237,8 @@ class DeterministicScorer:
       anomaly = False
       score_raw = 0.0
       score_scaled = 0.0
+      resp_score = 0.0
       reason = f"Scoring error: {str(e)}"
-
-    # `score` is the primary score used for thresholding/UI (bounded 0..1).
-    if getattr(self.cfg, "score_mode", "raw") == "percentile":
-      resp_score = float(score_primary)
-    else:
-      resp_score = 0.0 if suppress_primary else float(score_scaled)
-    resp_score = min(resp_score, 1.0)
 
     return events_pb2.DetectionResponse(  # type: ignore[attr-defined]
       event_id=evt.event_id,
@@ -369,7 +254,7 @@ class RuleBasedDetector(events_pb2_grpc.DetectorServiceServicer):
   def __init__(self, cfg: DetectorConfig):
     self.cfg = cfg
     self.scorer = DeterministicScorer(cfg)
-    logging.info("Initialized detector in deterministic single-model mode")
+    logging.info("Initialized detector in deterministic pipeline mode")
   
   def _score_event(self, evt):  # type: ignore[valid-type]
     return self.scorer.score_event(evt)
@@ -410,9 +295,18 @@ async def serve():
 
   logging.info("loading config...")
   cfg = load_config()
-  logging.info("config loaded: algorithm=%s threshold=%.2f gRPC_port=%d HTTP_port=%d", cfg.model_algorithm, cfg.threshold, cfg.port, cfg.events_http_port)
+  logging.info(
+    "config loaded: pipeline_id=%s threshold=%.2f gRPC_port=%d HTTP_port=%d",
+    getattr(cfg, "pipeline_id", ""),
+    cfg.threshold,
+    cfg.port,
+    cfg.events_http_port,
+  )
 
-  logging.info("initializing anomaly model (%s)...", cfg.model_algorithm)
+  logging.info(
+    "initializing detector (pipeline_id=%s)...",
+    getattr(cfg, "pipeline_id", ""),
+  )
   RECENT_EVENTS = deque(maxlen=cfg.recent_events_buffer_size)
   _init_anomaly_log()
   _init_event_dump(cfg)
@@ -491,7 +385,7 @@ async def serve():
             "",
             "# HELP sentinel_ebpf_detector_info Detector metadata (algorithm name)",
             "# TYPE sentinel_ebpf_detector_info gauge",
-            f'sentinel_ebpf_detector_info{{algorithm="{cfg.model_algorithm}"}} 1',
+            f'sentinel_ebpf_detector_info{{pipeline_id="{getattr(cfg, "pipeline_id", "")}"}} 1',
             "",
             "# HELP sentinel_ebpf_detector_threshold Anomaly score threshold (events with score >= this are flagged)",
             "# TYPE sentinel_ebpf_detector_threshold gauge",

@@ -98,10 +98,11 @@ uv run make proto
 uv run python -m pytest tests/ -v
 ```
 
-Optional model tests:
+Default pytest skips machine-dependent GPU and perf checks. Run them explicitly when needed:
 
 ```bash
-RUN_OPTIONAL_MODEL_TESTS=1 uv run python -m pytest tests/test_models_optional.py -v
+uv run python -m pytest tests/test_cuda.py -m gpu -v
+uv run python -m pytest tests/test_speed.py -m perf -v
 ```
 
 ---

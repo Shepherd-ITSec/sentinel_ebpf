@@ -231,7 +231,7 @@ Events are converted to numeric feature vectors. The **feature view** (chosen pe
 
 - Implement `DetectorService` in `proto/events.proto`.
 - Build your detector image and point Helm at it with `detector.image.repository`.
-- Replace/extend `detector/model.py` and `detector/features.py` as needed.
+- Replace or extend the model primitives, feature primitives, or pipeline assembly modules as needed.
 
 ## File mode, decoding, and replay
 
@@ -273,10 +273,11 @@ Run full unit test suite:
 uv run python -m pytest tests/ -v
 ```
 
-Optional model sanity tests:
+Optional environment-dependent checks:
 
 ```bash
-RUN_OPTIONAL_MODEL_TESTS=1 uv run python -m pytest tests/test_models_optional.py -v
+uv run python -m pytest tests/test_cuda.py -m gpu -v
+uv run python -m pytest tests/test_speed.py -m perf -v
 ```
 
 Representative test areas:

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import pickle
 import sys
 from pathlib import Path
 from typing import Any, Iterator
@@ -13,16 +14,12 @@ try:
   from tqdm import tqdm  # type: ignore[import-not-found]
 except ImportError:
   tqdm = None
-from detector.config import load_config
-from detector.model import OnlinePercentileCalibrator
-from detector.scoring import (
-  anomaly_from_primary,
-  compute_primary_score,
-  event_group_key,
-  get_or_create_percentile_calibrator,
-)
+from detector.building_blocks import OnlineIDS, load_pipeline_checkpoint
+from detector.building_blocks.core.base import DecisionOutput
+from detector.config import detector_config_from_dict
+from detector.pipelines import build_final_bb
 from scripts.replay_logs import _detect_format, iter_events, iter_events_jsonl
-from scripts.train_detector_checkpoint import _dict_to_event_envelope, _make_detector
+from scripts.train_detector_checkpoint import _dict_to_event_envelope
 
 log = logging.getLogger(Path(__file__).stem)
 
@@ -148,7 +145,6 @@ def main() -> None:
   logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
   ap = argparse.ArgumentParser(description="Load checkpoint and score a JSONL/EVT1 stream.")
   ap.add_argument("logfile", type=Path, help="Path to detector-events.jsonl or EVT1 events.bin (supports .gz).")
-  ap.add_argument("--algorithm", default="sequence_mlp", help="Detector algorithm (default: sequence_mlp).")
   ap.add_argument("--checkpoint", type=Path, required=True, help="Checkpoint path (.pkl) to load before scoring.")
   ap.add_argument("--out", type=Path, required=True, help="Output JSONL path with per-event scores.")
   ap.add_argument(
@@ -168,15 +164,30 @@ def main() -> None:
   if not args.checkpoint.exists():
     raise SystemExit(f"Checkpoint not found: {args.checkpoint}")
 
-  cfg = load_config()
-  threshold = float(args.threshold) if args.threshold is not None else float(cfg.threshold)
-  detector, extractor, feature_fn = _make_detector(args.algorithm)
-  _, feature_state = detector.load_checkpoint(args.checkpoint)
-  if feature_state is not None:
-    extractor.set_state(feature_state)
+  with Path(args.checkpoint).open("rb") as f:
+    blob = pickle.load(f)
+  if not (isinstance(blob, dict) and blob.get("format") == "building_blocks_v1"):
+    raise SystemExit("Checkpoint must be in building_blocks_v1 format")
+  ck_pid = (blob.get("pipeline_id") or "").strip().lower()
+  extra = blob.get("extra")
+  if not isinstance(extra, dict):
+    raise SystemExit("Checkpoint missing extra metadata")
+  cfg_blob = extra.get("detector_config")
+  if not isinstance(cfg_blob, dict):
+    raise SystemExit("Checkpoint missing detector_config snapshot")
+  cfg = detector_config_from_dict(cfg_blob)
+  pipeline_id = str(getattr(cfg, "pipeline_id", "")).strip().lower()
+  if ck_pid and ck_pid != pipeline_id:
+    raise SystemExit(f"Checkpoint pipeline_id={ck_pid!r} does not match checkpoint detector_config={pipeline_id!r}")
+  if not pipeline_id:
+    raise SystemExit("Checkpoint detector_config must define a registered pipeline_id")
+  if args.threshold is not None:
+    cfg.threshold = float(args.threshold)
+  threshold = float(cfg.threshold)
+  final_bb = build_final_bb(cfg)
+  ids = OnlineIDS(final_bb, pipeline_id=pipeline_id)
+  load_pipeline_checkpoint(Path(args.checkpoint), ids.manager)
 
-  percentiles: dict[str, OnlinePercentileCalibrator] = {}
-  warmup_counts: dict[str, int] = {}
   warmup_events = int(getattr(cfg, "warmup_events", 0))
   warmup_suppress = bool(getattr(cfg, "suppress_anomalies_during_warmup", False))
   score_mode = str(getattr(cfg, "score_mode", "raw"))
@@ -205,25 +216,16 @@ def main() -> None:
   with out_path.open("w", encoding="utf-8") as f:
     for obj in event_iter:
       evt = _dict_to_event_envelope(obj)
-      key = event_group_key(evt.event_group or "")
-      warmup_counts[key] = warmup_counts.get(key, 0) + 1
-      suppress_primary = warmup_suppress and warmup_counts[key] <= warmup_events
-      raw, scaled = detector.score_and_learn_event(evt, feature_fn=feature_fn)
-      percentile_cal = None
-      if (not suppress_primary) and score_mode == "percentile":
-        percentile_cal = get_or_create_percentile_calibrator(percentiles, key, cfg)
-      score_primary = compute_primary_score(
-        raw,
-        scaled,
-        score_mode=score_mode,
-        suppress_primary=suppress_primary,
-        percentile_cal=percentile_cal,
-      )
-      predicted_anomaly = anomaly_from_primary(
-        score_primary,
-        threshold,
-        suppress_primary=suppress_primary,
-      )
+      out = ids.run_event(evt)
+      if not isinstance(out, DecisionOutput):
+        raise TypeError("final_bb must write DecisionOutput, got %r" % type(out))
+      raw = float(out.raw)
+      scaled = float(out.scaled)
+      score_primary = float(out.primary)
+      predicted_anomaly = bool(out.anomaly)
+      suppress_primary = bool(out.suppressed)
+      score_mode = str(out.score_mode)
+      threshold = float(out.threshold)
       expected_anomaly = _label_from_row(obj)
       if predicted_anomaly:
         anomaly_count += 1
@@ -258,7 +260,7 @@ def main() -> None:
 
   summary_payload: dict[str, Any] = {
     "logfile": str(args.logfile),
-    "algorithm": str(args.algorithm),
+    "pipeline_id": pipeline_id,
     "checkpoint": str(args.checkpoint),
     "out": str(out_path),
     "summary_out": str(summary_path),

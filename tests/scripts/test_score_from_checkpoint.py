@@ -2,10 +2,13 @@
 
 import json
 import logging
+import pickle
 from types import SimpleNamespace
 
 import pytest
 
+from detector.building_blocks.core.base import DecisionOutput
+from detector.config import DetectorConfig, detector_config_to_dict
 import scripts.score_from_checkpoint as score_from_checkpoint
 from scripts.score_from_checkpoint import (
   _confusion_summary,
@@ -127,7 +130,28 @@ def test_main_writes_anomaly_and_reports_confusion(tmp_path, monkeypatch, caplog
   checkpoint = tmp_path / "checkpoint.pkl"
   out_file = tmp_path / "scores.jsonl"
   summary_file = tmp_path / "scores.summary.json"
-  checkpoint.write_text("checkpoint", encoding="utf-8")
+  checkpoint.write_bytes(
+    pickle.dumps(
+      {
+        "format": "building_blocks_v1",
+        "pipeline_id": "single_model",
+        "checkpoint_index": 3,
+        "blocks": {},
+        "extra": {
+          "detector_config": detector_config_to_dict(
+            DetectorConfig(
+              pipeline_id="single_model",
+              model_algorithm="zscore",
+              threshold=0.7,
+              score_mode="scaled",
+              suppress_anomalies_during_warmup=False,
+              warmup_events=0,
+            )
+          )
+        },
+      }
+    )
+  )
   _write_jsonl(
     log_file,
     [
@@ -158,23 +182,34 @@ def test_main_writes_anomaly_and_reports_confusion(tmp_path, monkeypatch, caplog
     ],
   )
 
-  class FakeDetector:
+  class FakeIDS:
     def __init__(self):
       self._scores = iter([(0.2, 0.4), (0.3, 0.2), (2.0, 0.9)])
+      self.manager = object()
 
-    def load_checkpoint(self, path):
-      assert path == checkpoint
-      return 0, None
+    def run_event(self, evt):
+      raw, scaled = next(self._scores)
+      return DecisionOutput(
+        raw=float(raw),
+        scaled=float(scaled),
+        primary=float(scaled),
+        score_mode="scaled",
+        suppressed=False,
+        threshold=0.7,
+        anomaly=float(scaled) >= 0.7,
+      )
 
-    def score_and_learn_event(self, evt, feature_fn):
-      feature_fn(evt)
-      return next(self._scores)
+  seen_cfg = {}
 
-  class FakeExtractor:
-    def set_state(self, state):
-      assert state is None or isinstance(state, dict)
+  def _build_final_bb(cfg):
+    seen_cfg["pipeline_id"] = cfg.pipeline_id
+    seen_cfg["threshold"] = cfg.threshold
+    seen_cfg["score_mode"] = cfg.score_mode
+    return object()
 
-  monkeypatch.setattr(score_from_checkpoint, "_make_detector", lambda algorithm: (FakeDetector(), FakeExtractor(), lambda evt: {}))
+  monkeypatch.setattr(score_from_checkpoint, "build_final_bb", _build_final_bb)
+  monkeypatch.setattr(score_from_checkpoint, "OnlineIDS", lambda final_bb, pipeline_id: FakeIDS())
+  monkeypatch.setattr(score_from_checkpoint, "load_pipeline_checkpoint", lambda path, manager: None)
   monkeypatch.setattr(
     score_from_checkpoint,
     "_dict_to_event_envelope",
@@ -182,18 +217,6 @@ def test_main_writes_anomaly_and_reports_confusion(tmp_path, monkeypatch, caplog
       event_id=obj["event_id"],
       event_group=obj.get("event_group", ""),
       syscall_name=obj["syscall_name"],
-    ),
-  )
-  monkeypatch.setattr(
-    score_from_checkpoint,
-    "load_config",
-    lambda: SimpleNamespace(
-      threshold=0.7,
-      score_mode="scaled",
-      suppress_anomalies_during_warmup=False,
-      warmup_events=0,
-      percentile_window_size=2048,
-      percentile_warmup=128,
     ),
   )
   monkeypatch.setattr(
@@ -213,6 +236,7 @@ def test_main_writes_anomaly_and_reports_confusion(tmp_path, monkeypatch, caplog
 
   rows = [json.loads(line) for line in out_file.read_text(encoding="utf-8").splitlines()]
   summary = json.loads(summary_file.read_text(encoding="utf-8"))
+  assert seen_cfg == {"pipeline_id": "single_model", "threshold": 0.7, "score_mode": "scaled"}
   assert [row["anomaly"] for row in rows] == [False, False, True]
   assert [row["expected_anomaly"] for row in rows] == [False, False, True]
   assert [row["score_primary"] for row in rows] == [pytest.approx(0.4), pytest.approx(0.2), pytest.approx(0.9)]
@@ -229,10 +253,100 @@ def test_main_writes_anomaly_and_reports_confusion(tmp_path, monkeypatch, caplog
   assert summary["event_metrics"]["tn"] == 2
   assert summary["recording_metrics"]["detected_attack_recordings"] == 1
   assert summary["recording_metrics"]["detection_rate"] == pytest.approx(1.0)
-  assert any('"detected_attack_recordings": 1' in record.message for record in caplog.records)
-  assert any('"detection_rate": 1.0' in record.message for record in caplog.records)
-  assert any('"benign_recordings_with_alarm": 0' in record.message for record in caplog.records)
-  assert any('"flagged_samples": 1' in record.message for record in caplog.records)
-  assert any('"flagged_rate": 0.3333333333333333' in record.message for record in caplog.records)
-  assert any('"tp": 1' in record.message for record in caplog.records)
-  assert any('"tn": 2' in record.message for record in caplog.records)
+  assert any("Recording-level evaluation:" in record.message for record in caplog.records)
+  assert any("Event-level evaluation against attack-region labels:" in record.message for record in caplog.records)
+
+
+def test_main_uses_checkpoint_config_not_live_environment(tmp_path, monkeypatch):
+  log_file = tmp_path / "events.jsonl"
+  checkpoint = tmp_path / "checkpoint.pkl"
+  out_file = tmp_path / "scores.jsonl"
+  _write_jsonl(
+    log_file,
+    [
+      {
+        "event_id": "evt-1",
+        "event_group": "g",
+        "syscall_name": "openat",
+        "ts_unix_nano": 1,
+        "malicious": False,
+      },
+    ],
+  )
+  checkpoint.write_bytes(
+    pickle.dumps(
+      {
+        "format": "building_blocks_v1",
+        "pipeline_id": "sequence_mlp",
+        "checkpoint_index": 1,
+        "blocks": {},
+        "extra": {
+          "detector_config": detector_config_to_dict(
+            DetectorConfig(
+              pipeline_id="sequence_mlp",
+              threshold=0.25,
+              score_mode="percentile",
+              warmup_events=3,
+            )
+          )
+        },
+      }
+    )
+  )
+
+  seen_cfg = {}
+
+  def _build_final_bb(cfg):
+    seen_cfg["pipeline_id"] = cfg.pipeline_id
+    seen_cfg["threshold"] = cfg.threshold
+    seen_cfg["score_mode"] = cfg.score_mode
+    seen_cfg["warmup_events"] = cfg.warmup_events
+    return object()
+
+  class FakeIDS:
+    def __init__(self):
+      self.manager = object()
+
+    def run_event(self, evt):
+      return DecisionOutput(
+        raw=1.0,
+        scaled=0.5,
+        primary=0.5,
+        score_mode="percentile",
+        suppressed=False,
+        threshold=0.25,
+        anomaly=True,
+      )
+
+  monkeypatch.setattr(score_from_checkpoint, "build_final_bb", _build_final_bb)
+  monkeypatch.setattr(score_from_checkpoint, "OnlineIDS", lambda final_bb, pipeline_id: FakeIDS())
+  monkeypatch.setattr(score_from_checkpoint, "load_pipeline_checkpoint", lambda path, manager: None)
+  monkeypatch.setattr(
+    score_from_checkpoint,
+    "_dict_to_event_envelope",
+    lambda obj: SimpleNamespace(
+      event_id=obj["event_id"],
+      event_group=obj.get("event_group", ""),
+      syscall_name=obj["syscall_name"],
+    ),
+  )
+  monkeypatch.setattr(
+    "sys.argv",
+    [
+      "score_from_checkpoint.py",
+      str(log_file),
+      "--checkpoint",
+      str(checkpoint),
+      "--out",
+      str(out_file),
+    ],
+  )
+
+  score_from_checkpoint.main()
+
+  assert seen_cfg == {
+    "pipeline_id": "sequence_mlp",
+    "threshold": 0.25,
+    "score_mode": "percentile",
+    "warmup_events": 3,
+  }

@@ -28,8 +28,8 @@ if __package__ is None or __package__ == "":
 
 import events_pb2
 from detector.config import load_config
-from detector.features import extract_feature_dict, feature_view_for_algorithm
-from detector.model import OnlineAnomalyDetector
+from detector.building_blocks.primitives.models.factory import new_model_impl, scaled_score_for_algorithm
+from detector.building_blocks.primitives.features import extract_feature_dict, feature_view_for_algorithm
 from replay_logs import _detect_format, iter_events, iter_events_jsonl
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
@@ -211,57 +211,29 @@ def _nearest_checkpoint_path(checkpoints_dir: Path, checkpoint_interval: int, ev
   return path if path.exists() else None
 
 
-def _build_detector(cfg: Any, algorithm: str) -> OnlineAnomalyDetector:
-  return OnlineAnomalyDetector(
-    algorithm=algorithm,
-    hst_n_trees=cfg.hst_n_trees,
-    hst_height=cfg.hst_height,
-    hst_window_size=cfg.hst_window_size,
-    loda_n_projections=cfg.loda_n_projections,
-    loda_bins=cfg.loda_bins,
-    loda_range=cfg.loda_range,
-    loda_ema_alpha=cfg.loda_ema_alpha,
-    loda_hist_decay=cfg.loda_hist_decay,
-    kitnet_max_size_ae=cfg.kitnet_max_size_ae,
-    kitnet_grace_feature_mapping=cfg.kitnet_grace_feature_mapping,
-    kitnet_grace_anomaly_detector=cfg.kitnet_grace_anomaly_detector,
-    kitnet_learning_rate=cfg.kitnet_learning_rate,
-    kitnet_hidden_ratio=cfg.kitnet_hidden_ratio,
-    mem_memory_size=cfg.mem_memory_size,
-    mem_lr=cfg.mem_lr,
-    mem_beta=cfg.mem_beta,
-    mem_k=cfg.mem_k,
-    mem_gamma=cfg.mem_gamma,
-    mem_input_mode=cfg.mem_input_mode,
-    mem_warmup_accept=cfg.mem_warmup_accept,
-    zscore_min_count=cfg.zscore_min_count,
-    zscore_std_floor=cfg.zscore_std_floor,
-    zscore_topk=cfg.zscore_topk,
-    knn_k=cfg.knn_k,
-    knn_memory_size=cfg.knn_memory_size,
-    knn_metric=cfg.knn_metric,
-    freq1d_bins=cfg.freq1d_bins,
-    freq1d_alpha=cfg.freq1d_alpha,
-    freq1d_decay=cfg.freq1d_decay,
-    freq1d_max_categories=cfg.freq1d_max_categories,
-    freq1d_aggregation=cfg.freq1d_aggregation,
-    freq1d_topk=cfg.freq1d_topk,
-    freq1d_soft_topk_temperature=cfg.freq1d_soft_topk_temperature,
-    copulatree_u_clamp=cfg.copulatree_u_clamp,
-    copulatree_reg=cfg.copulatree_reg,
-    copulatree_max_features=cfg.copulatree_max_features,
-    copulatree_importance_window=cfg.copulatree_importance_window,
-    copulatree_tree_update_interval=cfg.copulatree_tree_update_interval,
-    copulatree_edge_score_aggregation=cfg.copulatree_edge_score_aggregation,
-    copulatree_edge_score_topk=cfg.copulatree_edge_score_topk,
-    latentcluster_max_clusters=cfg.latentcluster_max_clusters,
-    latentcluster_u_clamp=cfg.latentcluster_u_clamp,
-    latentcluster_reg=cfg.latentcluster_reg,
-    latentcluster_update_alpha=cfg.latentcluster_update_alpha,
-    latentcluster_spawn_threshold=cfg.latentcluster_spawn_threshold,
-    model_device=cfg.model_device,
-    seed=cfg.model_seed,
-  )
+class _DetectorAdapter:
+  def __init__(self, algorithm: str, impl: Any) -> None:
+    self.algorithm = algorithm
+    self.impl = impl
+
+  def score_and_learn(self, features: dict[str, float], *, meta=None) -> tuple[float, float]:
+    raw = float(self.impl.score_and_learn_raw(features, meta=meta))
+    return raw, scaled_score_for_algorithm(self.algorithm, raw)
+
+  def score_only(self, features: dict[str, float], *, meta=None) -> tuple[float, float]:
+    raw = float(self.impl.score_only_raw(features, meta=meta))
+    return raw, scaled_score_for_algorithm(self.algorithm, raw)
+
+  def get_last_debug(self) -> dict[str, Any]:
+    getter = getattr(self.impl, "get_last_debug", None)
+    if getter is None:
+      return {}
+    val = getter()
+    return val if isinstance(val, dict) else {}
+
+
+def _build_detector(cfg: Any, algorithm: str) -> _DetectorAdapter:
+  return _DetectorAdapter(algorithm, new_model_impl(algorithm, cfg))
 
 
 def _run_attribution_samples(

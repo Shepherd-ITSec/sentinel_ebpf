@@ -4,8 +4,8 @@ import logging
 
 import numpy as np
 
-import detector.model as model_module
-from detector.model import OnlineKitNet
+import detector.building_blocks.primitives.models.library_wrappers as model_module
+from detector.building_blocks.primitives.models import OnlineKitNet
 
 
 class _FakeKitNet:

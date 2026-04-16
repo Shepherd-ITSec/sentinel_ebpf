@@ -34,10 +34,11 @@ import gzip
 import json
 import logging
 import math
+import pickle
 import struct
 import sys
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List
 
 try:
   from tqdm import tqdm
@@ -48,16 +49,65 @@ if __package__ is None or __package__ == "":
   sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import events_pb2
+from detector.building_blocks.primitives.models.factory import new_model_impl, scaled_score_for_algorithm
 from detector.config import load_config
-from detector.features import extract_feature_dict, feature_view_for_algorithm
-from detector.meta import Meta
-from detector.model import OnlineAnomalyDetector
+from detector.building_blocks.primitives.features import extract_feature_dict, feature_view_for_algorithm
+from detector.building_blocks.primitives.models import compute_feature_attribution as compute_model_feature_attribution
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
 log = logging.getLogger(Path(__file__).stem)
 
 MAGIC = b"EVT1"
 _JSON_DEFAULT = object()  # sentinel: --json with no path
+
+
+class DetectorAdapter:
+  def __init__(self, algorithm: str, cfg) -> None:
+    self.algorithm = str(algorithm).strip().lower()
+    self.impl = new_model_impl(self.algorithm, cfg)
+
+  def score_and_learn(self, features: Dict[str, float], *, meta: Any | None = None) -> tuple[float, float]:
+    raw = float(self.impl.score_and_learn_raw(features, meta=meta))
+    return raw, scaled_score_for_algorithm(self.algorithm, raw)
+
+  def score_only(self, features: Dict[str, float], *, meta: Any | None = None) -> tuple[float, float]:
+    raw = float(self.impl.score_only_raw(features, meta=meta))
+    return raw, scaled_score_for_algorithm(self.algorithm, raw)
+
+  def save_checkpoint(self, path: Path, checkpoint_index: int) -> None:
+    payload = {
+      "algorithm": self.algorithm,
+      "checkpoint_index": int(checkpoint_index),
+      "impl_state": self.impl.get_state(),
+    }
+    with Path(path).open("wb") as f:
+      pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+  def load_checkpoint(self, path: Path) -> tuple[int, dict | None]:
+    with Path(path).open("rb") as f:
+      payload = pickle.load(f)
+    if str(payload.get("algorithm", "")).strip().lower() != self.algorithm:
+      raise ValueError("Checkpoint algorithm does not match current algorithm")
+    self.impl.set_state(payload["impl_state"])
+    return int(payload.get("checkpoint_index", 0)), None
+
+  def compute_feature_attribution(
+    self,
+    features: Dict[str, float],
+    epsilon: float = 0.01,
+    *,
+    score_mode: str = "raw",
+    meta: Any | None = None,
+  ) -> tuple[float, Dict[str, float]]:
+    if score_mode == "raw":
+      score_fn = lambda f: self.score_only(f, meta=meta)[0]
+    elif score_mode == "scaled":
+      score_fn = lambda f: self.score_only(f, meta=meta)[1]
+    elif score_mode == "lograw":
+      score_fn = lambda f: math.log1p(max(0.0, self.score_only(f, meta=meta)[0]))
+    else:
+      raise ValueError("score_mode must be one of raw, scaled, lograw")
+    return compute_model_feature_attribution(self, features, epsilon, score_fn=score_fn)
 
 
 def _open_text_lines(path: Path):
@@ -80,7 +130,7 @@ def _detect_format(path: Path) -> str:
   return "evt1" if first == MAGIC else "jsonl"
 
 
-def _dict_to_event_envelope(obj: dict) -> events_pb2.EventEnvelope:
+def _dict_to_event_envelope(obj: dict) -> Any:
   from event_envelope_codec import envelope_from_dict
 
   return envelope_from_dict(obj)
@@ -157,7 +207,7 @@ def _find_event_index_by_id(path: Path, event_id: str) -> int | None:
 def _replay_and_get_target_features(
   path: Path,
   event_index: int,
-  detector: OnlineAnomalyDetector,
+  detector: DetectorAdapter,
   *,
   start_from: int = 0,
   checkpoint_at: int | None = None,
@@ -168,7 +218,7 @@ def _replay_and_get_target_features(
   fmt = _detect_format(path)
   event_iter = iter_events_jsonl(path, max_events=event_index + 1) if fmt == "jsonl" else iter_events(path, max_events=event_index + 1)
   target_features = None
-  target_meta: Meta | None = None
+  target_meta: Any | None = None
   event_id = ""
   start_i = 0
   view = feature_view_for_algorithm(detector.algorithm)
@@ -206,7 +256,7 @@ def _replay_and_get_target_features(
 
 
 def _compute_sanity_report(
-  detector: OnlineAnomalyDetector,
+  detector: DetectorAdapter,
   features: Dict[str, float],
   sorted_attrs: list,
   epsilons: List[float],
@@ -214,9 +264,9 @@ def _compute_sanity_report(
   *,
   attribution_space: str,
   binary_threshold: float = 0.01,
-  meta: Meta | None = None,
-) -> Dict[str, object]:
-  report: Dict[str, object] = {
+  meta: Any | None = None,
+) -> Dict[str, Any]:
+  report: Dict[str, Any] = {
     "binary_threshold": binary_threshold,
     "epsilons": epsilons,
     "score_space": attribution_space,
@@ -227,7 +277,7 @@ def _compute_sanity_report(
   for name, attr in sorted_attrs[:sanity_top_k]:
     val = float(features[name])
     is_binary = val <= binary_threshold or val >= (1.0 - binary_threshold)
-    item: Dict[str, object] = {
+    item: Dict[str, Any] = {
       "name": name,
       "value": val,
       "attribution": float(attr),
@@ -427,56 +477,7 @@ def main():
     sys.exit(1)
 
   cfg = load_config()
-  detector = OnlineAnomalyDetector(
-    algorithm=args.algorithm,
-    hst_n_trees=cfg.hst_n_trees,
-    hst_height=cfg.hst_height,
-    hst_window_size=cfg.hst_window_size,
-    loda_n_projections=cfg.loda_n_projections,
-    loda_bins=cfg.loda_bins,
-    loda_range=cfg.loda_range,
-    loda_ema_alpha=cfg.loda_ema_alpha,
-    loda_hist_decay=cfg.loda_hist_decay,
-    kitnet_max_size_ae=cfg.kitnet_max_size_ae,
-    kitnet_grace_feature_mapping=cfg.kitnet_grace_feature_mapping,
-    kitnet_grace_anomaly_detector=cfg.kitnet_grace_anomaly_detector,
-    kitnet_learning_rate=cfg.kitnet_learning_rate,
-    kitnet_hidden_ratio=cfg.kitnet_hidden_ratio,
-    mem_memory_size=cfg.mem_memory_size,
-    mem_beta=cfg.mem_beta,
-    mem_k=cfg.mem_k,
-    mem_gamma=cfg.mem_gamma,
-    mem_lr=cfg.mem_lr,
-    mem_input_mode=cfg.mem_input_mode,
-    mem_warmup_accept=cfg.mem_warmup_accept,
-    zscore_min_count=cfg.zscore_min_count,
-    zscore_std_floor=cfg.zscore_std_floor,
-    zscore_topk=cfg.zscore_topk,
-    knn_k=cfg.knn_k,
-    knn_memory_size=cfg.knn_memory_size,
-    knn_metric=cfg.knn_metric,
-    freq1d_bins=cfg.freq1d_bins,
-    freq1d_alpha=cfg.freq1d_alpha,
-    freq1d_decay=cfg.freq1d_decay,
-    freq1d_max_categories=cfg.freq1d_max_categories,
-    freq1d_aggregation=cfg.freq1d_aggregation,
-    freq1d_topk=cfg.freq1d_topk,
-    freq1d_soft_topk_temperature=cfg.freq1d_soft_topk_temperature,
-    copulatree_u_clamp=cfg.copulatree_u_clamp,
-    copulatree_reg=cfg.copulatree_reg,
-    copulatree_max_features=cfg.copulatree_max_features,
-    copulatree_importance_window=cfg.copulatree_importance_window,
-    copulatree_tree_update_interval=cfg.copulatree_tree_update_interval,
-    copulatree_edge_score_aggregation=cfg.copulatree_edge_score_aggregation,
-    copulatree_edge_score_topk=cfg.copulatree_edge_score_topk,
-    latentcluster_max_clusters=cfg.latentcluster_max_clusters,
-    latentcluster_u_clamp=cfg.latentcluster_u_clamp,
-    latentcluster_reg=cfg.latentcluster_reg,
-    latentcluster_update_alpha=cfg.latentcluster_update_alpha,
-    latentcluster_spawn_threshold=cfg.latentcluster_spawn_threshold,
-    model_device=cfg.model_device,
-    seed=cfg.model_seed,
-  )
+  detector = DetectorAdapter(args.algorithm, cfg)
   start_from = 0
   checkpoint_at = args.checkpoint_at
   checkpoint_path = args.checkpoint

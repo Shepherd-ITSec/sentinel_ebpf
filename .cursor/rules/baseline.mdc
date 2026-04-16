@@ -12,9 +12,10 @@ alwaysApply: true
 - Do not install packages on your own use `uv sync` instead
     - Do not use `uv pip install`
 
-## Legacy / backwards compatibility
+## No Legacy / backwards compatibility
 - This is the only copy of this project therefore we do not need ANY kind of backwards compatibility or legacy checks
 - If there is something new everything should assume the old one was never there in the first place.
+- THe policy is no legacy code. Remove everything unused, archiving is done via git.
 
 ## Tests
 - we do NOT do test driven development. 

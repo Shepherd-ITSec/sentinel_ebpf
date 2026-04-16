@@ -27,15 +27,15 @@ except ImportError:  # pragma: no cover
   tqdm = None
 
 from detector.config import load_config
-from detector.embeddings.online_word2vec import OnlineTokenWord2Vec
+from detector.building_blocks.primitives.embeddings.word2vec import OnlineGensimWord2Vec
 from scripts.replay_logs import _detect_format, iter_events, iter_events_jsonl
 
 log = logging.getLogger(Path(__file__).stem)
 
 
-def _make_extractor() -> OnlineTokenWord2Vec:
+def _make_extractor() -> OnlineGensimWord2Vec:
   cfg = load_config()
-  return OnlineTokenWord2Vec(
+  return OnlineGensimWord2Vec(
     vector_size=int(getattr(cfg, "embedding_word2vec_dim", 5)),
     sentence_len=int(getattr(cfg, "embedding_word2vec_sentence_len", 7)),
     seed=int(getattr(cfg, "model_seed", 42)),

@@ -35,6 +35,8 @@ spec:
               value: "{{ .Values.detector.service.port }}"
             - name: DETECTOR_EVENTS_PORT
               value: "{{ .Values.detector.eventsPort }}"
+            - name: DETECTOR_PIPELINE_ID
+              value: {{ .Values.detector.model.pipelineId | default "single_model" | quote }}
             - name: DETECTOR_MODEL_ALGORITHM
               value: {{ .Values.detector.model.algorithm | quote }}
             - name: DETECTOR_THRESHOLD
