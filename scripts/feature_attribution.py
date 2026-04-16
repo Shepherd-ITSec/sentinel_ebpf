@@ -51,8 +51,9 @@ if __package__ is None or __package__ == "":
 import events_pb2
 from detector.building_blocks.primitives.models.factory import new_model_impl, scaled_score_for_algorithm
 from detector.config import load_config
-from detector.building_blocks.primitives.features import extract_feature_dict, feature_view_for_algorithm
+from detector.building_blocks.primitives.features import extract_feature_dict
 from detector.building_blocks.primitives.models import compute_feature_attribution as compute_model_feature_attribution
+from detector.pipelines.feature_sets import feature_names_for_algorithm
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
 log = logging.getLogger(Path(__file__).stem)
@@ -208,6 +209,7 @@ def _replay_and_get_target_features(
   path: Path,
   event_index: int,
   detector: DetectorAdapter,
+  cfg,
   *,
   start_from: int = 0,
   checkpoint_at: int | None = None,
@@ -221,14 +223,14 @@ def _replay_and_get_target_features(
   target_meta: Any | None = None
   event_id = ""
   start_i = 0
-  view = feature_view_for_algorithm(detector.algorithm)
+  requested_features = feature_names_for_algorithm(cfg, detector.algorithm)
 
   # Prime detector before tqdm when starting from scratch (avoids lazy-init log mid-progress bar)
   if start_from == 0 and event_index > 0:
     first = next(event_iter, None)
     if first is not None:
       evt = _dict_to_event_envelope(first)
-      features, meta = extract_feature_dict(evt, feature_view=view)
+      features, meta = extract_feature_dict(evt, requested_features=requested_features)
       detector.score_and_learn(features, meta=meta)
       start_i = 1
       if checkpoint_at == 1 and checkpoint_path is not None:
@@ -241,7 +243,7 @@ def _replay_and_get_target_features(
   for j, obj in enumerate(it):
     i = start_i + j
     evt = _dict_to_event_envelope(obj)
-    features, meta = extract_feature_dict(evt, feature_view=view)
+    features, meta = extract_feature_dict(evt, requested_features=requested_features)
     if i < event_index:
       if i >= start_from:
         detector.score_and_learn(features, meta=meta)
@@ -498,6 +500,7 @@ def main():
       path,
       event_index,
       detector,
+      cfg,
       start_from=start_from,
       checkpoint_at=checkpoint_at,
       checkpoint_path=checkpoint_path,
@@ -653,10 +656,7 @@ def main():
       continue
 
     evt = _dict_to_event_envelope(obj)
-    features, feat_meta = extract_feature_dict(
-      evt,
-      feature_view=feature_view_for_algorithm(cfg.model_algorithm),
-    )
+    features, feat_meta = extract_feature_dict(evt, requested_features=feature_names_for_algorithm(cfg, cfg.model_algorithm))
     event_id = str(obj.get("event_id", ""))
 
     is_target = i in target_indices

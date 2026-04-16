@@ -7,9 +7,10 @@ from detector.building_blocks.primitives.embeddings.word2vec import OnlineGensim
 from detector.building_blocks.primitives.features.generic import _extract_generic_features
 from detector.building_blocks.primitives.features.groups.file import _extract_file_group_features
 from detector.building_blocks.primitives.features.groups.network import _extract_network_group_features
-from detector.building_blocks.primitives.features.views import _FeatureViewSpec, _SEQUENCE_CONTEXT_PREFIX, _feature_view_spec
 from detector.building_blocks.primitives.sequence.sequence_context import SequenceFeatureMeta, SequenceVectorContext, TokenClassTable
 from detector.config import load_config
+
+_SEQUENCE_CONTEXT_PREFIX = "sequence_ctx"
 
 
 class FeatureExtractor:
@@ -64,15 +65,32 @@ class FeatureExtractor:
     )
     return out, meta
 
-  def extract_feature_dict(self, evt: Any, feature_view: str = "default") -> tuple[Dict[str, float], SequenceFeatureMeta | None]:
+  @property
+  def sequence_feature_names(self) -> tuple[str, ...]:
+    return self._sequence_context.context_feature_names
+
+  @staticmethod
+  def _matches_requested(feature_name: str, requested: set[str]) -> bool:
+    if feature_name in requested:
+      return True
+    return any(
+      pattern.endswith("*") and feature_name.startswith(pattern[:-1])
+      for pattern in requested
+    )
+
+  def extract_feature_dict(
+    self,
+    evt: Any,
+    requested_features: tuple[str, ...] | list[str] | set[str],
+  ) -> tuple[dict[str, float], SequenceFeatureMeta | None]:
     meta: SequenceFeatureMeta | None = None
-    view = _feature_view_spec(feature_view or "default")
-    out = _extract_generic_features(evt, view)
-    if view.include_sequence:
+    requested = set(requested_features)
+    out = _extract_generic_features(evt, requested)
+    if any(self._matches_requested(name, requested) for name in self.sequence_feature_names):
       seq, meta = self._extract_sequence_features(evt)
-      out.update(seq)
+      out.update({name: value for name, value in seq.items() if self._matches_requested(name, requested)})
     event_group = (evt.event_group or "").strip().lower() or "__empty__"
-    out.update(_extract_group_features(evt, view, event_group))
+    out.update(_extract_group_features(evt, requested, event_group))
     return out, meta
 
   def get_state(self) -> dict:
@@ -96,13 +114,13 @@ class FeatureExtractor:
         self._sequence_context.set_state(ctx_state)
 
 
-def _extract_group_features(evt: Any, view: _FeatureViewSpec, event_group: str) -> Dict[str, float]:
+def _extract_group_features(evt: Any, requested: set[str], event_group: str) -> dict[str, float]:
   group = (event_group or "").strip().lower()
-  out: Dict[str, float] = {}
+  out: dict[str, float] = {}
   if group == "network":
-    out.update(_extract_network_group_features(evt, view))
+    out.update(_extract_network_group_features(evt, requested))
   elif group == "file":
-    out.update(_extract_file_group_features(evt, view, event_group))
+    out.update(_extract_file_group_features(evt, requested, event_group))
   return out
 
 
@@ -117,5 +135,8 @@ def _default_feature_extractor() -> FeatureExtractor:
   return build_feature_extractor()
 
 
-def extract_feature_dict(evt: Any, feature_view: str = "default") -> tuple[Dict[str, float], SequenceFeatureMeta | None]:
-  return _default_feature_extractor().extract_feature_dict(evt, feature_view=feature_view)
+def extract_feature_dict(
+  evt: Any,
+  requested_features: tuple[str, ...] | list[str] | set[str],
+) -> tuple[dict[str, float], SequenceFeatureMeta | None]:
+  return _default_feature_extractor().extract_feature_dict(evt, requested_features=requested_features)

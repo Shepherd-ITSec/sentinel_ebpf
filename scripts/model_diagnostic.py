@@ -29,7 +29,8 @@ if __package__ is None or __package__ == "":
 import events_pb2
 from detector.config import load_config
 from detector.building_blocks.primitives.models.factory import new_model_impl, scaled_score_for_algorithm
-from detector.building_blocks.primitives.features import extract_feature_dict, feature_view_for_algorithm
+from detector.building_blocks.primitives.features import extract_feature_dict
+from detector.pipelines.feature_sets import feature_names_for_algorithm
 from replay_logs import _detect_format, iter_events, iter_events_jsonl
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
@@ -452,7 +453,7 @@ def _build_report(
     )
   else:
     verdict = (
-      f"Current `{algorithm}` is mixed on this stream: some signal exists, but not enough yet to call the feature/view setup healthy."
+      f"Current `{algorithm}` is mixed on this stream: some signal exists, but not enough yet to call the feature setup healthy."
     )
 
   lines = [
@@ -469,7 +470,7 @@ def _build_report(
     f"- Scored events: `{summary['events_processed']}`",
     f"- Analysis start event: `{summary['analysis_start_event']}`",
     f"- Post-warmup events analyzed: `{summary['events_analyzed']}`",
-    f"- Feature view: `{summary['feature_view']}`",
+    f"- Requested features: `{len(summary['requested_features'])}`",
     f"- Threshold: `{summary['threshold']}`",
     "",
     "## Evidence For Concern",
@@ -559,6 +560,7 @@ def main() -> None:
     timeseries_path.unlink()
 
   detector = _build_detector(cfg, args.algorithm)
+  requested_features = feature_names_for_algorithm(cfg, args.algorithm)
   scaled_scores: list[float] = []
   raw_scores: list[float] = []
   model_signal: list[float] = []
@@ -584,10 +586,7 @@ def main() -> None:
       log.info("tqdm not installed; running diagnostic without progress bar")
     for i, obj in enumerate(event_iter):
       evt = _dict_to_event_envelope(obj)
-      features, meta = extract_feature_dict(
-        evt,
-        feature_view=feature_view_for_algorithm(args.algorithm),
-      )
+      features, meta = extract_feature_dict(evt, requested_features=requested_features)
       raw, scaled = detector.score_and_learn(features, meta=meta)
       debug = detector.get_last_debug()
       impl = detector.impl
@@ -712,7 +711,7 @@ def main() -> None:
 
   score_summary = {
     "algorithm": args.algorithm,
-    "feature_view": feature_view_for_algorithm(args.algorithm),
+    "requested_features": list(requested_features),
     "events_path": str(events_path),
     "events_processed": total_events,
     "analysis_start_event": analysis_start,

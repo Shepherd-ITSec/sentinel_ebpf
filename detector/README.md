@@ -15,7 +15,6 @@ The detector is an anomaly detection service that consumes kernel-level events (
 **Role:** Turn each `EventEnvelope` into numeric features for tabular models, or sequence-context payloads for sequence models. The current implementation lives under `detector/building_blocks/primitives/features/`, mainly in:
 
 - `extractor.py`
-- `views.py`
 - `generic.py`
 - `groups/file.py`
 - `groups/network.py`
@@ -23,7 +22,7 @@ The detector is an anomaly detection service that consumes kernel-level events (
 
 Extraction is layered:
 
-1. **General** — shared numeric context (optionally enabled by the selected feature view): ids/args, calendar time, (optionally) path depth/prefix hash, and (optionally) return code normalization. Some views also enable scalar hashes (`*_hash`).
+1. **General** — shared numeric context selected by explicit feature names: ids/args, calendar time, path depth/prefix hash, return code normalization, and scalar hashes (`*_hash`) when requested.
 2. **Group-specific** — only when `evt.event_group` is non-empty and that name exists under `groups` in `rules.yaml`:
   - **File group** (`event_group == "file"`): `file_*` flags and path-prefix checks.
   - **Network group** (`event_group == "network"`): `net_*` features derived from socket attributes/args.
@@ -36,7 +35,7 @@ Extraction is layered:
 - `event_id` (string): correlation id for the message (not the Linux syscall number).
 - `syscall_name`: Linux syscall name string (e.g. `openat`, `connect`); used for flag-slot routing, network/socket parsing, and group-local one-hot labels.
 - `syscall_nr` (uint32): Linux syscall number (e.g. `257` for `openat`); currently not used by the feature extractor.
-- `hostname` (string): host identity for `**hostname_hash`** in the `**frequency`** view.
+- `hostname` (string): host identity for `**hostname_hash`** when that feature is requested.
 - `comm`, `pid`, `tid`, `uid` (strings): process context; `pid`/`tid`/`uid` use decimal string encoding as emitted by the probe.
 - `arg0`, `arg1` (strings): syscall arguments; also used as raw flag numeric strings for `open` → `arg0`, `openat`/`openat2`/`socket` → `arg1` when deriving `file_flags_*` / `file_flags_hash` (file groups) or `proc_flags_*` / `proc_flags_hash` (process group). `**net_***` numeric norms use these args; endpoint IP/port/family for `**net_***` hashes come from `**fd_sock_***` attributes (`_parse_sockaddr_from_evt`), not from parsing `arg1`.
 - Path strings for feature extraction: `**attributes["fd_path"]**` (the legacy `path` field is reserved in `events.proto`).
@@ -59,22 +58,22 @@ Optional `attributes` (map, producer-filled when available):
 
 **Public API:**
 
-- `extract_feature_dict(evt, feature_view="default") -> Dict[str, float]`: extracts features for a single event, and appends group-specific features only when `evt.event_group` is present in the loaded rules config. Key set can differ per **event_group** and per **feature view**.
-- `feature_view_for_algorithm(algorithm) -> str`: maps algorithm to feature view. `freq1d`, `copulatree`, `latentcluster`, `zscore` → `frequency`; `sequence_mlp` / `sequence_transformer` → `sequence`; else → `default`.
+- `extract_feature_dict(evt, requested_features=...) -> Dict[str, float]`: extracts exactly the requested features for a single event, and appends group-specific features only when `evt.event_group` matches a supported group and one of that group's features was requested.
+- `detector/pipelines/feature_sets.py`: contains reusable explicit feature-name tuples used by pipelines and scripts, such as default tabular, frequency-style, and sequence-context feature lists.
 
-**Feature views:** One extractor; the view toggles which optional blocks are included (`_FeatureViewSpec` in `detector/building_blocks/primitives/features/views.py`).
+**Explicit feature sets:** Pipelines own feature selection now. The extractor no longer accepts named views like `default` or `frequency`; callers pass concrete feature names instead.
 
-- `**default`**: minimal generic context + time features. Does **not** include process id/uid norms, path depth/prefix features, return code features, string hashes, network port norms, or file flag hashes.
-- `**frequency`**: hash-heavy view for frequency-style models. Emits `*_hash` general hashes plus network hashes, and uses `day_fraction_norm` instead of the sin/cos pair. Omits most other generic context.
-- `**full`**: emits all optional generic blocks (process norms, time bucket, path depth/prefix hash, return code features) and includes file/network norms where applicable.
-- `**sequence**`: separate path: produces only sequence-context features under the `sequence_ctx_*` prefix (no generic/group blocks).
+- Minimal/default tabular sets request `syscall_nr_norm` plus day-cycle time features.
+- Frequency-style sets request hash-heavy identity features plus `day_fraction_norm`.
+- Full tabular sets request richer process/path/return/file/network numeric context.
+- Sequence pipelines request only `sequence_ctx_*` features.
 
 Empty `**event_group**`: no group-specific block.
 
-**Views** column: only the listed feature views include that row (primary named views: **default**, **frequency**, **full**).
+**Typical set** column: common reusable pipeline sets that include the feature.
 
 
-| Feature / pattern                                                         | Views         | Encoded as         | Range   | Source                                                                                   |
+| Feature / pattern                                                         | Typical set   | Encoded as         | Range   | Source                                                                                   |
 | ------------------------------------------------------------------------- | ------------- | ------------------ | ------- | ---------------------------------------------------------------------------------------- |
 | `day_cycle_sin`, `day_cycle_cos`                                          | default, full | cyclic sin/cos     | [-1, 1] | UTC time → sin/cos of 2π × (nanoseconds mod day) / day length                            |
 | `day_fraction_norm`                                                       | frequency     | scalar             | [0, 1]  | Same clock as day-cycle, but one scalar position in the UTC day                          |
@@ -89,10 +88,10 @@ Empty `**event_group**`: no group-specific block.
 | `comm_hash`, `hostname_hash`, `pid_hash`, `path_hash`, `path_prefix_hash` | frequency     | scalar hash        | [0, 1)  | `_hash01` of respective string fields                                                    |
 
 
-**Group-scoped features** — appended when `evt.event_group` is non-empty and matches a `**groups.<name>`** entry in `rules.yaml`. Sensitive/tmp prefix lists come from `**groups.<name>.features`** (fallbacks: `_DEFAULT_SENSITIVE_PATH_PREFIXES`, `_DEFAULT_TMP_PATH_PREFIXES`). Exactly one of the **File** / **Process** / **Network** layers applies: **File** for `event_group=file`; **Process** for `event_group=process` (currently emits no extra features); **Network** for `event_group=network`. `**net_`*** use `attributes` via `_parse_sockaddr_from_evt` (`fd_sock_`* keys); values are 0 when fields are missing.
+**Group-scoped features** — appended when `evt.event_group` is non-empty and matches a `**groups.<name>`** entry in `rules.yaml`, and when one of those group features was explicitly requested. Sensitive/tmp prefix lists come from `**groups.<name>.features`** (fallbacks: `_DEFAULT_SENSITIVE_PATH_PREFIXES`, `_DEFAULT_TMP_PATH_PREFIXES`). Exactly one of the **File** / **Process** / **Network** layers applies: **File** for `event_group=file`; **Process** for `event_group=process` (currently emits no extra features); **Network** for `event_group=network`. `**net_`*** use `attributes` via `_parse_sockaddr_from_evt` (`fd_sock_`* keys); values are 0 when fields are missing.
 
 
-| Layer   | Feature / pattern                                       | Views         | Encoded as  | Range  | Source                                                                  |
+| Layer   | Feature / pattern                                       | Typical set   | Encoded as  | Range  | Source                                                                  |
 | ------- | ------------------------------------------------------- | ------------- | ----------- | ------ | ----------------------------------------------------------------------- |
 | File    | `file_sensitive_path`, `file_tmp_path`                  | default, full | binary      | {0, 1} | Lowercased `attributes["fd_path"]` vs configured sensitive/tmp prefixes |
 | File    | `file_flags_hash`                                       | full          | scalar hash | [0, 1) | `_hash01(attributes["flags"])` (decoded flags string when present)      |
@@ -101,7 +100,7 @@ Empty `**event_group**`: no group-specific block.
 | Network | `net_socket_type_hash`, `net_daddr_hash`, `net_af_hash` | frequency     | scalar hash | [0, 1) | `_hash01` of socket type value, remote addr, AF string                  |
 
 
-Missing or invalid fields use safe defaults. Each per-event_group model sees a consistent feature set for its group, and the **feature view** (chosen per algorithm) is fixed for that model instance.
+Missing or invalid fields use safe defaults. Each per-event_group model sees a consistent feature set for its group, and that feature list is fixed by the pipeline instance.
 
 ---
 
@@ -111,7 +110,7 @@ Missing or invalid fields use safe defaults. Each per-event_group model sees a c
 
 **Public API:**
 
-- `DetectorConfig`: dataclass of default values (port, events_http_port, recent_events_buffer_size, model_algorithm, threshold, score_mode, and all HST/LODA/KitNet/MemStream/ZScore/KNN/Freq1D parameters, plus **sequence** fields: `sequence_ngram_length`, `sequence_thread_aware`, `sequence_mlp_hidden_size`, `sequence_mlp_hidden_layers`, `sequence_mlp_lr`, `DETECTOR_SEQUENCE_`* envs). The feature view is derived from `model_algorithm` via `feature_view_for_algorithm`.
+- `DetectorConfig`: dataclass of default values (port, events_http_port, recent_events_buffer_size, model_algorithm, threshold, score_mode, and all HST/LODA/KitNet/MemStream/ZScore/KNN/Freq1D parameters, plus **sequence** fields: `sequence_ngram_length`, `sequence_thread_aware`, `sequence_mlp_hidden_size`, `sequence_mlp_hidden_layers`, `sequence_mlp_lr`, `DETECTOR_SEQUENCE_`* envs). Pipelines use this config to choose explicit feature-name lists.
 - `load_config() -> DetectorConfig`: builds a `DetectorConfig` from the environment. Environment variables override defaults (e.g. `DETECTOR_PORT`, `DETECTOR_MODEL_ALGORITHM`, `DETECTOR_THRESHOLD`, `DETECTOR_SCORE_MODE`, `DETECTOR_KITNET_*`, `DETECTOR_MEMSTREAM_*`, `DETECTOR_SEQUENCE_*`, etc.).
 
 No config file is read; configuration is env-only so it works well in containers and eval runs.
@@ -125,7 +124,7 @@ The detector runtime is organized around explicit building blocks.
 - `detector/building_blocks/core/`: runtime primitives such as `BuildingBlock`, `BlockContext`, `BuildingBlockManager`, checkpoint loading/saving, and `OnlineIDS`
 - `detector/building_blocks/blocks/`: graph nodes such as feature extraction, model blocks, fusion, scaling, sequence blocks, and scoring/decision blocks
 - `detector/building_blocks/primitives/`: low-level reusable implementations for models, features, embeddings, sequence handling, and scoring helpers
-- `detector/building_blocks/pipelines/`: named pipeline builders selected by `cfg.pipeline_id`
+- `detector/pipelines/`: named pipeline builders selected by `cfg.pipeline_id`
 
 Built-in pipeline ids are registered in `detector/pipelines/registry.py`. `build_final_bb(cfg)` returns the final graph node for the configured pipeline, and `OnlineIDS.run_event(evt)` executes that graph and returns the final payload, which is currently expected to be a `DecisionOutput` for detector-facing pipelines.
 

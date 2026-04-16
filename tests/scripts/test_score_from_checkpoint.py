@@ -9,13 +9,9 @@ import pytest
 
 from detector.building_blocks.core.base import DecisionOutput
 from detector.config import DetectorConfig, detector_config_to_dict
+from scripts.performance_measurement import PerformanceEvent, PerformanceMeasurement
 import scripts.score_from_checkpoint as score_from_checkpoint
-from scripts.score_from_checkpoint import (
-  _confusion_summary,
-  _default_summary_path,
-  _iter_event_dicts,
-  _recording_detection_summary,
-)
+from scripts.score_from_checkpoint import _default_summary_path, _iter_event_dicts
 
 
 def _write_jsonl(path, rows):
@@ -70,51 +66,44 @@ def test_iter_event_dicts_max_recordings_requires_recording_name(temp_dir):
     list(_iter_event_dicts(log_file, max_recordings=1))
 
 
-def test_confusion_summary_counts_binary_outcomes():
-  summary = _confusion_summary(
-    [
-      (True, True),
-      (True, False),
-      (False, False),
-      (False, True),
-    ]
-  )
+def test_performance_measurement_reports_lidds_style_metrics():
+  perf = PerformanceMeasurement()
+  perf.set_threshold(0.7)
+  for event in [
+    PerformanceEvent(False, False, "attack-hit", 1),
+    PerformanceEvent(True, True, "attack-hit", 2_000_000_000),
+    PerformanceEvent(True, True, "attack-hit", 3_000_000_000),
+    PerformanceEvent(False, False, "attack-miss", 4),
+    PerformanceEvent(False, True, "attack-miss", 5_000_000_000),
+    PerformanceEvent(False, False, "benign-clean", 6),
+    PerformanceEvent(True, False, "benign-noisy", 7),
+    PerformanceEvent(False, False, "benign-noisy", 8),
+  ]:
+    perf.add_event(event)
 
-  assert summary["tp"] == 1
-  assert summary["fp"] == 1
-  assert summary["tn"] == 1
-  assert summary["fn"] == 1
-  assert summary["samples"] == 4
-  assert summary["flagged_samples"] == 2
-  assert summary["precision"] == pytest.approx(0.5)
-  assert summary["recall"] == pytest.approx(0.5)
-  assert summary["f1"] == pytest.approx(0.5)
-  assert summary["accuracy"] == pytest.approx(0.5)
-  assert summary["flagged_rate"] == pytest.approx(0.5)
+  summary = perf.get_results()
 
-
-def test_recording_detection_summary_counts_attack_recordings_once():
-  summary = _recording_detection_summary(
-    [
-      ("attack-hit", False, False),
-      ("attack-hit", True, True),
-      ("attack-hit", True, True),
-      ("attack-miss", False, False),
-      ("attack-miss", False, True),
-      ("benign-clean", False, False),
-      ("benign-noisy", True, False),
-      ("benign-noisy", False, False),
-    ]
-  )
-
-  assert summary["recordings"] == 4
-  assert summary["attack_recordings"] == 2
-  assert summary["benign_recordings"] == 2
-  assert summary["detected_attack_recordings"] == 1
-  assert summary["missed_attack_recordings"] == 1
-  assert summary["benign_recordings_with_alarm"] == 1
+  assert summary["threshold"] == pytest.approx(0.7)
+  assert summary["true_positives"] == 2
+  assert summary["false_positives"] == 1
+  assert summary["true_negatives"] == 4
+  assert summary["false_negatives"] == 1
+  assert summary["correct_alarm_count"] == 1
+  assert summary["false_alarm_count"] == 1
+  assert summary["exploit_count"] == 2
   assert summary["detection_rate"] == pytest.approx(0.5)
-  assert summary["benign_recording_alarm_rate"] == pytest.approx(0.5)
+  assert summary["precision_syscall"] == pytest.approx(2 / 3)
+  assert summary["recall_syscall"] == pytest.approx(2 / 3)
+  assert summary["f1_syscall"] == pytest.approx(2 / 3)
+  assert summary["consecutive_false_positives_normal"] == 1
+  assert summary["consecutive_false_positives_exploits"] == 0
+  assert summary["precision_with_cfa"] == pytest.approx(0.5)
+  assert summary["precision_with_syscalls"] == pytest.approx(0.5)
+  assert summary["f1_cfa"] == pytest.approx(0.5)
+  assert summary["percent_events_flagged"] == pytest.approx(37.5)
+  assert summary["percent_events_gt_anomalous"] == pytest.approx(37.5)
+  assert summary["mean_detection_delay_s"] == pytest.approx(0.0)
+  assert summary["metric_levels"]["precision_with_syscalls"] == "mixed"
 
 
 def test_default_summary_path_uses_sidecar_json_name(tmp_path):
@@ -249,12 +238,12 @@ def test_main_writes_anomaly_and_reports_confusion(tmp_path, monkeypatch, caplog
   assert summary["events_scored"] == 3
   assert summary["predicted_anomalies"] == 1
   assert summary["labeled_events"] == 3
-  assert summary["event_metrics"]["tp"] == 1
-  assert summary["event_metrics"]["tn"] == 2
-  assert summary["recording_metrics"]["detected_attack_recordings"] == 1
-  assert summary["recording_metrics"]["detection_rate"] == pytest.approx(1.0)
-  assert any("Recording-level evaluation:" in record.message for record in caplog.records)
-  assert any("Event-level evaluation against attack-region labels:" in record.message for record in caplog.records)
+  assert summary["performance"]["true_positives"] == 1
+  assert summary["performance"]["true_negatives"] == 2
+  assert summary["performance"]["correct_alarm_count"] == 1
+  assert summary["performance"]["detection_rate"] == pytest.approx(1.0)
+  assert summary["performance"]["precision_syscall"] == pytest.approx(1.0)
+  assert any("LID-DS-style performance evaluation:" in record.message for record in caplog.records)
 
 
 def test_main_uses_checkpoint_config_not_live_environment(tmp_path, monkeypatch):

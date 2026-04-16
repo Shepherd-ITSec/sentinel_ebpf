@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import hashlib
-import re
 from datetime import datetime, timezone
-from typing import Any, Dict
+from typing import Any
 
 import numpy as np
-
-from detector.building_blocks.primitives.features.views import _FeatureViewSpec
 
 _PID_MAX = 4_194_304
 _UID_MAX = 4_294_967_295
@@ -62,19 +59,16 @@ def _path_components(path: str) -> list:
   return [p for p in path.strip().strip("/").split("/") if p]
 
 
-def _sanitize_feature_name(value: str) -> str:
-  cleaned = re.sub(r"[^a-z0-9]+", "_", (value or "").strip().lower()).strip("_")
-  return cleaned or "unknown"
-
-
-def _extract_time_features(ts_ns: int, *, mode: str) -> Dict[str, float]:
-  day_fraction = (float(int(ts_ns) % _DAY_NS) / float(_DAY_NS)) if _DAY_NS > 0 else 0.0
-  if mode == "day_cycle":
-    day_angle = 2.0 * float(np.pi) * day_fraction
-    return {"day_cycle_sin": float(np.sin(day_angle)), "day_cycle_cos": float(np.cos(day_angle))}
-  if mode == "day_fraction":
-    return {"day_fraction_norm": day_fraction}
-  raise ValueError(f"Unknown time_feature_mode={mode!r}")
+def _extract_time_features(ts_ns: int, *, day_cycle: bool, day_fraction: bool) -> dict[str, float]:
+  out: dict[str, float] = {}
+  day_fraction_value = (float(int(ts_ns) % _DAY_NS) / float(_DAY_NS)) if _DAY_NS > 0 else 0.0
+  if day_cycle:
+    day_angle = 2.0 * float(np.pi) * day_fraction_value
+    out["day_cycle_sin"] = float(np.sin(day_angle))
+    out["day_cycle_cos"] = float(np.cos(day_angle))
+  if day_fraction:
+    out["day_fraction_norm"] = day_fraction_value
+  return out
 
 
 def _parse_sockaddr_from_evt(evt: Any) -> Dict[str, str]:
@@ -86,46 +80,69 @@ def _parse_sockaddr_from_evt(evt: Any) -> Dict[str, str]:
   return out
 
 
-def _extract_generic_features(evt: Any, view: _FeatureViewSpec) -> Dict[str, float]:
-  out: Dict[str, float] = {}
+def _extract_generic_features(evt: Any, requested: set[str]) -> dict[str, float]:
+  out: dict[str, float] = {}
   pid_val = _safe_int(evt.pid or "0", default=0)
   attrs = dict(evt.attributes or {})
   path = str(attrs.get("fd_path", "") or "").strip()
-  if view.include_general_process_context:
+  process_requested = any(name in requested for name in ("pid_norm", "tid_norm", "uid_norm", "arg0_norm", "arg1_norm"))
+  if process_requested:
     tid_val = _safe_int(evt.tid or "0", default=0)
     uid_val = _safe_int(evt.uid or "0", default=0)
     arg0_val = _safe_int(evt.arg0 or "0", default=0)
     arg1_val = _safe_int(evt.arg1 or "0", default=0)
-    out.update({
-      "pid_norm": _norm_pid(pid_val),
-      "tid_norm": _norm_pid(tid_val),
-      "uid_norm": _norm_uid(uid_val),
-      "arg0_norm": _norm_arg(arg0_val),
-      "arg1_norm": _norm_arg(arg1_val),
-    })
+    if "pid_norm" in requested:
+      out["pid_norm"] = _norm_pid(pid_val)
+    if "tid_norm" in requested:
+      out["tid_norm"] = _norm_pid(tid_val)
+    if "uid_norm" in requested:
+      out["uid_norm"] = _norm_uid(uid_val)
+    if "arg0_norm" in requested:
+      out["arg0_norm"] = _norm_arg(arg0_val)
+    if "arg1_norm" in requested:
+      out["arg1_norm"] = _norm_arg(arg1_val)
   ts_ns = evt.ts_unix_nano
-  if view.include_general_time_context:
+  if "week_of_month_norm" in requested:
     ts_s = ts_ns // 1_000_000_000
     dt = datetime.fromtimestamp(ts_s, tz=timezone.utc)
     day_of_month = dt.day
     week_of_month = min(4, (day_of_month - 1) // 7 + 1)
     out["week_of_month_norm"] = (week_of_month - 1) / 3.0
-  if view.include_general_path_context:
+  path_requested = any(name in requested for name in ("path_depth_norm", "path_prefix_hash"))
+  if path_requested:
     components = _path_components(path)
     path_prefix = components[0] if components else ""
-    out.update({"path_depth_norm": _norm_path_depth(components), "path_prefix_hash": _hash01(path_prefix)})
-  if view.include_general_return_context:
+    if "path_depth_norm" in requested:
+      out["path_depth_norm"] = _norm_path_depth(components)
+    if "path_prefix_hash" in requested:
+      out["path_prefix_hash"] = _hash01(path_prefix)
+  if "return_success" in requested or "return_errno_norm" in requested:
     rv = _safe_int(attrs.get("return_value", "0"), default=0)
     return_success, return_errno_norm = _norm_return_errno(rv)
-    out.update({"return_success": return_success, "return_errno_norm": return_errno_norm})
-  if view.include_hashes:
-    out["hostname_hash"] = _hash01(str(evt.hostname or ""))
-    out["pid_hash"] = _hash01(str(evt.pid or "0"))
-    out["path_hash"] = _hash01(path)
+    if "return_success" in requested:
+      out["return_success"] = return_success
+    if "return_errno_norm" in requested:
+      out["return_errno_norm"] = return_errno_norm
+  hash_requested = any(name in requested for name in ("hostname_hash", "pid_hash", "path_hash", "path_prefix_hash"))
+  if hash_requested:
     components = _path_components(path)
     path_prefix = components[0] if components else ""
-    out["path_prefix_hash"] = _hash01(path_prefix)
-  syscall_nr_val = max(0, _safe_int(str(int(evt.syscall_nr)), default=0))
-  out["syscall_nr_norm"] = min(syscall_nr_val / _SYSCALL_NR_MAX, 1.0)
-  out.update(_extract_time_features(ts_ns, mode=view.time_feature_mode))
+    if "hostname_hash" in requested:
+      out["hostname_hash"] = _hash01(str(evt.hostname or ""))
+    if "pid_hash" in requested:
+      out["pid_hash"] = _hash01(str(evt.pid or "0"))
+    if "path_hash" in requested:
+      out["path_hash"] = _hash01(path)
+    if "path_prefix_hash" in requested and "path_prefix_hash" not in out:
+      out["path_prefix_hash"] = _hash01(path_prefix)
+  if "syscall_nr_norm" in requested:
+    syscall_nr_val = max(0, _safe_int(str(int(evt.syscall_nr)), default=0))
+    out["syscall_nr_norm"] = min(syscall_nr_val / _SYSCALL_NR_MAX, 1.0)
+  out.update(
+    _extract_time_features(
+      ts_ns,
+      day_cycle=("day_cycle_sin" in requested or "day_cycle_cos" in requested),
+      day_fraction=("day_fraction_norm" in requested),
+    )
+  )
   return out

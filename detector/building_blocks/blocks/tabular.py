@@ -11,18 +11,24 @@ if TYPE_CHECKING:
 
 
 class FeatureDictExtractorBlock(BuildingBlock):
-  """Feature side: run ``FeatureExtractor.extract_feature_dict`` for one ``feature_view``."""
+  """Feature side: run ``FeatureExtractor.extract_feature_dict`` for one explicit feature list."""
 
-  def __init__(self, extractor: FeatureExtractor, feature_view: str, *, block_uid: str | None = None) -> None:
+  def __init__(
+    self,
+    extractor: FeatureExtractor,
+    requested_features: tuple[str, ...] | list[str],
+    *,
+    block_uid: str | None = None,
+  ) -> None:
     super().__init__(block_uid=block_uid)
     self._extractor = extractor
-    self._view = (feature_view or "default").strip()
+    self._requested_features = tuple(str(name) for name in requested_features)
 
   def depends_on(self) -> list[BuildingBlock]:
     return []
 
   def forward(self, ctx: BlockContext) -> None:
-    feats, meta = self._extractor.extract_feature_dict(ctx.event, feature_view=self._view)
+    feats, meta = self._extractor.extract_feature_dict(ctx.event, requested_features=self._requested_features)
     ctx.outputs[id(self)] = (feats, meta)
 
   def get_state(self) -> dict[str, Any]:

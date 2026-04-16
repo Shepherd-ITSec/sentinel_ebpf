@@ -10,14 +10,17 @@ import pickle
 import sys
 from pathlib import Path
 from typing import Any, Iterator
+
 try:
   from tqdm import tqdm  # type: ignore[import-not-found]
 except ImportError:
   tqdm = None
+
 from detector.building_blocks import OnlineIDS, load_pipeline_checkpoint
 from detector.building_blocks.core.base import DecisionOutput
 from detector.config import detector_config_from_dict
 from detector.pipelines import build_final_bb
+from scripts.performance_measurement import PerformanceEvent, PerformanceMeasurement
 from scripts.replay_logs import _detect_format, iter_events, iter_events_jsonl
 from scripts.train_detector_checkpoint import _dict_to_event_envelope
 
@@ -29,81 +32,6 @@ def _label_from_row(obj: dict[str, Any]) -> bool | None:
   if isinstance(malicious, bool):
     return malicious
   return None
-
-
-def _confusion_summary(rows: list[tuple[bool, bool]]) -> dict[str, float | int]:
-  tp = fp = tn = fn = 0
-  for predicted_anomaly, expected_anomaly in rows:
-    if predicted_anomaly and expected_anomaly:
-      tp += 1
-    elif predicted_anomaly and not expected_anomaly:
-      fp += 1
-    elif (not predicted_anomaly) and (not expected_anomaly):
-      tn += 1
-    else:
-      fn += 1
-
-  total = len(rows)
-  flagged_samples = tp + fp
-  precision = tp / (tp + fp) if (tp + fp) else 0.0
-  recall = tp / (tp + fn) if (tp + fn) else 0.0
-  f1 = (2.0 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
-  accuracy = (tp + tn) / total if total else 0.0
-  return {
-    "samples": total,
-    "flagged_samples": flagged_samples,
-    "tp": tp,
-    "fp": fp,
-    "tn": tn,
-    "fn": fn,
-    "precision": precision,
-    "recall": recall,
-    "f1": f1,
-    "accuracy": accuracy,
-    "flagged_rate": (flagged_samples / total) if total else 0.0,
-  }
-
-
-def _recording_detection_summary(
-  rows: list[tuple[str, bool, bool]],
-) -> dict[str, float | int]:
-  by_recording: dict[str, dict[str, bool]] = {}
-  for recording_name, predicted_anomaly, expected_anomaly in rows:
-    entry = by_recording.setdefault(
-      recording_name,
-      {
-        "has_attack_region": False,
-        "detected_attack": False,
-        "has_any_alarm": False,
-      },
-    )
-    entry["has_any_alarm"] = entry["has_any_alarm"] or predicted_anomaly
-    entry["has_attack_region"] = entry["has_attack_region"] or expected_anomaly
-    if predicted_anomaly and expected_anomaly:
-      entry["detected_attack"] = True
-
-  attack_recordings = sum(1 for entry in by_recording.values() if entry["has_attack_region"])
-  benign_recordings = sum(1 for entry in by_recording.values() if not entry["has_attack_region"])
-  detected_attack_recordings = sum(1 for entry in by_recording.values() if entry["detected_attack"])
-  missed_attack_recordings = attack_recordings - detected_attack_recordings
-  benign_recordings_with_alarm = sum(
-    1
-    for entry in by_recording.values()
-    if (not entry["has_attack_region"]) and entry["has_any_alarm"]
-  )
-
-  return {
-    "recordings": len(by_recording),
-    "attack_recordings": attack_recordings,
-    "benign_recordings": benign_recordings,
-    "detected_attack_recordings": detected_attack_recordings,
-    "missed_attack_recordings": missed_attack_recordings,
-    "benign_recordings_with_alarm": benign_recordings_with_alarm,
-    "detection_rate": (detected_attack_recordings / attack_recordings) if attack_recordings else 0.0,
-    "benign_recording_alarm_rate": (
-      benign_recordings_with_alarm / benign_recordings
-    ) if benign_recordings else 0.0,
-  }
 
 
 def _default_summary_path(out_path: Path) -> Path:
@@ -200,8 +128,8 @@ def main() -> None:
   n = 0
   anomaly_count = 0
   labeled_rows = 0
-  confusion_rows: list[tuple[bool, bool]] = []
-  recording_rows: list[tuple[str, bool, bool]] = []
+  perf = PerformanceMeasurement()
+  perf.set_threshold(threshold)
   event_iter = _iter_event_dicts(
     args.logfile,
     max_events=args.max_events,
@@ -231,10 +159,15 @@ def main() -> None:
         anomaly_count += 1
       if expected_anomaly is not None:
         labeled_rows += 1
-        confusion_rows.append((predicted_anomaly, expected_anomaly))
         recording_name = obj.get("lidds_recording_name")
-        if isinstance(recording_name, str) and recording_name:
-          recording_rows.append((recording_name, predicted_anomaly, expected_anomaly))
+        perf.add_event(
+          PerformanceEvent(
+            predicted_anomaly=predicted_anomaly,
+            expected_anomaly=expected_anomaly,
+            recording_name=recording_name if isinstance(recording_name, str) and recording_name else None,
+            ts_unix_nano=int(obj["ts_unix_nano"]) if isinstance(obj.get("ts_unix_nano"), int) else None,
+          )
+        )
       f.write(
         json.dumps(
           {
@@ -274,16 +207,11 @@ def main() -> None:
   }
   log.info("Wrote %d scored events to %s (threshold=%.6f, predicted_anomalies=%d)", n, out_path, threshold, anomaly_count)
   if labeled_rows:
-    if recording_rows:
-      recording_summary = _recording_detection_summary(recording_rows)
-      summary_payload["recording_metrics"] = recording_summary
-      log.info("Recording-level evaluation: %s", json.dumps(recording_summary, sort_keys=True))
-    event_summary = _confusion_summary(confusion_rows)
-    summary_payload["event_metrics"] = event_summary
-    log.info("Event-level evaluation against attack-region labels: %s", json.dumps(event_summary, sort_keys=True))
+    performance = perf.get_results()
+    summary_payload["performance"] = performance
+    log.info("LID-DS-style performance evaluation: %s", json.dumps(performance, sort_keys=True))
   else:
-    summary_payload["recording_metrics"] = None
-    summary_payload["event_metrics"] = None
+    summary_payload["performance"] = None
     log.info("Evaluation skipped: no boolean malicious labels found in scored rows")
   summary_path.write_text(json.dumps(summary_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
   log.info("Wrote summary metrics to %s", summary_path)

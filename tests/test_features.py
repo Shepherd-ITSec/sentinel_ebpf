@@ -2,10 +2,19 @@
 import numpy as np
 
 import events_pb2
-from detector.building_blocks.primitives.features import (
-  extract_feature_dict,
-  feature_view_for_algorithm,
+from detector.building_blocks.primitives.features import build_feature_extractor, extract_feature_dict
+from detector.config import load_config
+from detector.pipelines.feature_sets import (
+  default_tabular_feature_names,
+  feature_names_for_algorithm,
+  frequency_feature_names,
+  full_tabular_feature_names,
 )
+
+FULL_FEATURES = full_tabular_feature_names()
+FREQUENCY_FEATURES = frequency_feature_names()
+DEFAULT_FEATURES = default_tabular_feature_names()
+ZSCORE_FEATURES = feature_names_for_algorithm(load_config(), "zscore")
 
 
 def _evt(
@@ -62,13 +71,36 @@ def test_extract_feature_dict_returns_expected_shape():
     arg1="2",
     path="/etc/passwd",
   )
-  values, _ = extract_feature_dict(evt, feature_view="full")
+  values, _ = extract_feature_dict(evt, requested_features=FULL_FEATURES)
   assert _count_prefix(values, "event_name_") == 0
   assert _count_prefix(values, "comm_bucket_") == 0
   assert len(values) > 0
   vec = np.array(list(values.values()), dtype=np.float32)
   assert vec.shape == (len(values),)
   assert np.isfinite(vec).all()
+
+
+def test_extract_feature_dict_only_emits_requested_features():
+  evt = _evt(
+    event_id="feat-subset",
+    event_group="file",
+    syscall_nr=257,
+    path="/etc/passwd",
+    attributes={"return_value": "0", "flags": "O_RDONLY"},
+  )
+  requested = ("syscall_nr_norm", "file_sensitive_path")
+  values, meta = extract_feature_dict(evt, requested_features=requested)
+  assert meta is None
+  assert set(values.keys()) == set(requested)
+  assert values["file_sensitive_path"] == 1.0
+
+
+def test_extract_feature_dict_supports_sequence_prefix_filter():
+  extractor = build_feature_extractor(load_config())
+  values, meta = extractor.extract_feature_dict(_evt(event_id="feat-seq", syscall_name="openat"), requested_features=("sequence_ctx_*",))
+  assert meta is not None
+  assert len(values) > 0
+  assert all(name.startswith("sequence_ctx_") for name in values)
 
 
 def test_extract_feature_dict_handles_bad_and_negative_values():
@@ -82,10 +114,10 @@ def test_extract_feature_dict_handles_bad_and_negative_values():
     arg1="nope",
     path="/tmp/test",
   )
-  values, _ = extract_feature_dict(evt, feature_view="full")
+  values, _ = extract_feature_dict(evt, requested_features=FULL_FEATURES)
   assert all(np.isfinite(v) for v in values.values())
   assert values["pid_norm"] == 0.0
-  freq, _ = extract_feature_dict(evt, feature_view="frequency")
+  freq, _ = extract_feature_dict(evt, requested_features=FREQUENCY_FEATURES)
   assert 0.0 <= freq["pid_hash"] < 1.0
   assert values["tid_norm"] == 0.0
   assert values["uid_norm"] == 0.0
@@ -102,7 +134,7 @@ def test_extract_feature_dict_has_stable_features():
     arg1="64",
     path="/bin/ls",
   )
-  values, _ = extract_feature_dict(evt, feature_view="full")
+  values, _ = extract_feature_dict(evt, requested_features=FULL_FEATURES)
   general_features = {
     "tid_norm",
     "uid_norm",
@@ -127,7 +159,7 @@ def test_extract_feature_dict_day_cycle_and_week_of_month():
     event_id="feat-time",
     path="/tmp/x",
   )
-  values, _ = extract_feature_dict(evt, feature_view="full")
+  values, _ = extract_feature_dict(evt, requested_features=FULL_FEATURES)
   assert "day_cycle_sin" in values
   assert "day_cycle_cos" in values
   assert "week_of_month_norm" in values
@@ -150,7 +182,7 @@ def test_extract_feature_dict_path_and_return_attributes():
     path="/etc/passwd",
     attributes={"return_value": "0"},
   )
-  values, _ = extract_feature_dict(evt, feature_view="full")
+  values, _ = extract_feature_dict(evt, requested_features=FULL_FEATURES)
   assert values["path_depth_norm"] == 2.0 / 20.0
   assert values["return_success"] == 1.0
   assert values["return_errno_norm"] >= 0.0
@@ -164,7 +196,7 @@ def test_extract_feature_dict_path_and_return_attributes():
     arg1="16",
     attributes={"return_value": "-114"},
   )
-  values_fail, _ = extract_feature_dict(evt_fail, feature_view="full")
+  values_fail, _ = extract_feature_dict(evt_fail, requested_features=FULL_FEATURES)
   assert values_fail["return_success"] == 0.0
   assert values_fail["return_errno_norm"] > 0.0
 
@@ -177,7 +209,7 @@ def test_extract_feature_dict_adds_file_features_when_event_type_file():
     syscall_nr=257,
     path="/etc/passwd",
   )
-  values, _ = extract_feature_dict(evt, feature_view="full")
+  values, _ = extract_feature_dict(evt, requested_features=FULL_FEATURES)
   assert "file_sensitive_path" in values
   assert values["file_sensitive_path"] == 1.0
   assert "file_tmp_path" in values
@@ -186,7 +218,7 @@ def test_extract_feature_dict_adds_file_features_when_event_type_file():
   assert "arg0_norm" in values
   assert "arg1_norm" in values
   assert "group_path_rate_5" not in values
-  assert len(values) > len(extract_feature_dict(base_evt, feature_view="full")[0])
+  assert len(values) > len(extract_feature_dict(base_evt, requested_features=FULL_FEATURES)[0])
 
 
 def test_extract_file_features_flags_are_schema_stable():
@@ -198,7 +230,7 @@ def test_extract_file_features_flags_are_schema_stable():
     path="/etc/passwd",
     attributes={"flags": "O_RDONLY|O_CLOEXEC"},
   )
-  values_open, _ = extract_feature_dict(evt_openat, feature_view="full")
+  values_open, _ = extract_feature_dict(evt_openat, requested_features=FULL_FEATURES)
   assert "file_flags_hash" in values_open
 
   evt_unlink = _evt(
@@ -209,7 +241,7 @@ def test_extract_file_features_flags_are_schema_stable():
     comm="rm",
     path="/tmp/foo",
   )
-  values_unlink, _ = extract_feature_dict(evt_unlink, feature_view="full")
+  values_unlink, _ = extract_feature_dict(evt_unlink, requested_features=FULL_FEATURES)
   assert "file_flags_hash" in values_unlink
   assert values_unlink["file_tmp_path"] == 1.0
 
@@ -222,7 +254,7 @@ def test_extract_file_features_flags_are_schema_stable():
     arg0="493",
     path="/etc/shadow",
   )
-  values_chmod, _ = extract_feature_dict(evt_chmod, feature_view="full")
+  values_chmod, _ = extract_feature_dict(evt_chmod, requested_features=FULL_FEATURES)
   assert "file_flags_hash" in values_chmod
   # no per-syscall one-hot features in current extractor
 
@@ -245,11 +277,11 @@ def test_extract_feature_dict_adds_network_features_when_event_type_network():
     arg0="3",
     arg1="16",
   )
-  values, _ = extract_feature_dict(evt, feature_view="full")
+  values, _ = extract_feature_dict(evt, requested_features=FULL_FEATURES)
   assert "net_socket_family_norm" in values
   assert "net_dport_norm" in values
   assert "net_pair_rate_5" not in values
-  assert len(values) > len(extract_feature_dict(base_evt, feature_view="full")[0])
+  assert len(values) > len(extract_feature_dict(base_evt, requested_features=FULL_FEATURES)[0])
 
 
 def test_extract_network_features_socket_family_type():
@@ -262,7 +294,7 @@ def test_extract_network_features_socket_family_type():
     arg0="2",
     arg1="1",
   )
-  values, _ = extract_feature_dict(evt, feature_view="full")
+  values, _ = extract_feature_dict(evt, requested_features=FULL_FEATURES)
   assert values["net_socket_family_norm"] == 2.0 / 10.0
 
 
@@ -281,7 +313,7 @@ def test_extract_network_features_sockaddr_from_attributes():
       "fd_sock_family": "AF_INET",
     },
   )
-  values, _ = extract_feature_dict(evt, feature_view="full")
+  values, _ = extract_feature_dict(evt, requested_features=FULL_FEATURES)
   assert values["net_dport_norm"] == 443.0 / 65535.0
 
 
@@ -301,7 +333,7 @@ def test_extract_network_features_sockaddr_from_attributes_connect():
       "fd_sock_remote_addr": "10.0.0.2",
     },
   )
-  values, _ = extract_feature_dict(evt, feature_view="full")
+  values, _ = extract_feature_dict(evt, requested_features=FULL_FEATURES)
   assert values["net_dport_norm"] == 22.0 / 65535.0
 
 
@@ -314,7 +346,7 @@ def test_extract_feature_dict_frequency_view_returns_expected_schema():
     path="/etc/passwd",
     attributes={"return_value": "0"},
   )
-  values, _ = extract_feature_dict(evt, feature_view="frequency")
+  values, _ = extract_feature_dict(evt, requested_features=FREQUENCY_FEATURES)
   assert "path_hash" in values
   assert "flags_hash" not in values
   assert "path_prefix_hash" in values
@@ -339,7 +371,7 @@ def test_extract_feature_dict_zscore_algorithm_uses_frequency_view_schema():
     ts_unix_nano=1_700_000_000_000_000_000,
   )
   # zscore should use the frequency view (hashed categoricals, day_fraction_norm time feature).
-  values, _ = extract_feature_dict(evt, feature_view=feature_view_for_algorithm("zscore"))
+  values, _ = extract_feature_dict(evt, requested_features=ZSCORE_FEATURES)
   assert "day_fraction_norm" in values
   assert "day_cycle_sin" not in values
   assert "pid_norm" not in values
@@ -355,7 +387,7 @@ def test_extract_feature_dict_frequency_view_keeps_type_specific_hashes():
     path="/etc/passwd",
     attributes={"flags": "O_RDONLY|O_CLOEXEC"},
   )
-  file_values, _ = extract_feature_dict(file_evt, feature_view="frequency")
+  file_values, _ = extract_feature_dict(file_evt, requested_features=FREQUENCY_FEATURES)
   assert "file_sensitive_path" not in file_values
   assert "file_tmp_path" not in file_values
   assert "file_flags_hash" not in file_values
@@ -376,7 +408,7 @@ def test_extract_feature_dict_frequency_view_keeps_type_specific_hashes():
       "fd_sock_family": "AF_INET",
     },
   )
-  net_values, _ = extract_feature_dict(net_evt, feature_view="frequency")
+  net_values, _ = extract_feature_dict(net_evt, requested_features=FREQUENCY_FEATURES)
   assert "net_socket_type_hash" in net_values
   assert "net_pair_rate_5" not in net_values
   assert "hostname_hash" in net_values
@@ -398,12 +430,12 @@ def test_extract_feature_dict_adds_process_features_when_event_type_process():
     comm="bash",
     path="/usr/bin/ls",
   )
-  values, _ = extract_feature_dict(evt, feature_view="full")
+  values, _ = extract_feature_dict(evt, requested_features=FULL_FEATURES)
   assert "pid_norm" in values
-  assert len(values) == len(extract_feature_dict(base_evt, feature_view="full")[0])
+  assert len(values) == len(extract_feature_dict(base_evt, requested_features=FULL_FEATURES)[0])
 
 
-def test_memstream_feature_view_drops_sparse_context_banks():
+def test_full_feature_set_drops_sparse_context_banks():
   evt = _evt(
     event_id="feat-mem-view",
     event_group="file",
@@ -413,7 +445,7 @@ def test_memstream_feature_view_drops_sparse_context_banks():
     path="/etc/passwd",
     attributes={"return_value": "0", "flags": "O_RDONLY|O_CLOEXEC"},
   )
-  values, _ = extract_feature_dict(evt, feature_view="memstream")
+  values, _ = extract_feature_dict(evt, requested_features=FULL_FEATURES)
   assert "pid_hash" not in values
   assert "file_sensitive_path" in values
   assert "group_path_rate_5" not in values
@@ -425,7 +457,7 @@ def test_memstream_feature_view_drops_sparse_context_banks():
   assert "comm_hash" not in values
 
 
-def test_loda_feature_view_keeps_small_network_identity_and_drops_open_world_banks():
+def test_full_feature_set_keeps_small_network_identity_and_drops_open_world_banks():
   evt = _evt(
     event_id="feat-loda-view",
     syscall_name="socket",
@@ -436,7 +468,7 @@ def test_loda_feature_view_keeps_small_network_identity_and_drops_open_world_ban
     arg0="2",
     arg1="1",
   )
-  values, _ = extract_feature_dict(evt, feature_view="full")
+  values, _ = extract_feature_dict(evt, requested_features=FULL_FEATURES)
   assert "net_socket_family_norm" in values
   assert _count_prefix(values, "group_syscall_") == 0
   assert _count_prefix(values, "net_socket_type_bucket_") == 0
@@ -444,7 +476,7 @@ def test_loda_feature_view_keeps_small_network_identity_and_drops_open_world_ban
   assert _count_prefix(values, "comm_bucket_") == 0
 
 
-def test_frequency_feature_view_matches_expected_file_schema():
+def test_frequency_feature_set_matches_expected_file_schema():
   evt = _evt(
     event_id="feat-frequency-view",
     event_group="file",
@@ -453,7 +485,7 @@ def test_frequency_feature_view_matches_expected_file_schema():
     path="/etc/passwd",
     attributes={"return_value": "0", "flags": "O_RDONLY|O_CLOEXEC"},
   )
-  values, _ = extract_feature_dict(evt, feature_view="frequency")
+  values, _ = extract_feature_dict(evt, requested_features=FREQUENCY_FEATURES)
   assert "flags_hash" not in values
   assert "path_hash" in values
   assert "file_sensitive_path" not in values
@@ -494,7 +526,7 @@ rules:
       path="/secret/data",
     )
     # Custom groups currently don't have a dedicated feature layer; only file/network/process do.
-    values, _ = extract_feature_dict(evt, feature_view="default")
+    values, _ = extract_feature_dict(evt, requested_features=DEFAULT_FEATURES)
     # Default view still includes the always-on syscall number + time signal.
     assert set(values.keys()) == {"syscall_nr_norm", "day_cycle_sin", "day_cycle_cos"}
   finally:
